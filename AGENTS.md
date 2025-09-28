@@ -1,171 +1,182 @@
-# AGENTS.md — Code Navigation & Current Architecture
+# AGENTS.md — Project briefing for Tractus.HtmlToNdi
 
-> Base repo: `https://github.com/tractusevents/Tractus.HtmlToNdi`
-> Purpose: help coding agents quickly understand and extend **Tractus.HtmlToNdi**, a Windows-focused headless Chromium → NDI bridge with HTTP control and limited KVM.
+> Repository: [`tractusevents/Tractus.HtmlToNdi`](https://github.com/tractusevents/Tractus.HtmlToNdi)  
+> Purpose: Windows-only utility that renders a Chromium page off-screen and publishes video/audio plus limited KVM over the NDI protocol, with a minimal HTTP control API.
 
----
-
-## 0) Ground truth — what ships today
-
-* `Program.cs` bootstraps Serilog logging (`AppManagement.Initialize`), parses CLI flags (`--ndiname`, `--port`, `--url`, `--w`, `--h`), and spins up three subsystems: CefSharp OffScreen browser, NDI sender, and ASP.NET Core minimal API server.
-* CefSharp is launched off-thread via `AsyncContext.Run`. The browser is created windowless with audio enabled, fixed viewport, and a watchdog thread that invalidates frames if Chromium goes idle.
-* Video frames are forwarded straight from the BGRA paint buffer to NDI using `NDIlib.send_send_video_v2`. Audio frames are captured through a custom `IAudioHandler` and forwarded via `NDIlib.send_send_audio_v2`.
-* HTTP API (Swagger enabled) exposes `/seturl`, `/scroll/{increment}`, `/click/{x}/{y}`, `/keystroke`, `/type/{text}`, and `/refresh` for remote control. All routes operate on the single global `CefWrapper` instance.
-* KVM metadata from NDI receivers is polled in a background thread. Mouse move (`opcode 0x03`) updates the cached normalized coordinates; mouse down (`opcode 0x04`) triggers a left-click at the cached position.
-* Default behavior: 1920×1080 @ 60 fps progressive frames, transparent backgrounds preserved, audio passthrough.
+This document is the ground-truth orientation guide. Treat it as a living spec—update it whenever behaviour changes.
 
 ---
 
-## 1) Repository map (fast navigation)
+## 1. What the current build actually does (net8.0, December 2024 snapshot)
+
+* Entry point: `Program.Main` (`Program.cs`). It sets the working directory, initializes logging via `AppManagement.Initialize`, parses CLI flags, starts CefSharp OffScreen inside a dedicated synchronization context, creates the singleton `CefWrapper`, spins up the ASP.NET Core minimal API, and allocates a single NDI sender.
+* Chromium lifecycle: `AsyncContext.Run` + `SingleThreadSynchronizationContext` keep CefSharp happy on one STA-like thread. `CefWrapper.InitializeWrapperAsync` waits for the first page load, locks the windowless frame rate to 60 fps, unmutes audio (CEF starts muted), subscribes to the `Paint` event, and starts a watchdog thread that invalidates the view if Chromium goes silent for ≥1 s.
+* Video path: every `ChromiumWebBrowser.Paint` callback builds an `NDIlib.video_frame_v2_t` with BGRA pixels, `frame_rate_N=60`, `frame_rate_D=1`, progressive flag, and forwards the GPU buffer handle to `NDIlib.send_send_video_v2`. There is no CPU copy, colour conversion, or double buffering.
+* Audio path: `CustomAudioHandler` exposes Cef audio, allocates a float buffer sized for one second, copies each planar channel into contiguous blocks inside that buffer, and sends it with `NDIlib.send_send_audio_v2`. (Note: the code claims “interleaved” but still stores channels sequentially; downstream receivers must cope with planar-like layout.)
+* Control plane: ASP.NET Core minimal API listens on HTTP (no TLS, no auth). Swagger UI is enabled. All endpoints directly call methods on the static `Program.browserWrapper` instance.
+* KVM metadata: the app advertises `<ndi_capabilities ntk_kvm="true" />` and starts a background thread that polls `NDIlib.send_capture` every second. It interprets `<ndi_kvm ...>` metadata frames, caching normalized mouse coordinates on opcode `0x03` and triggering a left click on opcode `0x04`.
+* Shutdown: after `app.Run()` returns, the metadata thread is stopped, the browser wrapper is disposed, and the temporary Cef cache (`cache/<guid>`) is deleted.
+
+---
+
+## 2. Command-line contract & configuration defaults
+
+`Program.Main` recognises the following switches (case-sensitive, leading double-hyphen required):
+
+| Flag | Example | Behaviour / Default |
+| --- | --- | --- |
+| `--ndiname=<value>` | `--ndiname="Studio Browser"` | Sets the NDI source name. If omitted, the app prompts on STDIN until the user types a non-empty name. Initial default is "HTML5" before prompting. |
+| `--port=<int>` | `--port=9999` | Sets the HTTP listener port. If omitted, prompts interactively until a valid integer is entered. |
+| `--url=<https://...>` | `--url=https://testpattern.tractusevents.com/` | Sets the startup page. Defaults to `https://testpattern.tractusevents.com/`. |
+| `--w=<int>` | `--w=1920` | Sets browser width in pixels. Defaults to 1920. |
+| `--h=<int>` | `--h=1080` | Sets browser height in pixels. Defaults to 1080. |
+| `-debug` | `-debug` | Raises Serilog minimum level to `Debug`. |
+| `-quiet` | `-quiet` | Disables console logging (file logging remains). |
+
+Other configuration surfaces:
+
+* Logging: Serilog writes to console (unless `-quiet`) and to `%USERPROFILE%/Documents/<AppName>_log.txt`. `AppManagement.LoggingLevel` is globally accessible.
+* Build target: `Tractus.HtmlToNdi.csproj` targets **.NET 8.0**, `AllowUnsafeBlocks=true`, and forces `PlatformTarget=x64`. Do not assume .NET 6/7.
+* Assets copied at runtime: `HtmlToNdi.ico` and `HtmlToNdi.png` are always copied to the output directory.
+
+---
+
+## 3. Repository map (authoritative)
 
 ```
-/Chromium/                 # CefSharp OffScreen helpers (browser wrapper, audio handler, sync context)
-/Models/                   # HTTP DTOs shared by minimal API
-AppManagement.cs           # Logging bootstrap, filesystem helpers
-Program.cs                 # Entry point: CLI → Chromium + NDI + HTTP API + KVM
-Tractus.HtmlToNdi.csproj   # Target framework/net6.0-windows, NuGet packages (CefSharp, NDI)
-Tractus.HtmlToNdi.http     # Ready-to-send HTTP API examples
-appsettings*.json          # ASP.NET Core configuration defaults
-README.md                  # Usage, CLI parameters, known limitations
+/Chromium/
+  AsyncContext.cs                     # Single-threaded async pump for CefSharp startup
+  CefWrapper.cs                       # Owns ChromiumWebBrowser instance, paint-to-NDI bridge, HTTP input helpers
+  CustomAudioHandler.cs               # IAudioHandler implementation, planar float → contiguous buffer → NDI audio
+  SingleThreadSynchronizationContext.cs # BlockingCollection-backed synchronization context
+/Models/
+  GoToUrlModel.cs                     # DTOs for `/seturl` and `/keystroke`
+AppManagement.cs                      # Logging bootstrap, per-app data helpers, CLI flags (-debug/-quiet)
+Program.cs                            # Main: CLI parsing, Cef initialization, HTTP API, NDI sender, KVM thread
+Tractus.HtmlToNdi.csproj              # net8.0 exe, package references (CefSharp OffScreen, Serilog, Swashbuckle, NDILib)
+Tractus.HtmlToNdi.http                # Sample HTTP requests for manual testing (update alongside API changes)
+README.md                             # End-user documentation (currently missing some routes—keep in sync when editing)
 ```
 
-Tip: the runtime state (browser + NDI) is controlled exclusively through `Program.browserWrapper`; there is no dependency injection beyond minimal API static capture.
+There are no nested `AGENTS.md` files; this document covers the entire repository.
 
 ---
 
-## 2) High-level flow
+## 4. Execution flow in detail
 
 ```
-[Main]
-  ├─ Call AppManagement.Initialize(args) → Serilog + file logging
-  ├─ Prompt/parse CLI → ndiName, port, url, width, height
-  ├─ AsyncContext.Run → Cef.Initialize + create CefWrapper(width, height, url)
-  │      └─ CefWrapper.InitializeWrapperAsync() registers paint callback & audio handler
-  ├─ Build WebApplication → map HTTP routes → enable Swagger
-  ├─ Create NDI sender (NDIlib.send_create)
-  │      └─ Advertise KVM capability via metadata
-  ├─ Start KVM metadata polling thread (NDIlib.send_capture)
-  └─ app.Run() → blocks until shutdown, then dispose browser and delete cache dir
+Main
+ ├─ AppManagement.Initialize(args)
+ │    ├─ Ensure data directory exists (base directory)
+ │    ├─ Hook AppDomain.UnhandledException for Serilog logging
+ │    ├─ Configure Serilog sinks (console + Documents/<AppName>_log.txt)
+ │    └─ Respect -debug / -quiet flags
+ ├─ Prompt/parse CLI flags (see §2)
+ ├─ AsyncContext.Run(async)
+ │    ├─ Configure CefSettings (RootCachePath=cache/<guid>, autoplay-policy override, EnableAudio)
+ │    ├─ Cef.Initialize(settings)
+ │    └─ Instantiate CefWrapper(width, height, url) and await InitializeWrapperAsync()
+ ├─ Build WebApplication (Serilog integration, Swagger, authorization middleware added but unused)
+ ├─ Create NDI sender (NDIlib.send_create)
+ │    ├─ Advertise `<ndi_capabilities ntk_kvm="true" />`
+ │    └─ Launch background thread polling NDI metadata (1 s timeout)
+ ├─ Map HTTP routes directly to CefWrapper methods
+ ├─ app.Run()   # blocks until shutdown
+ ├─ On shutdown: stop metadata thread, dispose CefWrapper
+ └─ Delete temporary Cef cache directory (best-effort)
 ```
 
-The browser → NDI path is synchronous on the Cef paint callback: every frame triggers `send_send_video_v2`. Audio is pulled on Cef's audio thread and interleaved before hitting NDI.
+Global state (`Program.NdiSenderPtr`, `Program.browserWrapper`) means only **one** browser/NDI sender per process. Changes that introduce additional instances must restructure the program.
 
 ---
 
-## 3) Chromium wrapper specifics
+## 5. HTTP API surface (current, unauthenticated)
 
-* `CefWrapper` stores width/height/url and owns the `ChromiumWebBrowser` instance. Audio is always on; `ToggleAudioMute` is called after initial load to unmute.
-* `InitializeWrapperAsync` waits for the initial load, caps `WindowlessFrameRate` to 60, subscribes to `Paint`, and starts a watchdog thread that invalidates once per second to avoid stalls.
-* `OnBrowserPaint` sets `frame_rate_N=60`/`frame_rate_D=1`, `FourCC=BGRA`, and forwards Chromium's GPU-buffer handle directly to NDI. No pixel swizzle occurs—Chromium already exposes BGRA and the NDI sender accepts BGRA frames.
-* Input helpers: `ScrollBy` issues a mouse wheel event, `Click` performs left-button down/up with a 100 ms pause, `SendKeystrokes` iterates characters sending `KeyDown` events only, and `RefreshPage` reloads the current tab.
+All routes live in `Program.cs` and act on the singleton `browserWrapper`.
 
----
+| Route | Method | Payload | Effect |
+| --- | --- | --- | --- |
+| `/seturl` | POST | JSON `{ "url": "https://..." }` (`GoToUrlModel`) | Calls `CefWrapper.SetUrl`, immediately loading the page. |
+| `/scroll/{increment}` | GET | Path `increment` (int) | Sends `SendMouseWheelEvent(0,0,0,increment)` – positive values scroll down. Origin is always `(0,0)`; no viewport-relative targeting. |
+| `/click/{x}/{y}` | GET | Path `x`, `y` (int pixels) | Sends a left mouse click (down, 100 ms sleep, up) at the specified coordinates. No bounds checking. |
+| `/keystroke` | POST | JSON `{ "toSend": "..." }` (`SendKeystrokeModel`) | Iterates characters, firing `KeyDown` events for each Unicode code point (no key-up, modifiers, or special keys). |
+| `/type/{toType}` | GET | Path string | Convenience wrapper around `/keystroke` (same limitations). |
+| `/refresh` | GET | none | Calls `ChromiumWebBrowser.Reload()`. |
 
-## 4) HTTP API surface (2024-10 build)
+Swagger/OpenAPI UI is exposed at `/swagger`. There is no authentication, encryption, or rate limiting; never expose this service to untrusted networks without an upstream proxy.
 
-Route | Method | Payload | Effect
----|---|---|---
-`/seturl` | POST | `{ "url": "https://..." }` | Calls `CefWrapper.SetUrl`
-`/scroll/{increment}` | GET | path int | Sends a wheel event (positive=scroll down)
-`/click/{x}/{y}` | GET | path ints | Issues a left click at pixel coordinates
-`/keystroke` | POST | `{ "toSend": "..." }` | Iterates characters via `SendKeystrokes`
-`/type/{toType}` | GET | path string | Convenience wrapper around `/keystroke`
-`/refresh` | GET | none | Reloads the page
-
-Swagger UI is available at `/swagger` on the configured port (default 9999). All endpoints are unauthenticated and operate on the singleton browser.
+When adding routes, update **both** this table and `Tractus.HtmlToNdi.http` samples.
 
 ---
 
-## 5) NDI pipeline
+## 6. Subsystem specifics & quirks
 
-* Creation: `Program.NdiSenderPtr` is initialized once with `NDIlib.send_create` using the CLI-specified source name.
-* Video: `CefWrapper.OnBrowserPaint` constructs an `NDIlib.video_frame_v2_t` (BGRA progressive, stride = width × 4) and sends with `NDIlib.send_send_video_v2`.
-* Audio: `CustomAudioHandler` allocates an interleaved float buffer sized for one second of audio. For each audio packet, channel planes are copied into the interleaved buffer and transmitted via `NDIlib.send_send_audio_v2`.
-* Metadata/KVM: After creation, the app publishes `<ndi_capabilities ntk_kvm="true" />`. A dedicated thread blocks on `NDIlib.send_capture`, inspecting metadata frames for `<ndi_kvm ...>` commands.
+### CefWrapper (`Chromium/CefWrapper.cs`)
+* `ChromiumWebBrowser` is constructed with `AudioHandler = new CustomAudioHandler()` and a fixed `System.Drawing.Size(width,height)`.
+* `RenderWatchdog` thread invalidates the view once per second if no `Paint` events arrive, preventing NDI receivers from freezing on static pages.
+* `ScrollBy` always uses `(x=0,y=0)` as the mouse location; complex scrolling (e.g., inside scrolled divs) may require additional API work.
+* `Click` only supports the left mouse button; drag, double-click, or right-click interactions are not implemented.
+* `SendKeystrokes` issues **only** `KeyDown` events with `NativeKeyCode=Convert.ToInt32(char)`. There is no key-up, modifiers, or IME support—uppercase letters require the page to handle them despite missing Shift state.
+* `Dispose` detaches the `Paint` handler and disposes the browser, but still has TODO comments for unmanaged cleanup.
 
----
+### CustomAudioHandler (`Chromium/CustomAudioHandler.cs`)
+* `ChannelLayoutToChannelCount` covers most layouts but returns 0 for unsupported ones, causing `GetAudioParameters` to fail (muting audio).
+* `OnAudioStreamPacket` copies planar floats into a pre-allocated buffer with each channel occupying a contiguous block (pseudo-planar). `channel_stride_in_bytes` is set to a single channel’s byte count; ensure downstream consumers accept that layout.
+* Memory is manually allocated/freed via `Marshal.AllocHGlobal` / `FreeHGlobal`. Failing to call `Dispose` will leak unmanaged memory.
 
-## 6) KVM handling details
+### NDI integration (`Program.cs`)
+* `Program.NdiSenderPtr` must remain valid for the lifetime of the process; there is currently **no** call to `NDIlib.send_destroy`. Adding explicit teardown requires guarding against `nint.Zero` in paint/audio handlers.
+* Metadata loop logs every metadata frame at `Warning` level (`Log.Logger.Warning("Got metadata: ...")`), which can flood logs if receivers send frequent updates.
+* Only opcodes `0x03` (mouse move) and `0x04` (left click) are handled; `0x07` (mouse up) is ignored intentionally. There is no translation for scroll, keyboard, or multi-button events.
 
-* Only mouse metadata opcodes are processed. `0x03` updates `x`/`y` normalized floats (0–1). `0x04` triggers a left-click using the cached coordinates scaled by the configured width/height. `0x07` (left-up) is recognized but intentionally left empty—`Click` handles both down/up.
-* There is no handling for drag, right/middle buttons, keyboard injection, or scroll via KVM metadata; the HTTP API must be used for those interactions.
-* The metadata polling thread runs until shutdown; `running` flag flips after `app.Run()` completes, and the thread is joined before exiting.
-
----
-
-## 7) Known constraints & quirks
-
-1. **Codec support**: Chromium build lacks proprietary codecs (H.264), so DRM/YouTube playback fails.
-2. **Frame pacing**: Browser refresh rate and NDI `frame_rate_N/D` are hard-coded to 60/1; no dynamic adjustment or fractional frame rates.
-3. **Single instance**: Global statics (`Program.browserWrapper`, `Program.NdiSenderPtr`) assume one browser/sender per process.
-4. **Input gaps**: No keyboard key-up events, no text composition, and no error handling for invalid coordinates.
-5. **Resource cleanup**: Temporary Cef cache folder is deleted on shutdown, but abrupt termination may leave residue.
-6. **Security**: HTTP endpoints have no authentication/authorization; exposure to untrusted networks is unsafe.
+### Logging & diagnostics (`AppManagement.cs`)
+* `AppManagement.InstanceName` composes `<os>_<arch>_<machinename>` for telemetry or metadata (not currently used elsewhere).
+* On fatal `AppDomain` exceptions, details are logged but the process is not explicitly terminated beyond .NET’s default behaviour.
 
 ---
 
-## 8) Prioritized extension roadmap
+## 7. Known limitations (validated against source)
 
-1. **Add authentication & TLS to HTTP API** — prevent remote misuse and enable deployment beyond trusted LANs.
-2. **Expose dynamic frame rate & resolution controls** — allow runtime `/size` or `/fps` adjustments with safe reinitialization of Cef/NDI.
-3. **Improve KVM fidelity** — handle drag (mouse down/up separation), right-click, keyboard metadata, and pointer smoothing.
-4. **Robust input API** — add key-up events, text composition, and error responses for invalid requests.
-5. **Observability** — implement `/stats` endpoint reporting render cadence, dropped frames, audio state, and cache health.
-6. **Codec/WebGL enhancements** — optional Chromium flags for WebGL2/WebGPU and exploring BGRA → NDI zero-copy improvements.
-
----
-
-## 9) Validation checklist (post-change)
-
-* ✅ Transparent test page → verify alpha in NDI receiver.
-* ✅ Motion stress (WebGL animation) → monitor frame cadence ~16.6 ms for 60 fps.
-* ✅ Audio playback (stereo) → confirm levels in receiver, no drift.
-* ✅ HTTP API → exercise every route via `Tractus.HtmlToNdi.http` or Swagger.
-* ✅ KVM metadata → confirm pointer click arrives when interacting from NDI Studio Monitor.
+1. **Single-instance design**: Global static `browserWrapper`/`NdiSenderPtr` make multiple concurrent browsers impossible without a refactor.
+2. **Authentication void**: HTTP API is wide open. Use reverse proxies or add middleware before shipping to production.
+3. **Input fidelity gaps**: No key-up events, modifiers, IME, or right/middle mouse buttons. `/scroll` ignores pointer position. Drag-and-drop is unsupported.
+4. **Codec constraints**: Standard Chromium build without proprietary codecs—DRM/H.264/YouTube may fail.
+5. **Audio layout**: Output buffer is not truly interleaved despite metadata suggesting so, which may confuse strict NDI consumers.
+6. **Resource cleanup**: NDI sender and Cef global state are not explicitly disposed/destroyed; rely on process exit. Abrupt termination can leave cache folders under `cache/`.
+7. **Logging noise**: All incoming KVM metadata is logged at warning level, which may clutter logs under active control.
 
 ---
 
-## 10) Appendices
+## 8. Extension wish-list (ordered by likely impact)
 
-### /Chromium index
-
-* `CefWrapper.cs` — owns `ChromiumWebBrowser`; handles initialization, render watchdog, paint-to-NDI forwarding, and user input helpers (`SetUrl`, `ScrollBy`, `Click`, `SendKeystrokes`, `RefreshPage`).
-* `CustomAudioHandler.cs` — `IAudioHandler` implementation converting CefSharp planar float buffers into interleaved floats for NDI audio frames.
-* `AsyncContext.cs` — helper to run async Cef initialization on a dedicated single-threaded synchronization context.
-* `SingleThreadSynchronizationContext.cs` — blocking queue-based context used by `AsyncContext` to keep CefSharp thread affinity.
-
-### /Models index
-
-* `GoToUrlModel.cs` — DTO with `string Url`; consumed by `/seturl` POST.
-* `SendKeystrokeModel` (same file) — DTO with `string ToSend`; consumed by `/keystroke` POST and indirectly by `/type/{toType}`.
-
-### NDI path summary
-
-* **Creation**: `Program.NdiSenderPtr = NDIlib.send_create` using UTF-8 encoded name.
-* **Video send**: `CefWrapper.OnBrowserPaint` builds `NDIlib.video_frame_v2_t` with BGRA buffer handle and invokes `NDIlib.send_send_video_v2`.
-* **Audio send**: `CustomAudioHandler.OnAudioStreamPacket` copies samples into `audio_frame_v2_t` and calls `NDIlib.send_send_audio_v2`.
-* **Metadata**: Capabilities advertised via `NDIlib.send_add_connection_metadata`; KVM commands retrieved through `NDIlib.send_capture` loop in `Program`.
-
-### Known TODOs in code
-
-* `CefWrapper.Dispose` still contains commented TODOs regarding unmanaged cleanup; currently acceptable but consider auditing.
-* KVM handler ignores opcode `0x07` (mouse up) and lacks drag/scroll implementations.
-* Keyboard injection uses only key-down events—no key-up or modifier support, which may break complex input.
+1. **Secure the HTTP surface** – add authentication, optional TLS, and better error responses. Consider ASP.NET minimal API filters or reverse proxy guidance.
+2. **Runtime configuration endpoints** – `/size`, `/fps`, `/audio` toggles that safely recreate the Chromium instance and reconfigure NDI frames.
+3. **Improved input/KVM parity** – handle drag (distinct down/up), right-click, mouse move via HTTP, keyboard modifiers, and translate additional NDI KVM opcodes.
+4. **Audio correctness** – produce genuinely interleaved buffers (or update metadata) and expose sample-rate/channel status via diagnostics.
+5. **Observability** – add `/stats` endpoint exposing render cadence, last paint timestamp, audio packet counts, and cache path.
+6. **Graceful shutdown** – explicitly destroy the NDI sender, call `Cef.Shutdown()`, and ensure watchdog thread stops before disposing.
 
 ---
 
-## 11) Notes for future agents
+## 9. Validation checklist (run manually after significant changes)
 
-* Keep edits focused; touch only relevant files and respect the single-instance design unless intentionally refactoring.
-* Prefer enhancing existing helpers (`CefWrapper`, `Program`) rather than introducing new globals.
-* When adjusting frame rate or resolution, ensure both CefSharp (`WindowlessFrameRate`, browser size) and NDI (`frame_rate_N/D`, `xres`, `yres`) stay in sync.
-* Document new HTTP endpoints in both README and `Tractus.HtmlToNdi.http`.
+* ✅ Verify transparency by loading `https://testpattern.tractusevents.com/` and checking alpha in an NDI receiver.
+* ✅ Stress-test animation (e.g., WebGL or CSS animation) and confirm frame cadence ~16.6 ms (60 fps) without dropped frames.
+* ✅ Play an audio source with known stereo content and ensure both channels arrive with correct timing.
+* ✅ Exercise every HTTP route via `Tractus.HtmlToNdi.http` or Swagger (set URL, scroll, click, type, refresh) and watch logs for errors.
+* ✅ Confirm KVM metadata click-from-receiver works (e.g., NewTek Studio Monitor sending mouse move + click).
+* ✅ Inspect `%USERPROFILE%/Documents/<AppName>_log.txt` for warnings/errors after a session.
 
 ---
 
-## 12) Provenance / references
+## 10. Pointers for future contributors
 
-* Source: repo inspection (2024-10 snapshot) of Program.cs, Chromium/*, Models/*, README.
-* Public releases & documentation: [https://github.com/tractusevents/Tractus.HtmlToNdi](https://github.com/tractusevents/Tractus.HtmlToNdi).
+* Stick to the single-instance assumption unless refactoring `Program` comprehensively; many helpers assume globals.
+* Respect the CefSharp threading rules—initialization must continue to use `AsyncContext`/`SingleThreadSynchronizationContext`.
+* When touching HTTP routes, update Swagger annotations (minimal API `.WithOpenApi()`) and documentation (`README.md`, `Tractus.HtmlToNdi.http`, and this file).
+* If modifying audio/video frame structures, review `CustomAudioHandler` and `CefWrapper.OnBrowserPaint` together to keep NDI metadata consistent.
+* Before merging, ensure Serilog messages remain informative (prefer structured logging over string concatenation where practical).
 
-**End of AGENTS.md**
+---
+
+_Last reviewed against repository state in this workspace. Update sections promptly when behaviour changes._
