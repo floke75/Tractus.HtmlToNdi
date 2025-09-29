@@ -1,7 +1,7 @@
-
 using CefSharp;
 using CefSharp.OffScreen;
 using NewTek;
+using Serilog;
 
 namespace Tractus.HtmlToNdi.Chromium;
 
@@ -9,6 +9,17 @@ public class CefWrapper : IDisposable
 {
     private bool disposedValue;
     private ChromiumWebBrowser? browser;
+    private readonly FrameRingBuffer frameBuffer;
+    private readonly FramePacer framePacer;
+    private readonly FramePacingOptions pacingOptions;
+    private readonly object metricsLock = new();
+    private double intervalSum;
+    private double intervalMin = double.MaxValue;
+    private double intervalMax;
+    private int intervalCount;
+    private long repeatedSinceLastLog;
+    private long droppedSinceLastLog;
+    private DateTimeOffset lastMetricsLog = DateTimeOffset.UtcNow;
 
     public int Width { get; private set; }
     public int Height { get; private set; }
@@ -18,11 +29,16 @@ public class CefWrapper : IDisposable
     private Thread RenderWatchdog;
     private DateTime lastPaint = DateTime.MinValue;
 
-    public CefWrapper(int width, int height, string initialUrl)
+    public CefWrapper(int width, int height, string initialUrl, FramePacingOptions pacingOptions)
     {
         this.Width = width;
         this.Height = height;
         this.Url = initialUrl;
+        this.pacingOptions = pacingOptions;
+
+        this.frameBuffer = new FrameRingBuffer(pacingOptions.BufferDepth);
+        this.framePacer = new FramePacer(this.frameBuffer, pacingOptions);
+        this.framePacer.FrameReady += this.OnFrameReady;
 
         this.browser = new ChromiumWebBrowser(initialUrl)
         {
@@ -31,14 +47,18 @@ public class CefWrapper : IDisposable
 
         this.browser.Size = new System.Drawing.Size(this.Width, this.Height);
 
-        this.RenderWatchdog = new Thread(this.RenderWatchDogThread);
+        this.RenderWatchdog = new Thread(this.RenderWatchDogThread)
+        {
+            IsBackground = true,
+            Name = "CEF Render Watchdog"
+        };
     }
 
     private void RenderWatchDogThread()
     {
         while (!this.disposedValue)
         {
-            if(DateTime.Now.Subtract(this.lastPaint).TotalSeconds >= 1.0)
+            if (this.browser is not null && DateTime.Now.Subtract(this.lastPaint).TotalSeconds >= 1.0)
             {
                 this.browser.GetBrowser().GetHost().Invalidate(PaintElementType.View);
             }
@@ -56,44 +76,38 @@ public class CefWrapper : IDisposable
 
         await this.browser.WaitForInitialLoadAsync();
 
-        this.browser.GetBrowserHost().WindowlessFrameRate = 60;
+        this.browser.GetBrowserHost().WindowlessFrameRate = this.pacingOptions.WindowlessFrameRate;
         this.browser.ToggleAudioMute();
 
         this.browser.Paint += this.OnBrowserPaint;
         this.RenderWatchdog.Start();
+        this.framePacer.Start();
     }
 
     private void OnBrowserPaint(object? sender, OnPaintEventArgs e)
     {
-        if (Program.NdiSenderPtr == nint.Zero)
+        if (this.browser is null)
         {
             return;
         }
 
-        var browser = sender as ChromiumWebBrowser;
-
-        if (browser is null)
+        if (e.Width == 0 || e.Height == 0)
         {
             return;
         }
 
         this.lastPaint = DateTime.Now;
 
-        var videoFrame = new NDIlib.video_frame_v2_t()
+        try
         {
-            FourCC = NDIlib.FourCC_type_e.FourCC_type_BGRA,
-            frame_rate_N = 60,
-            frame_rate_D = 1,
-            frame_format_type = NDIlib.frame_format_type_e.frame_format_type_progressive,
-            line_stride_in_bytes = e.Width * 4,
-            picture_aspect_ratio = (float)e.Width / e.Height,
-            p_data = e.BufferHandle,
-            timecode = NDIlib.send_timecode_synthesize,
-            xres = e.Width,
-            yres = e.Height,
-        };
-
-        NDIlib.send_send_video_v2(Program.NdiSenderPtr, ref videoFrame);
+            var stride = e.Width * 4;
+            var frame = FrameData.Create(e.BufferHandle, e.Width, e.Height, stride, DateTimeOffset.UtcNow);
+            this.frameBuffer.Enqueue(frame);
+        }
+        catch (Exception ex)
+        {
+            Log.Logger.Error(ex, "Failed to enqueue frame for pacing");
+        }
     }
 
     protected virtual void Dispose(bool disposing)
@@ -102,6 +116,9 @@ public class CefWrapper : IDisposable
         {
             if (disposing)
             {
+                this.framePacer.FrameReady -= this.OnFrameReady;
+                this.framePacer.Dispose();
+                this.frameBuffer.Dispose();
                 if (this.browser is not null)
                 {
                     this.browser.Paint -= this.OnBrowserPaint;
@@ -111,15 +128,12 @@ public class CefWrapper : IDisposable
                 this.browser = null;
             }
 
-            // TODO: free unmanaged resources (unmanaged objects) and override finalizer
-            // TODO: set large fields to null
             this.disposedValue = true;
         }
     }
 
     public void Dispose()
     {
-        // Do not change this code. Put cleanup code in 'Dispose(bool disposing)' method
         this.Dispose(disposing: true);
         GC.SuppressFinalize(this);
     }
@@ -138,14 +152,14 @@ public class CefWrapper : IDisposable
 
     public void ScrollBy(int increment)
     {
-        this.browser.SendMouseWheelEvent(0, 0, 0, increment, CefEventFlags.None); 
+        this.browser?.SendMouseWheelEvent(0, 0, 0, increment, CefEventFlags.None);
     }
 
     public void Click(int x, int y)
     {
         var host = this.browser?.GetBrowser()?.GetHost();
 
-        if(host is null)
+        if (host is null)
         {
             return;
         }
@@ -166,7 +180,7 @@ public class CefWrapper : IDisposable
             return;
         }
 
-        foreach(var c in model.ToSend)
+        foreach (var c in model.ToSend)
         {
             host.SendKeyEvent(new KeyEvent()
             {
@@ -175,8 +189,86 @@ public class CefWrapper : IDisposable
             });
         }
     }
+
     public void RefreshPage()
     {
-        this.browser.Reload();
+        this.browser?.Reload();
+    }
+
+    private void OnFrameReady(FrameDispatchResult dispatchResult)
+    {
+        if (Program.NdiSenderPtr == nint.Zero)
+        {
+            return;
+        }
+
+        dispatchResult.Frame.WithPointer(pointer =>
+        {
+            var videoFrame = new NDIlib.video_frame_v2_t()
+            {
+                FourCC = NDIlib.FourCC_type_e.FourCC_type_BGRA,
+                frame_rate_N = this.pacingOptions.FrameRateNumerator,
+                frame_rate_D = this.pacingOptions.FrameRateDenominator,
+                frame_format_type = NDIlib.frame_format_type_e.frame_format_type_progressive,
+                line_stride_in_bytes = dispatchResult.Frame.Stride,
+                picture_aspect_ratio = (float)dispatchResult.Frame.Width / dispatchResult.Frame.Height,
+                p_data = pointer,
+                timecode = NDIlib.send_timecode_synthesize,
+                xres = dispatchResult.Frame.Width,
+                yres = dispatchResult.Frame.Height,
+            };
+
+            NDIlib.send_send_video_v2(Program.NdiSenderPtr, ref videoFrame);
+        });
+
+        this.UpdateMetrics(dispatchResult);
+    }
+
+    private void UpdateMetrics(FrameDispatchResult dispatchResult)
+    {
+        lock (this.metricsLock)
+        {
+            if (dispatchResult.ActualInterval > TimeSpan.Zero)
+            {
+                var intervalMs = dispatchResult.ActualInterval.TotalMilliseconds;
+                this.intervalSum += intervalMs;
+                this.intervalMin = this.intervalCount == 0 ? intervalMs : Math.Min(this.intervalMin, intervalMs);
+                this.intervalMax = this.intervalCount == 0 ? intervalMs : Math.Max(this.intervalMax, intervalMs);
+                this.intervalCount++;
+            }
+
+            if (dispatchResult.IsRepeat)
+            {
+                this.repeatedSinceLastLog++;
+            }
+
+            if (dispatchResult.DroppedFrames > 0)
+            {
+                this.droppedSinceLastLog += dispatchResult.DroppedFrames;
+            }
+
+            var now = DateTimeOffset.UtcNow;
+            if (now - this.lastMetricsLog >= TimeSpan.FromSeconds(5) && this.intervalCount > 0)
+            {
+                var avg = this.intervalSum / this.intervalCount;
+                Log.Logger.Information(
+                    "Frame pacing stats: target={TargetFps:F3}fps interval={TargetInterval:F3}ms avg={AverageInterval:F3}ms min={MinInterval:F3}ms max={MaxInterval:F3}ms repeats={RepeatCount} drops={DropCount}",
+                    this.pacingOptions.TargetFrameRate,
+                    this.pacingOptions.TargetInterval.TotalMilliseconds,
+                    avg,
+                    this.intervalMin,
+                    this.intervalMax,
+                    this.repeatedSinceLastLog,
+                    this.droppedSinceLastLog);
+
+                this.intervalSum = 0;
+                this.intervalCount = 0;
+                this.intervalMin = double.MaxValue;
+                this.intervalMax = 0;
+                this.repeatedSinceLastLog = 0;
+                this.droppedSinceLastLog = 0;
+                this.lastMetricsLog = now;
+            }
+        }
     }
 }
