@@ -9,16 +9,21 @@ using Microsoft.Extensions.Hosting;
 using NewTek;
 using NewTek.NDI;
 using Serilog;
-using System.Runtime.CompilerServices;
+using System.Globalization;
 using System.Runtime.InteropServices;
 using Tractus.HtmlToNdi.Chromium;
 using Tractus.HtmlToNdi.Models;
+using Tractus.HtmlToNdi.Video;
 
 namespace Tractus.HtmlToNdi;
 public class Program
 {
     public static nint NdiSenderPtr;
     public static CefWrapper browserWrapper;
+    public static FrameRingBuffer FrameBuffer = null!;
+    public static FramePacer? VideoFramePacer;
+    public static double TargetFrameRate { get; private set; } = 30000.0 / 1001.0;
+    public static (int Numerator, int Denominator) FrameRateFraction { get; private set; } = (30000, 1001);
 
     public static void Main(string[] args)
     {
@@ -122,6 +127,50 @@ public class Program
             }
         }
 
+        var bufferDepth = 3;
+        if (args.Any(x => x.StartsWith("--buffer-depth")))
+        {
+            try
+            {
+                bufferDepth = int.Parse(args.First(x => x.StartsWith("--buffer-depth")).Split("=")[1]);
+                if (bufferDepth <= 0)
+                {
+                    throw new ArgumentOutOfRangeException(nameof(bufferDepth));
+                }
+            }
+            catch (Exception)
+            {
+                Log.Error("Could not parse the --buffer-depth parameter. Exiting.");
+                return;
+            }
+        }
+
+        TargetFrameRate = 30000.0 / 1001.0;
+        if (args.Any(x => x.StartsWith("--fps")))
+        {
+            try
+            {
+                var fpsValue = double.Parse(args.First(x => x.StartsWith("--fps")).Split("=")[1], CultureInfo.InvariantCulture);
+                if (fpsValue <= 0)
+                {
+                    throw new ArgumentOutOfRangeException(nameof(fpsValue));
+                }
+
+                TargetFrameRate = fpsValue;
+            }
+            catch (Exception)
+            {
+                Log.Error("Could not parse the --fps parameter. Exiting.");
+                return;
+            }
+        }
+
+        FrameRateFraction = CalculateFrameRateFraction(TargetFrameRate);
+        FrameBuffer = new FrameRingBuffer(bufferDepth);
+
+        var disableVsync = args.Contains("--disable-vsync");
+        var disableFrameRateLimit = args.Contains("--disable-frame-rate-limit");
+
         AsyncContext.Run(async delegate
         {
             var settings = new CefSettings();
@@ -136,14 +185,22 @@ public class Program
             //settings.CefCommandLineArgs.Add("--in-process-gpu");
             //settings.SetOffScreenRenderingBestPerformanceArgs();
             settings.CefCommandLineArgs.Add("autoplay-policy", "no-user-gesture-required");
-            //settings.CefCommandLineArgs.Add("off-screen-frame-rate", "60");
-            //settings.CefCommandLineArgs.Add("disable-frame-rate-limit");
+            if (disableFrameRateLimit)
+            {
+                settings.CefCommandLineArgs.Add("disable-frame-rate-limit");
+            }
+
+            if (disableVsync)
+            {
+                settings.CefCommandLineArgs.Add("disable-gpu-vsync");
+            }
             settings.EnableAudio();
             Cef.Initialize(settings);
             browserWrapper = new CefWrapper(
                 width,
                 height,
-                startUrl);
+                startUrl,
+                FrameBuffer);
 
             await browserWrapper.InitializeWrapperAsync();
         });
@@ -171,6 +228,10 @@ public class Program
         };
 
         Program.NdiSenderPtr = NDIlib.send_create(ref settings_T);
+
+        var videoSender = new NdiVideoFrameSender(() => Program.NdiSenderPtr, () => Program.FrameRateFraction);
+        VideoFramePacer = new FramePacer(FrameBuffer, videoSender, TargetFrameRate);
+        VideoFramePacer.Start();
 
         var capabilitiesXml = $$"""<ndi_capabilities ntk_kvm="true" />""";
         capabilitiesXml += "\0";
@@ -285,6 +346,10 @@ public class Program
 
         running = false;
         thread.Join();
+        if (VideoFramePacer is not null)
+        {
+            VideoFramePacer.Dispose();
+        }
         browserWrapper.Dispose();
 
         if (Directory.Exists(launchCachePath))
@@ -298,5 +363,24 @@ public class Program
 
             }
         }
+    }
+
+    private static (int Numerator, int Denominator) CalculateFrameRateFraction(double fps)
+    {
+        const double tolerance = 1e-6;
+        if (Math.Abs(fps - (30000.0 / 1001.0)) < 1e-3)
+        {
+            return (30000, 1001);
+        }
+
+        var denominator = 1;
+        var numerator = fps;
+        while (Math.Abs(numerator - Math.Round(numerator)) > tolerance && denominator < 1000)
+        {
+            denominator++;
+            numerator = fps * denominator;
+        }
+
+        return ((int)Math.Round(numerator), denominator);
     }
 }

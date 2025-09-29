@@ -11,7 +11,7 @@ This document is the ground-truth orientation guide. Treat it as a living spec�
 
 * Entry point: `Program.Main` (`Program.cs`). It sets the working directory, initializes logging via `AppManagement.Initialize`, parses CLI flags, starts CefSharp OffScreen inside a dedicated synchronization context, creates the singleton `CefWrapper`, spins up the ASP.NET Core minimal API, and allocates a single NDI sender.
 * Chromium lifecycle: `AsyncContext.Run` + `SingleThreadSynchronizationContext` keep CefSharp happy on one STA-like thread. `CefWrapper.InitializeWrapperAsync` waits for the first page load, locks the windowless frame rate to 60 fps, unmutes audio (CEF starts muted), subscribes to the `Paint` event, and starts a watchdog thread that invalidates the view if Chromium goes silent for ≥1 s.
-* Video path: every `ChromiumWebBrowser.Paint` callback builds an `NDIlib.video_frame_v2_t` with BGRA pixels, `frame_rate_N=60`, `frame_rate_D=1`, progressive flag, and forwards the GPU buffer handle to `NDIlib.send_send_video_v2`. There is no CPU copy, colour conversion, or double buffering.
+* Video path: every `ChromiumWebBrowser.Paint` callback copies the BGRA pixel payload into a managed buffer and pushes it into a single-producer/single-consumer ring buffer. A dedicated `FramePacer` task drains that buffer on a fixed cadence (default 29.97 fps), repeating the most recent frame if Chromium stalls and dropping the oldest samples if Chromium outruns the target rate. Frames are converted to `NDIlib.video_frame_v2_t` on the pacing thread before being sent.
 * Audio path: `CustomAudioHandler` exposes Cef audio, allocates a float buffer sized for one second, copies each planar channel into contiguous blocks inside that buffer, and sends it with `NDIlib.send_send_audio_v2`. (Note: the code claims “interleaved” but still stores channels sequentially; downstream receivers must cope with planar-like layout.)
 * Control plane: ASP.NET Core minimal API listens on HTTP (no TLS, no auth). Swagger UI is enabled. All endpoints directly call methods on the static `Program.browserWrapper` instance.
 * KVM metadata: the app advertises `<ndi_capabilities ntk_kvm="true" />` and starts a background thread that polls `NDIlib.send_capture` every second. It interprets `<ndi_kvm ...>` metadata frames, caching normalized mouse coordinates on opcode `0x03` and triggering a left click on opcode `0x04`.
@@ -32,6 +32,10 @@ This document is the ground-truth orientation guide. Treat it as a living spec�
 | `--h=<int>` | `--h=1080` | Sets browser height in pixels. Defaults to 1080. |
 | `-debug` | `-debug` | Raises Serilog minimum level to `Debug`. |
 | `-quiet` | `-quiet` | Disables console logging (file logging remains). |
+| `--fps=<double>` | `--fps=29.97` | Sets the paced output frame rate. Defaults to 29.97 fps (30000/1001). |
+| `--buffer-depth=<int>` | `--buffer-depth=5` | Sets the ring buffer depth for captured frames. Defaults to 3. |
+| `--disable-vsync` | `--disable-vsync` | Adds Chromium's `--disable-gpu-vsync` flag before initialization. |
+| `--disable-frame-rate-limit` | `--disable-frame-rate-limit` | Adds Chromium's `--disable-frame-rate-limit` flag before initialization. |
 
 Other configuration surfaces:
 
@@ -72,12 +76,13 @@ Main
  │    ├─ Configure Serilog sinks (console + Documents/<AppName>_log.txt)
  │    └─ Respect -debug / -quiet flags
  ├─ Prompt/parse CLI flags (see §2)
+ ├─ Create FrameRingBuffer(depth) and parse pacing flags (`--fps`, `--buffer-depth`, vsync overrides)
  ├─ AsyncContext.Run(async)
- │    ├─ Configure CefSettings (RootCachePath=cache/<guid>, autoplay-policy override, EnableAudio)
+ │    ├─ Configure CefSettings (RootCachePath=cache/<guid>, autoplay-policy override, EnableAudio, optional vsync/limit flags)
  │    ├─ Cef.Initialize(settings)
- │    └─ Instantiate CefWrapper(width, height, url) and await InitializeWrapperAsync()
+ │    └─ Instantiate CefWrapper(width, height, url, ringBuffer) and await InitializeWrapperAsync()
  ├─ Build WebApplication (Serilog integration, Swagger, authorization middleware added but unused)
- ├─ Create NDI sender (NDIlib.send_create)
+ ├─ Create NDI sender (NDIlib.send_create) and start FramePacer(target fps)
  │    ├─ Advertise `<ndi_capabilities ntk_kvm="true" />`
  │    └─ Launch background thread polling NDI metadata (1 s timeout)
  ├─ Map HTTP routes directly to CefWrapper methods
@@ -114,6 +119,7 @@ When adding routes, update **both** this table and `Tractus.HtmlToNdi.http` samp
 ### CefWrapper (`Chromium/CefWrapper.cs`)
 * `ChromiumWebBrowser` is constructed with `AudioHandler = new CustomAudioHandler()` and a fixed `System.Drawing.Size(width,height)`.
 * `RenderWatchdog` thread invalidates the view once per second if no `Paint` events arrive, preventing NDI receivers from freezing on static pages.
+* Each `Paint` callback copies the surface into a managed `byte[]` and writes it to the global `FrameRingBuffer`; keep an eye on buffer depth when changing resolution to avoid excessive allocations.
 * `ScrollBy` always uses `(x=0,y=0)` as the mouse location; complex scrolling (e.g., inside scrolled divs) may require additional API work.
 * `Click` only supports the left mouse button; drag, double-click, or right-click interactions are not implemented.
 * `SendKeystrokes` issues **only** `KeyDown` events with `NativeKeyCode=Convert.ToInt32(char)`. There is no key-up, modifiers, or IME support—uppercase letters require the page to handle them despite missing Shift state.
@@ -126,6 +132,7 @@ When adding routes, update **both** this table and `Tractus.HtmlToNdi.http` samp
 
 ### NDI integration (`Program.cs`)
 * `Program.NdiSenderPtr` must remain valid for the lifetime of the process; there is currently **no** call to `NDIlib.send_destroy`. Adding explicit teardown requires guarding against `nint.Zero` in paint/audio handlers.
+* `FramePacer` drains the ring buffer on a fixed cadence (default 29.97 fps) using `TimeProvider`. It logs per-frame intervals at Debug level and emits aggregate jitter/drop metrics every ~60 frames.
 * Metadata loop logs every metadata frame at `Warning` level (`Log.Logger.Warning("Got metadata: ...")`), which can flood logs if receivers send frequent updates.
 * Only opcodes `0x03` (mouse move) and `0x04` (left click) are handled; `0x07` (mouse up) is ignored intentionally. There is no translation for scroll, keyboard, or multi-button events.
 
@@ -161,7 +168,7 @@ When adding routes, update **both** this table and `Tractus.HtmlToNdi.http` samp
 ## 9. Validation checklist (run manually after significant changes)
 
 * ✅ Verify transparency by loading `https://testpattern.tractusevents.com/` and checking alpha in an NDI receiver.
-* ✅ Stress-test animation (e.g., WebGL or CSS animation) and confirm frame cadence ~16.6 ms (60 fps) without dropped frames.
+* ✅ Stress-test animation (e.g., WebGL or CSS animation) and confirm the paced output cadence matches the configured `--fps` target, watching logs for repeat/drop counts.
 * ✅ Play an audio source with known stereo content and ensure both channels arrive with correct timing.
 * ✅ Exercise every HTTP route via `Tractus.HtmlToNdi.http` or Swagger (set URL, scroll, click, type, refresh) and watch logs for errors.
 * ✅ Confirm KVM metadata click-from-receiver works (e.g., NewTek Studio Monitor sending mouse move + click).
