@@ -13,6 +13,7 @@ using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using Tractus.HtmlToNdi.Chromium;
 using Tractus.HtmlToNdi.Models;
+using Tractus.HtmlToNdi.Video;
 
 namespace Tractus.HtmlToNdi;
 public class Program
@@ -22,6 +23,20 @@ public class Program
 
     public static void Main(string[] args)
     {
+        static bool TryGetOption(string[] arguments, string key, out string value)
+        {
+            var prefix = key + "=";
+            var entry = arguments.FirstOrDefault(x => x.StartsWith(prefix, StringComparison.Ordinal));
+            if (entry is null)
+            {
+                value = string.Empty;
+                return false;
+            }
+
+            value = entry[prefix.Length..];
+            return true;
+        }
+
         var launchCachePath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "cache", Guid.NewGuid().ToString());
 
         var exeDirectory = AppDomain.CurrentDomain.BaseDirectory;
@@ -122,6 +137,54 @@ public class Program
             }
         }
 
+        var frameRate = new FrameRate(60, 1);
+        if (TryGetOption(args, "--fps", out var fpsOption))
+        {
+            if (!FrameRate.TryParse(fpsOption, out frameRate))
+            {
+                Log.Error("Could not parse the --fps parameter. Exiting.");
+                return;
+            }
+        }
+
+        var windowlessFrameRate = frameRate;
+        if (TryGetOption(args, "--windowless-frame-rate", out var windowlessOption))
+        {
+            if (!FrameRate.TryParse(windowlessOption, out windowlessFrameRate))
+            {
+                Log.Error("Could not parse the --windowless-frame-rate parameter. Exiting.");
+                return;
+            }
+        }
+
+        var enableBufferedOutput = args.Any(x => x.Equals("--enable-output-buffer", StringComparison.Ordinal));
+        var bufferDepth = enableBufferedOutput ? 3 : 0;
+        if (TryGetOption(args, "--buffer-depth", out var bufferDepthOption))
+        {
+            if (!int.TryParse(bufferDepthOption, out bufferDepth) || bufferDepth <= 0)
+            {
+                Log.Error("Could not parse the --buffer-depth parameter. Exiting.");
+                return;
+            }
+
+            if (bufferDepth > 0)
+            {
+                enableBufferedOutput = true;
+            }
+        }
+
+        var disableGpuVsync = args.Any(x => x.Equals("--disable-vsync", StringComparison.Ordinal));
+
+        var pipelineOptions = new NdiVideoPipelineOptions
+        {
+            NdiFrameRate = frameRate,
+            EnableBufferedOutput = enableBufferedOutput,
+            BufferDepth = Math.Max(1, bufferDepth == 0 ? 3 : bufferDepth)
+        };
+
+        var pipeline = new NdiVideoPipeline(() => Program.NdiSenderPtr, pipelineOptions, Log.Logger);
+        var framePump = new FramePump(frameRate, TimeSpan.FromSeconds(1), Log.Logger);
+
         AsyncContext.Run(async delegate
         {
             var settings = new CefSettings();
@@ -136,14 +199,21 @@ public class Program
             //settings.CefCommandLineArgs.Add("--in-process-gpu");
             //settings.SetOffScreenRenderingBestPerformanceArgs();
             settings.CefCommandLineArgs.Add("autoplay-policy", "no-user-gesture-required");
-            //settings.CefCommandLineArgs.Add("off-screen-frame-rate", "60");
-            //settings.CefCommandLineArgs.Add("disable-frame-rate-limit");
+            settings.CefCommandLineArgs.Add("off-screen-frame-rate", ((int)Math.Round(windowlessFrameRate.ToDouble())).ToString());
+            if (disableGpuVsync)
+            {
+                settings.CefCommandLineArgs.Add("disable-gpu-vsync", "1");
+            }
             settings.EnableAudio();
             Cef.Initialize(settings);
             browserWrapper = new CefWrapper(
                 width,
                 height,
-                startUrl);
+                startUrl,
+                pipeline,
+                framePump,
+                windowlessFrameRate,
+                frameRate);
 
             await browserWrapper.InitializeWrapperAsync();
         });
@@ -285,6 +355,8 @@ public class Program
 
         running = false;
         thread.Join();
+        framePump.StopAsync().GetAwaiter().GetResult();
+        pipeline.StopAsync().GetAwaiter().GetResult();
         browserWrapper.Dispose();
 
         if (Directory.Exists(launchCachePath))
