@@ -1,103 +1,81 @@
 using System;
-using System.Collections.Generic;
-using System.Linq;
-using Tractus.HtmlToNdi.Video;
+using System.Runtime.InteropServices;
+using Tractus.HtmlToNdi.Chromium;
 using Xunit;
 
 namespace Tractus.HtmlToNdi.Tests;
 
-internal static class FrameTestHelper
+public class VideoFrameBufferTests
 {
-    internal static VideoFrame CreateFrame(byte fillValue, int width = 2, int height = 2)
+    private PooledVideoFrame CreateTestFrame()
     {
-        var stride = width * 4;
-        var buffer = Enumerable.Repeat(fillValue, stride * height).Select(v => (byte)v).ToArray();
-        return VideoFrame.FromSpan(buffer, width, height, stride, DateTime.UtcNow);
+        // Create a dummy pointer and dimensions for the test frame
+        var source = new byte[2 * 2 * 4];
+        var handle = GCHandle.Alloc(source, GCHandleType.Pinned);
+        var frame = PooledVideoFrame.Rent(handle.AddrOfPinnedObject(), source.Length, 2, 2, 8);
+        handle.Free();
+        return frame;
     }
-}
 
-public class FrameRingBufferTests
-{
     [Fact]
-    public void ReadLatest_ReturnsMostRecentFrameAndDropCount()
+    public void Buffer_EnqueuesAndDequeuesLatest_AndDropsOldest()
     {
-        using var buffer = new FrameRingBuffer(3);
+        // Arrange
+        var buffer = new VideoFrameBuffer(3);
+        long lastSequence = -1;
 
-        var firstRead = buffer.ReadLatest(0);
-        Assert.False(firstRead.HasFrame);
+        // Act
+        // Enqueue 4 frames into a buffer of capacity 3.
+        buffer.Enqueue(CreateTestFrame()); // seq 1
+        buffer.Enqueue(CreateTestFrame()); // seq 2
+        buffer.Enqueue(CreateTestFrame()); // seq 3
+        buffer.Enqueue(CreateTestFrame()); // seq 4, should drop frame 1
 
-        using var first = FrameTestHelper.CreateFrame(1);
-        buffer.Enqueue(first);
+        // Read the latest frame. It should be frame 4.
+        var result = buffer.ReadLatest(ref lastSequence);
 
-        var afterFirst = buffer.ReadLatest(0);
-        Assert.True(afterFirst.HasFrame);
-        Assert.Equal(1, afterFirst.Sequence);
-        Assert.Equal(0, afterFirst.DroppedCount);
+        // Assert
+        Assert.NotNull(result.Frame);
+        Assert.Equal(4, result.Sequence);
+        Assert.Equal(3, result.DroppedCount); // 4 - 0 - 1 = 3 frames were published since we last read
 
-        using var second = FrameTestHelper.CreateFrame(2);
-        using var third = FrameTestHelper.CreateFrame(3);
-        buffer.Enqueue(second);
-        buffer.Enqueue(third);
-
-        using var newest = FrameTestHelper.CreateFrame(4);
-        buffer.Enqueue(newest);
-
-        var latest = buffer.ReadLatest(afterFirst.Sequence);
-        Assert.True(latest.HasFrame);
-        Assert.Equal(4, latest.Sequence);
-        Assert.Equal(2, latest.DroppedCount);
-        Assert.Same(newest, latest.Frame);
+        // Clean up the frame we received
+        result.Frame.Dispose();
     }
-}
 
-public class FramePacerTests
-{
     [Fact]
-    public void RunTick_RepeatsFrameWhenNoNewFrameArrives()
+    public void ReadLatest_WhenEmpty_ReturnsEmptyResult()
     {
-        using var buffer = new FrameRingBuffer(3);
-        var dispatched = new List<FrameDispatch>();
-        using var pacer = new FramePacer(buffer, FrameRate.FromDouble(30), dispatched.Add, new FramePacerOptions { StartImmediately = false, MetricsLogInterval = TimeSpan.Zero });
+        // Arrange
+        var buffer = new VideoFrameBuffer(3);
+        long lastSequence = -1;
 
-        using var frame = FrameTestHelper.CreateFrame(1);
+        // Act
+        var result = buffer.ReadLatest(ref lastSequence);
+
+        // Assert
+        Assert.Null(result.Frame);
+        Assert.Equal(-1, result.Sequence);
+    }
+
+    [Fact]
+    public void ReadLatest_WhenNoNewFrames_ReturnsEmptyResult()
+    {
+        // Arrange
+        var buffer = new VideoFrameBuffer(3);
+        long lastSequence = -1;
+
+        var frame = CreateTestFrame();
         buffer.Enqueue(frame);
 
-        var now = DateTime.UtcNow;
-        pacer.RunTick(now);
-        pacer.RunTick(now + pacer.TargetInterval);
+        var firstResult = buffer.ReadLatest(ref lastSequence);
+        Assert.NotNull(firstResult.Frame);
+        firstResult.Frame.Dispose();
 
-        Assert.Equal(2, dispatched.Count);
-        Assert.False(dispatched[0].IsRepeat);
-        Assert.True(dispatched[1].IsRepeat);
-        Assert.Equal(frame, dispatched[0].Frame);
-        Assert.Equal(frame, dispatched[1].Frame);
-    }
+        // Act
+        var secondResult = buffer.ReadLatest(ref lastSequence);
 
-    [Fact]
-    public void RunTick_DropsIntermediateFrames()
-    {
-        using var buffer = new FrameRingBuffer(3);
-        var dispatched = new List<FrameDispatch>();
-        using var pacer = new FramePacer(buffer, FrameRate.FromDouble(30), dispatched.Add, new FramePacerOptions { StartImmediately = false, MetricsLogInterval = TimeSpan.Zero });
-
-        using var first = FrameTestHelper.CreateFrame(1);
-        buffer.Enqueue(first);
-
-        var now = DateTime.UtcNow;
-        pacer.RunTick(now);
-
-        using var second = FrameTestHelper.CreateFrame(2);
-        using var third = FrameTestHelper.CreateFrame(3);
-        using var fourth = FrameTestHelper.CreateFrame(4);
-        buffer.Enqueue(second);
-        buffer.Enqueue(third);
-        buffer.Enqueue(fourth);
-
-        pacer.RunTick(now + pacer.TargetInterval);
-
-        Assert.Equal(2, dispatched.Count);
-        Assert.False(dispatched[1].IsRepeat);
-        Assert.Equal(2, dispatched[1].DroppedFrames);
-        Assert.Equal(fourth, dispatched[1].Frame);
+        // Assert
+        Assert.Null(secondResult.Frame);
     }
 }
