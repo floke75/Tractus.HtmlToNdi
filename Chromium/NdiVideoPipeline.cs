@@ -70,7 +70,11 @@ internal sealed class NdiVideoPipeline : IDisposable
         var frame = PooledVideoFrame.Rent(e.BufferHandle, frameLength, e.Width, e.Height, stride);
 
         // Enqueue gives the buffer ownership of one reference.
-        this.buffer!.Enqueue(frame);
+        var droppedFrame = this.buffer!.Enqueue(frame);
+        // If the buffer was full, it returns the oldest frame, which we must now dispose.
+        droppedFrame?.Dispose();
+        // We have handed off our reference to the buffer, so we must dispose our local reference.
+        frame.Dispose();
     }
 
     private void SendDirect(nint senderPtr, IntPtr bufferHandle, int width, int height)
@@ -253,14 +257,14 @@ internal sealed class VideoFrameBuffer : IDisposable
         this.slots = new PooledVideoFrame[capacity];
     }
 
-    public void Enqueue(PooledVideoFrame frame)
+    public PooledVideoFrame? Enqueue(PooledVideoFrame frame)
     {
         frame.AddRef();
         var sequence = Interlocked.Increment(ref this.writeSequence);
         var index = (int)(sequence % this.Capacity);
         var oldFrame = Interlocked.Exchange(ref this.slots[index], frame);
-        oldFrame?.Dispose();
         Volatile.Write(ref this.publishedSequence, sequence);
+        return oldFrame;
     }
 
     public FrameReadResult ReadLatest(ref long lastReadSequence)
@@ -308,17 +312,19 @@ internal sealed class VideoFrameBuffer : IDisposable
 
 internal sealed class PooledVideoFrame : IDisposable
 {
-    private readonly ArrayPool<byte> pool = ArrayPool<byte>.Shared;
+    private readonly ArrayPool<byte> pool;
     private byte[]? buffer;
-    private int refCount = 1;
+    private int refCount;
 
-    private PooledVideoFrame(byte[] buffer, int length, int width, int height, int stride)
+    private PooledVideoFrame(ArrayPool<byte> pool, byte[] buffer, int length, int width, int height, int stride)
     {
+        this.pool = pool;
         this.buffer = buffer;
         this.Length = length;
         this.Width = width;
         this.Height = height;
         this.Stride = stride;
+        this.refCount = 1;
     }
 
     public int Length { get; }

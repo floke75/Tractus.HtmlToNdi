@@ -3,9 +3,6 @@
   <PropertyGroup>
 	  <OutputType>Exe</OutputType>
 	  <TargetFramework>net8.0</TargetFramework>
-    <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleTo">
-      <_Parameter1>Tractus.HtmlToNdi.Tests</_Parameter1>
-    </AssemblyAttribute>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
 	  <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
@@ -46,6 +43,12 @@
     <None Update="HtmlToNdi.png">
       <CopyToOutputDirectory>Always</CopyToOutputDirectory>
     </None>
+  </ItemGroup>
+
+  <ItemGroup>
+    <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleTo">
+      <_Parameter1>Tractus.HtmlToNdi.Tests</_Parameter1>
+    </AssemblyAttribute>
   </ItemGroup>
 
 </Project>

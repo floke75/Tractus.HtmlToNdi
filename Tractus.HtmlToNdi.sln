@@ -7,6 +7,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Tractus.HtmlToNdi", "Tractu
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Tractus.HtmlToNdi.Tests", "Tests\Tractus.HtmlToNdi.Tests\Tractus.HtmlToNdi.Tests.csproj", "{EE6E38ED-DFBA-4BDC-9423-BBDFAC8A2818}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Tractus.HtmlToNdi.Tests", "Tests\Tractus.HtmlToNdi.Tests\Tractus.HtmlToNdi.Tests.csproj", "{EE6E38ED-DFBA-4BDC-9423-BBDFAC8A2818}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
