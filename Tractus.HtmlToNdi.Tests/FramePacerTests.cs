@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
+using Microsoft.Extensions.Time.Testing;
 using Tractus.HtmlToNdi.Video;
 using Xunit;
 
@@ -12,18 +13,18 @@ public class FramePacerTests
     [Fact]
     public async Task RepeatsLastFrameWhenProducerIsQuiet()
     {
-        var manualTime = new ManualTimeProvider();
+        var fakeTime = new FakeTimeProvider();
         var buffer = new FrameRingBuffer(3);
         var sender = new TestVideoSender();
-        var pacer = new FramePacer(buffer, sender, 30.0, manualTime);
+        var pacer = new FramePacer(buffer, sender, 30.0, fakeTime);
 
         buffer.Write(CreateFrame(sequence: 1));
         pacer.Start();
 
-        manualTime.Advance(TimeSpan.FromMilliseconds(33.366));
+        fakeTime.Advance(TimeSpan.FromMilliseconds(33.366));
         await SpinWaitAsync(() => sender.Count >= 1);
 
-        manualTime.Advance(TimeSpan.FromMilliseconds(33.366));
+        fakeTime.Advance(TimeSpan.FromMilliseconds(33.366));
         await SpinWaitAsync(() => sender.Count >= 2);
 
         var snapshot = sender.Snapshot();
@@ -37,10 +38,10 @@ public class FramePacerTests
     [Fact]
     public async Task DropsOlderFramesWhenProducerOverruns()
     {
-        var manualTime = new ManualTimeProvider();
+        var fakeTime = new FakeTimeProvider();
         var buffer = new FrameRingBuffer(2);
         var sender = new TestVideoSender();
-        var pacer = new FramePacer(buffer, sender, 10.0, manualTime);
+        var pacer = new FramePacer(buffer, sender, 10.0, fakeTime);
 
         pacer.Start();
 
@@ -48,7 +49,7 @@ public class FramePacerTests
         buffer.Write(CreateFrame(sequence: 2));
         buffer.Write(CreateFrame(sequence: 3));
 
-        manualTime.Advance(TimeSpan.FromMilliseconds(100));
+        fakeTime.Advance(TimeSpan.FromMilliseconds(100));
         await SpinWaitAsync(() => sender.Count >= 1);
 
         var snapshot = sender.Snapshot();
