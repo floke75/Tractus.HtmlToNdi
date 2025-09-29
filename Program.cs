@@ -9,16 +9,18 @@ using Microsoft.Extensions.Hosting;
 using NewTek;
 using NewTek.NDI;
 using Serilog;
-using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using Tractus.HtmlToNdi.Chromium;
 using Tractus.HtmlToNdi.Models;
+using Tractus.HtmlToNdi.Video;
 
 namespace Tractus.HtmlToNdi;
 public class Program
 {
     public static nint NdiSenderPtr;
     public static CefWrapper browserWrapper;
+
+    private static FramePacer? framePacer;
 
     public static void Main(string[] args)
     {
@@ -122,6 +124,39 @@ public class Program
             }
         }
 
+        var bufferDepth = 5;
+        if (args.Any(x => x.StartsWith("--buffer-depth")))
+        {
+            try
+            {
+                bufferDepth = int.Parse(args.First(x => x.StartsWith("--buffer-depth")).Split("=")[1]);
+                if (bufferDepth <= 0)
+                {
+                    throw new ArgumentOutOfRangeException(nameof(bufferDepth));
+                }
+            }
+            catch (Exception)
+            {
+                Log.Error("Could not parse the --buffer-depth parameter. Exiting.");
+                return;
+            }
+        }
+
+        var targetFrameRate = FrameRate.Ntsc2997;
+        if (args.Any(x => x.StartsWith("--fps")))
+        {
+            var value = args.First(x => x.StartsWith("--fps")).Split("=")[1];
+            if (!FrameRate.TryParse(value, out targetFrameRate))
+            {
+                Log.Error("Could not parse the --fps parameter. Expected a decimal (e.g. 29.97) or ratio (e.g. 30000/1001). Exiting.");
+                return;
+            }
+        }
+
+        Log.Information("Frame pacing configured for {Fps:F3} fps with buffer depth {Depth}.", targetFrameRate.FramesPerSecond, bufferDepth);
+
+        var frameBuffer = new FrameRingBuffer(bufferDepth);
+
         AsyncContext.Run(async delegate
         {
             var settings = new CefSettings();
@@ -136,14 +171,23 @@ public class Program
             //settings.CefCommandLineArgs.Add("--in-process-gpu");
             //settings.SetOffScreenRenderingBestPerformanceArgs();
             settings.CefCommandLineArgs.Add("autoplay-policy", "no-user-gesture-required");
-            //settings.CefCommandLineArgs.Add("off-screen-frame-rate", "60");
-            //settings.CefCommandLineArgs.Add("disable-frame-rate-limit");
+            if (args.Contains("--disable-gpu-vsync"))
+            {
+                settings.CefCommandLineArgs.Add("disable-gpu-vsync");
+            }
+
+            if (args.Contains("--disable-frame-rate-limit"))
+            {
+                settings.CefCommandLineArgs.Add("disable-frame-rate-limit");
+            }
             settings.EnableAudio();
             Cef.Initialize(settings);
             browserWrapper = new CefWrapper(
                 width,
                 height,
-                startUrl);
+                startUrl,
+                frameBuffer,
+                targetFrameRate);
 
             await browserWrapper.InitializeWrapperAsync();
         });
@@ -245,6 +289,42 @@ public class Program
         });
         thread.Start();
 
+        framePacer = new FramePacer(frameBuffer, targetFrameRate, output =>
+        {
+            if (Program.NdiSenderPtr == nint.Zero)
+            {
+                return;
+            }
+
+            if (output.Metadata.Width == 0 || output.Metadata.Height == 0 || output.Metadata.BufferLength == 0)
+            {
+                return;
+            }
+
+            unsafe
+            {
+                var span = output.PixelData.Span;
+                fixed (byte* dataPtr = span)
+                {
+                    var videoFrame = new NDIlib.video_frame_v2_t()
+                    {
+                        FourCC = NDIlib.FourCC_type_e.FourCC_type_BGRA,
+                        frame_rate_N = targetFrameRate.Numerator,
+                        frame_rate_D = targetFrameRate.Denominator,
+                        frame_format_type = NDIlib.frame_format_type_e.frame_format_type_progressive,
+                        line_stride_in_bytes = output.Metadata.Stride,
+                        picture_aspect_ratio = (float)output.Metadata.Width / output.Metadata.Height,
+                        p_data = (nint)dataPtr,
+                        timecode = NDIlib.send_timecode_synthesize,
+                        xres = output.Metadata.Width,
+                        yres = output.Metadata.Height,
+                    };
+
+                    NDIlib.send_send_video_v2(Program.NdiSenderPtr, ref videoFrame);
+                }
+            }
+        });
+
 
         app.MapPost("/seturl", (HttpContext httpContext, GoToUrlModel url) =>
         {
@@ -285,6 +365,7 @@ public class Program
 
         running = false;
         thread.Join();
+        framePacer?.Dispose();
         browserWrapper.Dispose();
 
         if (Directory.Exists(launchCachePath))
