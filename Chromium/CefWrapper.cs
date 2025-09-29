@@ -1,12 +1,16 @@
 
+using System.Runtime.InteropServices;
 using CefSharp;
 using CefSharp.OffScreen;
 using NewTek;
+using Serilog;
+using Tractus.HtmlToNdi.FramePacing;
 
 namespace Tractus.HtmlToNdi.Chromium;
 
 public class CefWrapper : IDisposable
 {
+    private readonly FrameRingBuffer<BrowserFrame> frameBuffer;
     private bool disposedValue;
     private ChromiumWebBrowser? browser;
 
@@ -18,11 +22,12 @@ public class CefWrapper : IDisposable
     private Thread RenderWatchdog;
     private DateTime lastPaint = DateTime.MinValue;
 
-    public CefWrapper(int width, int height, string initialUrl)
+    public CefWrapper(int width, int height, string initialUrl, FrameRingBuffer<BrowserFrame> frameBuffer)
     {
         this.Width = width;
         this.Height = height;
         this.Url = initialUrl;
+        this.frameBuffer = frameBuffer;
 
         this.browser = new ChromiumWebBrowser(initialUrl)
         {
@@ -65,11 +70,6 @@ public class CefWrapper : IDisposable
 
     private void OnBrowserPaint(object? sender, OnPaintEventArgs e)
     {
-        if (Program.NdiSenderPtr == nint.Zero)
-        {
-            return;
-        }
-
         var browser = sender as ChromiumWebBrowser;
 
         if (browser is null)
@@ -79,21 +79,39 @@ public class CefWrapper : IDisposable
 
         this.lastPaint = DateTime.Now;
 
-        var videoFrame = new NDIlib.video_frame_v2_t()
+        if (this.frameBuffer is null)
         {
-            FourCC = NDIlib.FourCC_type_e.FourCC_type_BGRA,
-            frame_rate_N = 60,
-            frame_rate_D = 1,
-            frame_format_type = NDIlib.frame_format_type_e.frame_format_type_progressive,
-            line_stride_in_bytes = e.Width * 4,
-            picture_aspect_ratio = (float)e.Width / e.Height,
-            p_data = e.BufferHandle,
-            timecode = NDIlib.send_timecode_synthesize,
-            xres = e.Width,
-            yres = e.Height,
-        };
+            Log.Warning("Frame buffer not configured; dropping frame");
+            return;
+        }
 
-        NDIlib.send_send_video_v2(Program.NdiSenderPtr, ref videoFrame);
+        if (e.BufferHandle == nint.Zero)
+        {
+            Log.Warning("Received paint callback with null buffer; dropping frame");
+            return;
+        }
+
+        var stride = e.Width * 4;
+        var bufferSize = stride * e.Height;
+
+        if (bufferSize <= 0)
+        {
+            Log.Warning("Invalid paint buffer dimensions ({Width}x{Height}); dropping frame", e.Width, e.Height);
+            return;
+        }
+
+        var pixelBuffer = new byte[bufferSize];
+        Marshal.Copy(e.BufferHandle, pixelBuffer, 0, bufferSize);
+
+        var frame = new BrowserFrame(
+            pixelBuffer,
+            e.Width,
+            e.Height,
+            stride,
+            (float)e.Width / e.Height,
+            DateTime.UtcNow);
+
+        this.frameBuffer.Push(frame);
     }
 
     protected virtual void Dispose(bool disposing)

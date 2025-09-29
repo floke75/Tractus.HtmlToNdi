@@ -12,6 +12,7 @@ using Serilog;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using Tractus.HtmlToNdi.Chromium;
+using Tractus.HtmlToNdi.FramePacing;
 using Tractus.HtmlToNdi.Models;
 
 namespace Tractus.HtmlToNdi;
@@ -19,6 +20,8 @@ public class Program
 {
     public static nint NdiSenderPtr;
     public static CefWrapper browserWrapper;
+    public static FrameRingBuffer<BrowserFrame>? VideoFrameBuffer;
+    public static FramePacer? VideoFramePacer;
 
     public static void Main(string[] args)
     {
@@ -122,6 +125,49 @@ public class Program
             }
         }
 
+        var bufferDepth = 5;
+        if (args.Any(x => x.StartsWith("--buffer-depth")))
+        {
+            try
+            {
+                bufferDepth = int.Parse(args.FirstOrDefault(x => x.StartsWith("--buffer-depth")).Split("=")[1]);
+
+                if (bufferDepth <= 0)
+                {
+                    throw new ArgumentOutOfRangeException(nameof(bufferDepth));
+                }
+            }
+            catch (Exception)
+            {
+                Log.Error("Could not parse the --buffer-depth parameter. Exiting.");
+                return;
+            }
+        }
+
+        var frameRate = FrameRate.Default2997;
+        if (args.Any(x => x.StartsWith("--fps")))
+        {
+            try
+            {
+                var fpsValue = args.FirstOrDefault(x => x.StartsWith("--fps")).Split("=")[1];
+                if (!FrameRate.TryParse(fpsValue, out frameRate))
+                {
+                    throw new ArgumentException();
+                }
+            }
+            catch (Exception)
+            {
+                Log.Error("Could not parse the --fps parameter. Exiting.");
+                return;
+            }
+        }
+
+        var disableVsync = args.Any(x => string.Equals(x, "--disable-vsync", StringComparison.OrdinalIgnoreCase));
+        var disableFrameRateLimit = args.Any(x => string.Equals(x, "--disable-frame-rate-limit", StringComparison.OrdinalIgnoreCase));
+
+        var frameBuffer = new FrameRingBuffer<BrowserFrame>(bufferDepth);
+        VideoFrameBuffer = frameBuffer;
+
         AsyncContext.Run(async delegate
         {
             var settings = new CefSettings();
@@ -136,14 +182,23 @@ public class Program
             //settings.CefCommandLineArgs.Add("--in-process-gpu");
             //settings.SetOffScreenRenderingBestPerformanceArgs();
             settings.CefCommandLineArgs.Add("autoplay-policy", "no-user-gesture-required");
-            //settings.CefCommandLineArgs.Add("off-screen-frame-rate", "60");
-            //settings.CefCommandLineArgs.Add("disable-frame-rate-limit");
+            if (disableFrameRateLimit)
+            {
+                settings.CefCommandLineArgs.Add("disable-frame-rate-limit");
+            }
+
+            if (disableVsync)
+            {
+                settings.CefCommandLineArgs.Add("disable-gpu-vsync");
+            }
+
             settings.EnableAudio();
             Cef.Initialize(settings);
             browserWrapper = new CefWrapper(
                 width,
                 height,
-                startUrl);
+                startUrl,
+                frameBuffer);
 
             await browserWrapper.InitializeWrapperAsync();
         });
@@ -171,6 +226,48 @@ public class Program
         };
 
         Program.NdiSenderPtr = NDIlib.send_create(ref settings_T);
+
+        var pacerLogger = Log.ForContext<FramePacer>();
+        var framePacer = new FramePacer(
+            frameBuffer,
+            frameRate,
+            (frame, context) =>
+            {
+                if (Program.NdiSenderPtr == nint.Zero)
+                {
+                    return;
+                }
+
+                if (!frame.HasBuffer)
+                {
+                    return;
+                }
+
+                unsafe
+                {
+                    fixed (byte* bufferPtr = frame.PixelBuffer)
+                    {
+                        var videoFrame = new NDIlib.video_frame_v2_t()
+                        {
+                            FourCC = NDIlib.FourCC_type_e.FourCC_type_BGRA,
+                            frame_rate_N = frameRate.Numerator,
+                            frame_rate_D = frameRate.Denominator,
+                            frame_format_type = NDIlib.frame_format_type_e.frame_format_type_progressive,
+                            line_stride_in_bytes = frame.Stride,
+                            picture_aspect_ratio = frame.AspectRatio,
+                            p_data = (nint)bufferPtr,
+                            timecode = NDIlib.send_timecode_synthesize,
+                            xres = frame.Width,
+                            yres = frame.Height,
+                        };
+
+                        NDIlib.send_send_video_v2(Program.NdiSenderPtr, ref videoFrame);
+                    }
+                }
+            },
+            pacerLogger);
+        framePacer.Start();
+        VideoFramePacer = framePacer;
 
         var capabilitiesXml = $$"""<ndi_capabilities ntk_kvm="true" />""";
         capabilitiesXml += "\0";
@@ -285,6 +382,24 @@ public class Program
 
         running = false;
         thread.Join();
+
+        var pacerMetrics = VideoFramePacer?.GetMetricsSnapshot();
+        VideoFramePacer?.Dispose();
+
+        if (pacerMetrics.HasValue)
+        {
+            var metrics = pacerMetrics.Value;
+            var avgIntervalText = metrics.AverageIntervalMilliseconds?.ToString("F3") ?? "n/a";
+            var avgLatencyText = metrics.AverageLatencyMilliseconds?.ToString("F3") ?? "n/a";
+            Log.Information(
+                "Frame pacing summary: sent {Sent} frames, repeats {Repeats}, drops {Drops}, avg interval {AverageInterval} ms, avg latency {AverageLatency} ms",
+                metrics.FramesSent,
+                metrics.RepeatedFrames,
+                metrics.DroppedFrames,
+                avgIntervalText,
+                avgLatencyText);
+        }
+
         browserWrapper.Dispose();
 
         if (Directory.Exists(launchCachePath))
