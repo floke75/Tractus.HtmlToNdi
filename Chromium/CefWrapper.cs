@@ -1,4 +1,6 @@
 
+using System.Buffers;
+using System.Diagnostics;
 using CefSharp;
 using CefSharp.OffScreen;
 using NewTek;
@@ -9,6 +11,12 @@ public class CefWrapper : IDisposable
 {
     private bool disposedValue;
     private ChromiumWebBrowser? browser;
+    private readonly double targetFramesPerSecond;
+    private readonly bool useBufferedPipeline;
+    private readonly FrameRingBuffer? frameRingBuffer;
+    private readonly FramePacer? framePacer;
+    private readonly int frameRateNumerator;
+    private readonly int frameRateDenominator;
 
     public int Width { get; private set; }
     public int Height { get; private set; }
@@ -17,12 +25,18 @@ public class CefWrapper : IDisposable
 
     private Thread RenderWatchdog;
     private DateTime lastPaint = DateTime.MinValue;
+    private CancellationTokenSource? framePumpCancellation;
+    private Task? framePumpTask;
 
-    public CefWrapper(int width, int height, string initialUrl)
+    public CefWrapper(int width, int height, string initialUrl, double targetFramesPerSecond, int bufferDepth)
     {
         this.Width = width;
         this.Height = height;
         this.Url = initialUrl;
+        this.targetFramesPerSecond = targetFramesPerSecond;
+        this.frameRateNumerator = (int)Math.Round(targetFramesPerSecond);
+        this.frameRateDenominator = 1;
+        this.useBufferedPipeline = bufferDepth > 0;
 
         this.browser = new ChromiumWebBrowser(initialUrl)
         {
@@ -32,6 +46,15 @@ public class CefWrapper : IDisposable
         this.browser.Size = new System.Drawing.Size(this.Width, this.Height);
 
         this.RenderWatchdog = new Thread(this.RenderWatchDogThread);
+
+        if (this.useBufferedPipeline)
+        {
+            this.frameRingBuffer = new FrameRingBuffer(bufferDepth);
+            this.framePacer = new FramePacer(
+                this.frameRingBuffer,
+                targetFramesPerSecond,
+                frame => this.TrySendBufferedFrame(frame));
+        }
     }
 
     private void RenderWatchDogThread()
@@ -56,11 +79,12 @@ public class CefWrapper : IDisposable
 
         await this.browser.WaitForInitialLoadAsync();
 
-        this.browser.GetBrowserHost().WindowlessFrameRate = 60;
+        this.browser.GetBrowserHost().WindowlessFrameRate = (int)Math.Round(this.targetFramesPerSecond);
         this.browser.ToggleAudioMute();
 
         this.browser.Paint += this.OnBrowserPaint;
         this.RenderWatchdog.Start();
+        this.StartFramePump();
     }
 
     private void OnBrowserPaint(object? sender, OnPaintEventArgs e)
@@ -79,21 +103,14 @@ public class CefWrapper : IDisposable
 
         this.lastPaint = DateTime.Now;
 
-        var videoFrame = new NDIlib.video_frame_v2_t()
+        if (this.useBufferedPipeline && this.frameRingBuffer is not null)
         {
-            FourCC = NDIlib.FourCC_type_e.FourCC_type_BGRA,
-            frame_rate_N = 60,
-            frame_rate_D = 1,
-            frame_format_type = NDIlib.frame_format_type_e.frame_format_type_progressive,
-            line_stride_in_bytes = e.Width * 4,
-            picture_aspect_ratio = (float)e.Width / e.Height,
-            p_data = e.BufferHandle,
-            timecode = NDIlib.send_timecode_synthesize,
-            xres = e.Width,
-            yres = e.Height,
-        };
+            var frame = VideoFrame.FromPaintBuffer(e.BufferHandle, e.Width, e.Height, e.Width * 4);
+            this.frameRingBuffer.Enqueue(frame);
+            return;
+        }
 
-        NDIlib.send_send_video_v2(Program.NdiSenderPtr, ref videoFrame);
+        this.SendDirectFrame(e.BufferHandle, e.Width, e.Height, e.Width * 4);
     }
 
     protected virtual void Dispose(bool disposing)
@@ -102,6 +119,10 @@ public class CefWrapper : IDisposable
         {
             if (disposing)
             {
+                this.StopFramePump();
+
+                this.framePacer?.Dispose();
+
                 if (this.browser is not null)
                 {
                     this.browser.Paint -= this.OnBrowserPaint;
@@ -178,5 +199,114 @@ public class CefWrapper : IDisposable
     public void RefreshPage()
     {
         this.browser.Reload();
+    }
+
+    private void StartFramePump()
+    {
+        this.framePumpCancellation = new CancellationTokenSource();
+        var token = this.framePumpCancellation.Token;
+
+        this.framePumpTask = Task.Run(async () =>
+        {
+            var interval = TimeSpan.FromSeconds(1d / this.targetFramesPerSecond);
+            var stopwatch = Stopwatch.StartNew();
+            long tick = 0;
+
+            while (!token.IsCancellationRequested)
+            {
+                var nextTarget = interval * tick;
+                var delay = nextTarget - stopwatch.Elapsed;
+
+                if (delay > TimeSpan.Zero)
+                {
+                    try
+                    {
+                        await Task.Delay(delay, token).ConfigureAwait(false);
+                    }
+                    catch (TaskCanceledException)
+                    {
+                        break;
+                    }
+                }
+
+                this.browser?.GetBrowserHost()?.Invalidate(PaintElementType.View);
+                tick++;
+            }
+        }, token);
+    }
+
+    private void StopFramePump()
+    {
+        if (this.framePumpCancellation is null)
+        {
+            return;
+        }
+
+        this.framePumpCancellation.Cancel();
+
+        try
+        {
+            this.framePumpTask?.Wait();
+        }
+        catch (AggregateException ex) when (ex.InnerException is TaskCanceledException)
+        {
+        }
+        catch (TaskCanceledException)
+        {
+        }
+
+        this.framePumpCancellation.Dispose();
+        this.framePumpCancellation = null;
+        this.framePumpTask = null;
+    }
+
+    private void SendDirectFrame(IntPtr bufferHandle, int width, int height, int stride)
+    {
+        if (Program.NdiSenderPtr == nint.Zero)
+        {
+            return;
+        }
+
+        var videoFrame = new NDIlib.video_frame_v2_t()
+        {
+            FourCC = NDIlib.FourCC_type_e.FourCC_type_BGRA,
+            frame_rate_N = this.frameRateNumerator,
+            frame_rate_D = this.frameRateDenominator,
+            frame_format_type = NDIlib.frame_format_type_e.frame_format_type_progressive,
+            line_stride_in_bytes = stride,
+            picture_aspect_ratio = (float)width / height,
+            p_data = bufferHandle,
+            timecode = NDIlib.send_timecode_synthesize,
+            xres = width,
+            yres = height,
+        };
+
+        NDIlib.send_send_video_v2(Program.NdiSenderPtr, ref videoFrame);
+    }
+
+    private bool TrySendBufferedFrame(VideoFrame frame)
+    {
+        if (Program.NdiSenderPtr == nint.Zero)
+        {
+            return false;
+        }
+
+        using var handle = frame.Memory.Pin();
+        var videoFrame = new NDIlib.video_frame_v2_t()
+        {
+            FourCC = NDIlib.FourCC_type_e.FourCC_type_BGRA,
+            frame_rate_N = this.frameRateNumerator,
+            frame_rate_D = this.frameRateDenominator,
+            frame_format_type = NDIlib.frame_format_type_e.frame_format_type_progressive,
+            line_stride_in_bytes = frame.Stride,
+            picture_aspect_ratio = (float)frame.Width / frame.Height,
+            p_data = (nint)handle.Pointer,
+            timecode = NDIlib.send_timecode_synthesize,
+            xres = frame.Width,
+            yres = frame.Height,
+        };
+
+        NDIlib.send_send_video_v2(Program.NdiSenderPtr, ref videoFrame);
+        return true;
     }
 }

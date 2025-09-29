@@ -95,6 +95,8 @@ public class Program
 
         var width = 1920;
         var height = 1080;
+        var frameRate = 60;
+        var bufferDepth = 0;
 
         if (args.Any(x => x.StartsWith("--w")))
         {
@@ -122,6 +124,42 @@ public class Program
             }
         }
 
+        if (args.Any(x => x.StartsWith("--fps")))
+        {
+            try
+            {
+                frameRate = int.Parse(args.First(x => x.StartsWith("--fps")).Split("=")[1]);
+
+                if (frameRate <= 0)
+                {
+                    throw new ArgumentOutOfRangeException(nameof(frameRate));
+                }
+            }
+            catch (Exception)
+            {
+                Log.Error("Could not parse the --fps parameter. Exiting.");
+                return;
+            }
+        }
+
+        if (args.Any(x => x.StartsWith("--buffer-frames")))
+        {
+            try
+            {
+                bufferDepth = int.Parse(args.First(x => x.StartsWith("--buffer-frames")).Split("=")[1]);
+
+                if (bufferDepth < 0)
+                {
+                    throw new ArgumentOutOfRangeException(nameof(bufferDepth));
+                }
+            }
+            catch (Exception)
+            {
+                Log.Error("Could not parse the --buffer-frames parameter. Exiting.");
+                return;
+            }
+        }
+
         AsyncContext.Run(async delegate
         {
             var settings = new CefSettings();
@@ -143,7 +181,9 @@ public class Program
             browserWrapper = new CefWrapper(
                 width,
                 height,
-                startUrl);
+                startUrl,
+                frameRate,
+                bufferDepth);
 
             await browserWrapper.InitializeWrapperAsync();
         });

@@ -15,10 +15,12 @@ If the web page you are loading has a transparent background, NDI will honor tha
 Parameter|Description
 ----|---
 `--ndiname="NDI Source Name"`|The source name this browser instance will send. Defaults to "`HTML5`".
-`--width=1920`|The width of the browser source. Defaults to `1920`.
-`--width=1080`|The height of the browser source. Defaults to `1080`.
+`--w=1920`|The width of the browser source. Defaults to `1920`.
+`--h=1080`|The height of the browser source. Defaults to `1080`.
 `--port=9999`|The port the HTTP server will listen on. Defaults to `9999`.
 `--url="https://www.tractus.ca"`|The startup webpage. Defaults to `https://testpattern.tractusevents.com/`.
+`--fps=60`|Target frame cadence for both Chromium invalidation and the advertised NDI frame rate.
+`--buffer-frames=0`|Enable the optional paced buffer by specifying a queue depth (e.g. `--buffer-frames=4`). Leave at `0` to keep the zero-copy path.
 
 #### Example Launch
 
@@ -35,7 +37,7 @@ Route|Method|Description|Example
 - Frames are sent to NDI in RGBA format. Some machines may experience a slight performance penalty.
 - H.264 and any other non-free codecs are not available for video playback since this uses Chromium. Sites like YouTube likely won't work.
 - Audio data received from the browser is passed to NDI directly.
-- NDI frame rate is set to 60 frames per second. The internal max render frame rate is set to be capped at 60 frames per second.
+- The default render cadence is 60 frames per second, but you can adjust it with `--fps`. When the optional buffer is disabled, frames stay zero-copy end-to-end.
 
 ## More Tools
 
