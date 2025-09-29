@@ -1,4 +1,5 @@
 
+using System.Runtime.InteropServices;
 using CefSharp;
 using CefSharp.OffScreen;
 using NewTek;
@@ -84,11 +85,29 @@ public class CefWrapper : IDisposable
             return;
         }
 
+        if (e.BufferHandle == nint.Zero)
+        {
+            Log.Warning("Received paint callback with null buffer; dropping frame");
+            return;
+        }
+
+        var stride = e.Width * 4;
+        var bufferSize = stride * e.Height;
+
+        if (bufferSize <= 0)
+        {
+            Log.Warning("Invalid paint buffer dimensions ({Width}x{Height}); dropping frame", e.Width, e.Height);
+            return;
+        }
+
+        var pixelBuffer = new byte[bufferSize];
+        Marshal.Copy(e.BufferHandle, pixelBuffer, 0, bufferSize);
+
         var frame = new BrowserFrame(
-            e.BufferHandle,
+            pixelBuffer,
             e.Width,
             e.Height,
-            e.Width * 4,
+            stride,
             (float)e.Width / e.Height,
             DateTime.UtcNow);
 

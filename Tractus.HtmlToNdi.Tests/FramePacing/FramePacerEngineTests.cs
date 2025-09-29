@@ -1,3 +1,5 @@
+using System;
+using System.Collections.Generic;
 using Serilog;
 using Serilog.Core;
 using Serilog.Events;
@@ -16,7 +18,7 @@ public class FramePacerEngineTests
 
         for (var i = 0; i < 5; i++)
         {
-            buffer.Push(new BrowserFrame(new nint(i + 1), 1920, 1080, 1920 * 4, 16f / 9f, DateTime.UtcNow.AddMilliseconds(i)));
+            buffer.Push(CreateFrame(i + 1, 32, 18, DateTime.UtcNow.AddMilliseconds(i)));
         }
 
         Assert.Equal(3, buffer.GetBacklog(sequence));
@@ -25,7 +27,7 @@ public class FramePacerEngineTests
 
         Assert.True(hasFrame);
         Assert.Equal(4, dropped);
-        Assert.Equal(5, latest.BufferHandle.ToInt64());
+        Assert.Equal(5, latest.PixelBuffer[0]);
         Assert.Equal(0, buffer.GetBacklog(sequence));
     }
 
@@ -45,7 +47,7 @@ public class FramePacerEngineTests
 
         var interval = engine.Interval;
 
-        var firstFrame = new BrowserFrame(new nint(1), 640, 360, 640 * 4, 16f / 9f, currentTick);
+        var firstFrame = CreateFrame(1, 64, 36, currentTick);
         buffer.Push(firstFrame);
 
         engine.ProcessTick(currentTick);
@@ -59,7 +61,7 @@ public class FramePacerEngineTests
         Assert.True(sent[1].context.IsRepeat);
 
         var secondFrameCapture = currentTick.AddMilliseconds(-5);
-        var secondFrame = new BrowserFrame(new nint(2), 640, 360, 640 * 4, 16f / 9f, secondFrameCapture);
+        var secondFrame = CreateFrame(2, 64, 36, secondFrameCapture);
         buffer.Push(secondFrame);
 
         currentTick = currentTick.Add(interval);
@@ -68,8 +70,8 @@ public class FramePacerEngineTests
         Assert.False(sent[2].context.IsRepeat);
         Assert.Equal(0, sent[2].context.DroppedFrames);
 
-        buffer.Push(new BrowserFrame(new nint(3), 640, 360, 640 * 4, 16f / 9f, currentTick.AddMilliseconds(-2)));
-        buffer.Push(new BrowserFrame(new nint(4), 640, 360, 640 * 4, 16f / 9f, currentTick.AddMilliseconds(-1)));
+        buffer.Push(CreateFrame(3, 64, 36, currentTick.AddMilliseconds(-2)));
+        buffer.Push(CreateFrame(4, 64, 36, currentTick.AddMilliseconds(-1)));
 
         currentTick = currentTick.Add(interval);
         engine.ProcessTick(currentTick);
@@ -77,6 +79,14 @@ public class FramePacerEngineTests
         Assert.Equal(4, sent.Count);
         Assert.False(sent[3].context.IsRepeat);
         Assert.True(sent[3].context.DroppedFrames >= 1);
+    }
+
+    private static BrowserFrame CreateFrame(int id, int width, int height, DateTime capturedAt)
+    {
+        var stride = width * 4;
+        var buffer = new byte[stride * height];
+        buffer[0] = (byte)id;
+        return new BrowserFrame(buffer, width, height, stride, (float)width / height, capturedAt);
     }
 
     private sealed class NullSink : ILogEventSink

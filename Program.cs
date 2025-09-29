@@ -238,21 +238,32 @@ public class Program
                     return;
                 }
 
-                var videoFrame = new NDIlib.video_frame_v2_t()
+                if (!frame.HasBuffer)
                 {
-                    FourCC = NDIlib.FourCC_type_e.FourCC_type_BGRA,
-                    frame_rate_N = frameRate.Numerator,
-                    frame_rate_D = frameRate.Denominator,
-                    frame_format_type = NDIlib.frame_format_type_e.frame_format_type_progressive,
-                    line_stride_in_bytes = frame.Stride,
-                    picture_aspect_ratio = frame.AspectRatio,
-                    p_data = frame.BufferHandle,
-                    timecode = NDIlib.send_timecode_synthesize,
-                    xres = frame.Width,
-                    yres = frame.Height,
-                };
+                    return;
+                }
 
-                NDIlib.send_send_video_v2(Program.NdiSenderPtr, ref videoFrame);
+                unsafe
+                {
+                    fixed (byte* bufferPtr = frame.PixelBuffer)
+                    {
+                        var videoFrame = new NDIlib.video_frame_v2_t()
+                        {
+                            FourCC = NDIlib.FourCC_type_e.FourCC_type_BGRA,
+                            frame_rate_N = frameRate.Numerator,
+                            frame_rate_D = frameRate.Denominator,
+                            frame_format_type = NDIlib.frame_format_type_e.frame_format_type_progressive,
+                            line_stride_in_bytes = frame.Stride,
+                            picture_aspect_ratio = frame.AspectRatio,
+                            p_data = (nint)bufferPtr,
+                            timecode = NDIlib.send_timecode_synthesize,
+                            xres = frame.Width,
+                            yres = frame.Height,
+                        };
+
+                        NDIlib.send_send_video_v2(Program.NdiSenderPtr, ref videoFrame);
+                    }
+                }
             },
             pacerLogger);
         framePacer.Start();
