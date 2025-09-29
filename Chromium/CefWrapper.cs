@@ -2,6 +2,7 @@
 using CefSharp;
 using CefSharp.OffScreen;
 using NewTek;
+using Tractus.HtmlToNdi.Video;
 
 namespace Tractus.HtmlToNdi.Chromium;
 
@@ -15,8 +16,9 @@ public class CefWrapper : IDisposable
 
     public string? Url { get; private set; }
 
-    private Thread RenderWatchdog;
     private DateTime lastPaint = DateTime.MinValue;
+    private FramePump? framePump;
+    private Action<OnPaintEventArgs, DateTime>? frameHandler;
 
     public CefWrapper(int width, int height, string initialUrl)
     {
@@ -30,21 +32,6 @@ public class CefWrapper : IDisposable
         };
 
         this.browser.Size = new System.Drawing.Size(this.Width, this.Height);
-
-        this.RenderWatchdog = new Thread(this.RenderWatchDogThread);
-    }
-
-    private void RenderWatchDogThread()
-    {
-        while (!this.disposedValue)
-        {
-            if(DateTime.Now.Subtract(this.lastPaint).TotalSeconds >= 1.0)
-            {
-                this.browser.GetBrowser().GetHost().Invalidate(PaintElementType.View);
-            }
-
-            Thread.Sleep(1000);
-        }
     }
 
     public async Task InitializeWrapperAsync()
@@ -60,7 +47,6 @@ public class CefWrapper : IDisposable
         this.browser.ToggleAudioMute();
 
         this.browser.Paint += this.OnBrowserPaint;
-        this.RenderWatchdog.Start();
     }
 
     private void OnBrowserPaint(object? sender, OnPaintEventArgs e)
@@ -77,9 +63,17 @@ public class CefWrapper : IDisposable
             return;
         }
 
-        this.lastPaint = DateTime.Now;
+        this.lastPaint = DateTime.UtcNow;
+        this.framePump?.NotifyPaint(this.lastPaint);
 
-        var videoFrame = new NDIlib.video_frame_v2_t()
+        var handler = this.frameHandler;
+        if (handler is not null)
+        {
+            handler(e, this.lastPaint);
+            return;
+        }
+
+        var fallbackFrame = new NDIlib.video_frame_v2_t()
         {
             FourCC = NDIlib.FourCC_type_e.FourCC_type_BGRA,
             frame_rate_N = 60,
@@ -93,7 +87,41 @@ public class CefWrapper : IDisposable
             yres = e.Height,
         };
 
-        NDIlib.send_send_video_v2(Program.NdiSenderPtr, ref videoFrame);
+        NDIlib.send_send_video_v2(Program.NdiSenderPtr, ref fallbackFrame);
+    }
+
+    internal ChromiumWebBrowser Browser => this.browser ?? throw new InvalidOperationException("Browser is not initialized.");
+
+    public void AttachFramePump(FramePump pump)
+    {
+        this.framePump = pump;
+    }
+
+    public void SetFrameHandler(Action<OnPaintEventArgs, DateTime> handler)
+    {
+        this.frameHandler = handler;
+    }
+
+    public ValueTask InvalidateAsync()
+    {
+        if (this.browser is null)
+        {
+            return ValueTask.CompletedTask;
+        }
+
+        var host = this.browser.GetBrowserHost();
+        if (host is null)
+        {
+            return ValueTask.CompletedTask;
+        }
+
+        if (Cef.CurrentlyOnThread(CefThreadIds.TID_UI))
+        {
+            host.Invalidate(PaintElementType.View);
+            return ValueTask.CompletedTask;
+        }
+
+        return new ValueTask(Cef.UIThreadTaskFactory.StartNew(() => host.Invalidate(PaintElementType.View)));
     }
 
     protected virtual void Dispose(bool disposing)
