@@ -9,6 +9,8 @@ using Microsoft.Extensions.Hosting;
 using NewTek;
 using NewTek.NDI;
 using Serilog;
+using System;
+using System.Globalization;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using Tractus.HtmlToNdi.Chromium;
@@ -95,6 +97,9 @@ public class Program
 
         var width = 1920;
         var height = 1080;
+        var targetFps = 60d;
+        var enableBuffering = args.Contains("--buffered");
+        var bufferDepth = 3;
 
         if (args.Any(x => x.StartsWith("--w")))
         {
@@ -122,6 +127,60 @@ public class Program
             }
         }
 
+        if (args.Any(x => x.StartsWith("--fps")))
+        {
+            try
+            {
+                var value = args.First(x => x.StartsWith("--fps")).Split("=")[1];
+                targetFps = double.Parse(value, CultureInfo.InvariantCulture);
+                if (targetFps <= 0)
+                {
+                    throw new ArgumentOutOfRangeException(nameof(targetFps));
+                }
+            }
+            catch (Exception)
+            {
+                Log.Error("Could not parse the --fps parameter. Exiting.");
+                return;
+            }
+        }
+
+        var bufferDepthArgument = args.FirstOrDefault(x => x.StartsWith("--buffer-depth"));
+        if (!string.IsNullOrEmpty(bufferDepthArgument))
+        {
+            try
+            {
+                var value = bufferDepthArgument.Split("=")[1];
+                var parsedDepth = int.Parse(value, CultureInfo.InvariantCulture);
+                if (parsedDepth <= 0)
+                {
+                    enableBuffering = false;
+                }
+                else
+                {
+                    enableBuffering = true;
+                    bufferDepth = parsedDepth;
+                }
+            }
+            catch (Exception)
+            {
+                Log.Error("Could not parse the --buffer-depth parameter. Exiting.");
+                return;
+            }
+        }
+
+        if (enableBuffering)
+        {
+            bufferDepth = Math.Max(1, bufferDepth);
+        }
+
+        var pipelineOptions = new NdiVideoPipelineOptions
+        {
+            TargetFrameRate = targetFps,
+            EnableBuffering = enableBuffering,
+            BufferDepth = bufferDepth,
+        };
+
         AsyncContext.Run(async delegate
         {
             var settings = new CefSettings();
@@ -143,7 +202,8 @@ public class Program
             browserWrapper = new CefWrapper(
                 width,
                 height,
-                startUrl);
+                startUrl,
+                pipelineOptions);
 
             await browserWrapper.InitializeWrapperAsync();
         });
