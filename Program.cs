@@ -294,7 +294,7 @@ public class Program
             }
         });
 
-        var capabilitiesXml = $$"""<ndi_capabilities ntk_kvm=\"true\" />""";
+        var capabilitiesXml = $$"""<ndi_capabilities ntk_kvm="true" />""";
         capabilitiesXml += "\0";
         var capabilitiesPtr = UTF.StringToUtf8(capabilitiesXml);
 

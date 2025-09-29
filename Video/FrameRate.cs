@@ -70,8 +70,20 @@ public readonly struct FrameRate
             if (int.TryParse(parts[0], NumberStyles.Integer, CultureInfo.InvariantCulture, out var numerator) &&
                 int.TryParse(parts[1], NumberStyles.Integer, CultureInfo.InvariantCulture, out var denominator))
             {
-                frameRate = Create(numerator, denominator);
-                return true;
+                if (numerator <= 0 || denominator <= 0)
+                {
+                    return false;
+                }
+
+                try
+                {
+                    frameRate = Create(numerator, denominator);
+                    return true;
+                }
+                catch (ArgumentOutOfRangeException)
+                {
+                    return false;
+                }
             }
 
             return false;
@@ -79,8 +91,20 @@ public readonly struct FrameRate
 
         if (double.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out var fps))
         {
-            frameRate = FromDouble(fps);
-            return true;
+            if (fps <= 0)
+            {
+                return false;
+            }
+
+            try
+            {
+                frameRate = FromDouble(fps);
+                return true;
+            }
+            catch (ArgumentOutOfRangeException)
+            {
+                return false;
+            }
         }
 
         return false;
