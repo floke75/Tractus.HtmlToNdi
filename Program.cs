@@ -1,3 +1,8 @@
+using System.IO;
+
+using System;
+using System.Linq;
+
 
 using CefSharp;
 using CefSharp.OffScreen;
@@ -9,10 +14,11 @@ using Microsoft.Extensions.Hosting;
 using NewTek;
 using NewTek.NDI;
 using Serilog;
-using System.Runtime.CompilerServices;
+using System.Globalization;
 using System.Runtime.InteropServices;
 using Tractus.HtmlToNdi.Chromium;
 using Tractus.HtmlToNdi.Models;
+using Tractus.HtmlToNdi.Video;
 
 namespace Tractus.HtmlToNdi;
 public class Program
@@ -122,6 +128,13 @@ public class Program
             }
         }
 
+        var targetFrameRate = FrameRate.Parse(GetArgValue(args, "--fps"), new FrameRate(60, 1));
+        var windowlessFrameRate = FrameRate.Parse(GetArgValue(args, "--windowless-frame-rate"), targetFrameRate);
+        var enableOutputBuffer = args.Contains("--enable-output-buffer");
+        var bufferDepth = ParseIntArg(args, "--buffer-depth", 3);
+        bufferDepth = Math.Clamp(bufferDepth, 1, 8);
+        var disableChromiumVsync = args.Contains("--disable-chromium-vsync");
+
         AsyncContext.Run(async delegate
         {
             var settings = new CefSettings();
@@ -138,12 +151,18 @@ public class Program
             settings.CefCommandLineArgs.Add("autoplay-policy", "no-user-gesture-required");
             //settings.CefCommandLineArgs.Add("off-screen-frame-rate", "60");
             //settings.CefCommandLineArgs.Add("disable-frame-rate-limit");
+            if (disableChromiumVsync)
+            {
+                settings.CefCommandLineArgs.Add("disable-gpu-vsync");
+                settings.CefCommandLineArgs.Add("disable-frame-rate-limit");
+            }
             settings.EnableAudio();
             Cef.Initialize(settings);
             browserWrapper = new CefWrapper(
                 width,
                 height,
-                startUrl);
+                startUrl,
+                windowlessFrameRate);
 
             await browserWrapper.InitializeWrapperAsync();
         });
@@ -171,6 +190,10 @@ public class Program
         };
 
         Program.NdiSenderPtr = NDIlib.send_create(ref settings_T);
+
+        var framePump = new FramePump(targetFrameRate, () => browserWrapper.InvalidateAsync(), Log.Logger);
+        var videoPipeline = new NdiVideoPipeline(NdiSenderPtr, targetFrameRate, enableOutputBuffer, bufferDepth, Log.Logger, framePump);
+        browserWrapper.SetVideoSink(videoPipeline);
 
         var capabilitiesXml = $$"""<ndi_capabilities ntk_kvm="true" />""";
         capabilitiesXml += "\0";
@@ -281,22 +304,46 @@ public class Program
             browserWrapper.RefreshPage();
         }).WithOpenApi();
 
-        app.Run();
-
-        running = false;
-        thread.Join();
-        browserWrapper.Dispose();
-
-        if (Directory.Exists(launchCachePath))
+        try
         {
-            try
-            {
-                Directory.Delete(launchCachePath, true);
-            }
-            catch
-            {
+            app.Run();
+        }
+        finally
+        {
+            running = false;
+            thread.Join();
+            videoPipeline.Dispose();
+            framePump.DisposeAsync().AsTask().GetAwaiter().GetResult();
+            browserWrapper.Dispose();
 
+            if (Directory.Exists(launchCachePath))
+            {
+                try
+                {
+                    Directory.Delete(launchCachePath, true);
+                }
+                catch
+                {
+
+                }
             }
         }
+    }
+
+    private static string? GetArgValue(string[] args, string key)
+    {
+        var match = args.FirstOrDefault(x => x.StartsWith(key + "=", StringComparison.OrdinalIgnoreCase));
+        return match?.Substring(key.Length + 1);
+    }
+
+    private static int ParseIntArg(string[] args, string key, int fallback)
+    {
+        var value = GetArgValue(args, key);
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return fallback;
+        }
+
+        return int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsed) ? parsed : fallback;
     }
 }
