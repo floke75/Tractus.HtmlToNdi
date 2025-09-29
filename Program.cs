@@ -9,10 +9,10 @@ using Microsoft.Extensions.Hosting;
 using NewTek;
 using NewTek.NDI;
 using Serilog;
-using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using Tractus.HtmlToNdi.Chromium;
 using Tractus.HtmlToNdi.Models;
+using Tractus.HtmlToNdi.Video;
 
 namespace Tractus.HtmlToNdi;
 public class Program
@@ -122,6 +122,85 @@ public class Program
             }
         }
 
+        var bufferDepth = 5;
+        if (args.Any(x => x.StartsWith("--buffer-depth")))
+        {
+            try
+            {
+                bufferDepth = int.Parse(args.First(x => x.StartsWith("--buffer-depth")).Split("=", 2)[1]);
+                if (bufferDepth <= 0)
+                {
+                    throw new ArgumentOutOfRangeException(nameof(bufferDepth));
+                }
+            }
+            catch (Exception)
+            {
+                Log.Error("Could not parse the --buffer-depth parameter. Exiting.");
+                return;
+            }
+        }
+
+        var targetFrameRate = FrameRate.Ntsc2997;
+        var fpsArg = args.FirstOrDefault(x => x.StartsWith("--fps=")) ?? args.FirstOrDefault(x => x.StartsWith("--target-fps="));
+        if (fpsArg is not null)
+        {
+            try
+            {
+                var value = fpsArg.Split("=", 2)[1];
+                if (!FrameRate.TryParse(value, out targetFrameRate))
+                {
+                    throw new ArgumentException();
+                }
+            }
+            catch (Exception)
+            {
+                Log.Error("Could not parse the --fps parameter. Expected a decimal (e.g. 29.97) or ratio (e.g. 30000/1001). Exiting.");
+                return;
+            }
+        }
+
+        var windowlessFrameRate = Math.Max(60, (int)Math.Ceiling(targetFrameRate.FramesPerSecond * 2));
+        if (args.Any(x => x.StartsWith("--windowless-frame-rate")))
+        {
+            try
+            {
+                windowlessFrameRate = int.Parse(args.First(x => x.StartsWith("--windowless-frame-rate")).Split("=", 2)[1]);
+                if (windowlessFrameRate <= 0)
+                {
+                    throw new ArgumentOutOfRangeException(nameof(windowlessFrameRate));
+                }
+            }
+            catch (Exception)
+            {
+                Log.Error("Could not parse the --windowless-frame-rate parameter. Exiting.");
+                return;
+            }
+        }
+
+        var disableGpuVsync = args.Contains("--disable-gpu-vsync", StringComparer.OrdinalIgnoreCase);
+        var disableFrameRateLimit = args.Contains("--disable-frame-rate-limit", StringComparer.OrdinalIgnoreCase);
+
+        Log.Information(
+            "Frame pacing configured for {Fps:F3} fps ({Numerator}/{Denominator}), buffer depth {BufferDepth}, Chromium windowless frame rate {Windowless}",
+            targetFrameRate.FramesPerSecond,
+            targetFrameRate.Numerator,
+            targetFrameRate.Denominator,
+            bufferDepth,
+            windowlessFrameRate);
+
+        if (disableGpuVsync)
+        {
+            Log.Information("Chromium GPU VSync disabled via --disable-gpu-vsync");
+        }
+
+        if (disableFrameRateLimit)
+        {
+            Log.Information("Chromium frame rate limiter disabled via --disable-frame-rate-limit");
+        }
+
+        using var frameBuffer = new FrameRingBuffer(bufferDepth);
+        FramePacer? framePacer = null;
+
         AsyncContext.Run(async delegate
         {
             var settings = new CefSettings();
@@ -136,14 +215,23 @@ public class Program
             //settings.CefCommandLineArgs.Add("--in-process-gpu");
             //settings.SetOffScreenRenderingBestPerformanceArgs();
             settings.CefCommandLineArgs.Add("autoplay-policy", "no-user-gesture-required");
-            //settings.CefCommandLineArgs.Add("off-screen-frame-rate", "60");
-            //settings.CefCommandLineArgs.Add("disable-frame-rate-limit");
+            if (disableFrameRateLimit)
+            {
+                settings.CefCommandLineArgs.Add("disable-frame-rate-limit");
+            }
+
+            if (disableGpuVsync)
+            {
+                settings.CefCommandLineArgs.Add("disable-gpu-vsync");
+            }
             settings.EnableAudio();
             Cef.Initialize(settings);
             browserWrapper = new CefWrapper(
                 width,
                 height,
-                startUrl);
+                startUrl,
+                frameBuffer,
+                windowlessFrameRate);
 
             await browserWrapper.InitializeWrapperAsync();
         });
@@ -171,6 +259,35 @@ public class Program
         };
 
         Program.NdiSenderPtr = NDIlib.send_create(ref settings_T);
+
+        var pacerOptions = new FramePacerOptions { StartImmediately = false };
+        framePacer = new FramePacer(frameBuffer, targetFrameRate, dispatch =>
+        {
+            if (Program.NdiSenderPtr == nint.Zero)
+            {
+                return;
+            }
+
+            dispatch.Frame.WithPointer(pointer =>
+            {
+                var videoFrame = new NDIlib.video_frame_v2_t()
+                {
+                    FourCC = NDIlib.FourCC_type_e.FourCC_type_BGRA,
+                    frame_rate_N = targetFrameRate.Numerator,
+                    frame_rate_D = targetFrameRate.Denominator,
+                    frame_format_type = NDIlib.frame_format_type_e.frame_format_type_progressive,
+                    line_stride_in_bytes = dispatch.Frame.Stride,
+                    picture_aspect_ratio = (float)dispatch.Frame.Width / dispatch.Frame.Height,
+                    p_data = pointer,
+                    timecode = NDIlib.send_timecode_synthesize,
+                    xres = dispatch.Frame.Width,
+                    yres = dispatch.Frame.Height,
+                };
+
+                NDIlib.send_send_video_v2(Program.NdiSenderPtr, ref videoFrame);
+            });
+        }, pacerOptions);
+        framePacer.Start();
 
         var capabilitiesXml = $$"""<ndi_capabilities ntk_kvm="true" />""";
         capabilitiesXml += "\0";
@@ -285,6 +402,7 @@ public class Program
 
         running = false;
         thread.Join();
+        framePacer?.Dispose();
         browserWrapper.Dispose();
 
         if (Directory.Exists(launchCachePath))
