@@ -1,4 +1,6 @@
 
+using System;
+using System.Linq;
 using CefSharp;
 using CefSharp.OffScreen;
 using Microsoft.AspNetCore.Builder;
@@ -95,6 +97,8 @@ public class Program
 
         var width = 1920;
         var height = 1080;
+        var frameRate = 60;
+        var frameBufferCapacity = 0;
 
         if (args.Any(x => x.StartsWith("--w")))
         {
@@ -122,6 +126,37 @@ public class Program
             }
         }
 
+        if (args.Any(x => x.StartsWith("--fps")))
+        {
+            try
+            {
+                frameRate = int.Parse(args.FirstOrDefault(x => x.StartsWith("--fps")).Split("=")[1]);
+                if (frameRate <= 0)
+                {
+                    throw new ArgumentOutOfRangeException(nameof(frameRate));
+                }
+            }
+            catch (Exception)
+            {
+                Log.Error("Could not parse the --fps parameter. Exiting.");
+                return;
+            }
+        }
+
+        if (args.Any(x => x.StartsWith("--frame-buffer")))
+        {
+            try
+            {
+                frameBufferCapacity = int.Parse(args.FirstOrDefault(x => x.StartsWith("--frame-buffer")).Split("=")[1]);
+                frameBufferCapacity = Math.Max(frameBufferCapacity, 0);
+            }
+            catch (Exception)
+            {
+                Log.Error("Could not parse the --frame-buffer parameter. Exiting.");
+                return;
+            }
+        }
+
         AsyncContext.Run(async delegate
         {
             var settings = new CefSettings();
@@ -143,7 +178,9 @@ public class Program
             browserWrapper = new CefWrapper(
                 width,
                 height,
-                startUrl);
+                startUrl,
+                frameRate,
+                frameBufferCapacity);
 
             await browserWrapper.InitializeWrapperAsync();
         });

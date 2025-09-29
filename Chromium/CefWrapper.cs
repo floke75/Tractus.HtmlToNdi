@@ -1,4 +1,6 @@
 
+using System;
+using System.Threading;
 using CefSharp;
 using CefSharp.OffScreen;
 using NewTek;
@@ -9,6 +11,10 @@ public class CefWrapper : IDisposable
 {
     private bool disposedValue;
     private ChromiumWebBrowser? browser;
+    private readonly int targetFrameRate;
+    private readonly int frameBufferCapacity;
+    private FramePump? framePump;
+    private FrameBufferPipeline? bufferPipeline;
 
     public int Width { get; private set; }
     public int Height { get; private set; }
@@ -18,11 +24,13 @@ public class CefWrapper : IDisposable
     private Thread RenderWatchdog;
     private DateTime lastPaint = DateTime.MinValue;
 
-    public CefWrapper(int width, int height, string initialUrl)
+    public CefWrapper(int width, int height, string initialUrl, int targetFrameRate, int frameBufferCapacity)
     {
         this.Width = width;
         this.Height = height;
         this.Url = initialUrl;
+        this.targetFrameRate = targetFrameRate;
+        this.frameBufferCapacity = Math.Max(frameBufferCapacity, 0);
 
         this.browser = new ChromiumWebBrowser(initialUrl)
         {
@@ -31,7 +39,11 @@ public class CefWrapper : IDisposable
 
         this.browser.Size = new System.Drawing.Size(this.Width, this.Height);
 
-        this.RenderWatchdog = new Thread(this.RenderWatchDogThread);
+        this.RenderWatchdog = new Thread(this.RenderWatchDogThread)
+        {
+            IsBackground = true,
+            Name = "Chromium Render Watchdog"
+        };
     }
 
     private void RenderWatchDogThread()
@@ -56,10 +68,17 @@ public class CefWrapper : IDisposable
 
         await this.browser.WaitForInitialLoadAsync();
 
-        this.browser.GetBrowserHost().WindowlessFrameRate = 60;
+        this.browser.GetBrowserHost().WindowlessFrameRate = this.targetFrameRate;
         this.browser.ToggleAudioMute();
 
         this.browser.Paint += this.OnBrowserPaint;
+
+        if (this.frameBufferCapacity > 0)
+        {
+            this.bufferPipeline = new FrameBufferPipeline(this.Width, this.Height, this.targetFrameRate, this.frameBufferCapacity);
+        }
+
+        this.framePump = new FramePump(this.browser, this.targetFrameRate);
         this.RenderWatchdog.Start();
     }
 
@@ -79,10 +98,16 @@ public class CefWrapper : IDisposable
 
         this.lastPaint = DateTime.Now;
 
+        if (this.bufferPipeline is not null)
+        {
+            this.bufferPipeline.Enqueue(e.BufferHandle);
+            return;
+        }
+
         var videoFrame = new NDIlib.video_frame_v2_t()
         {
             FourCC = NDIlib.FourCC_type_e.FourCC_type_BGRA,
-            frame_rate_N = 60,
+            frame_rate_N = this.targetFrameRate,
             frame_rate_D = 1,
             frame_format_type = NDIlib.frame_format_type_e.frame_format_type_progressive,
             line_stride_in_bytes = e.Width * 4,
@@ -105,6 +130,8 @@ public class CefWrapper : IDisposable
                 if (this.browser is not null)
                 {
                     this.browser.Paint -= this.OnBrowserPaint;
+                    this.framePump?.Dispose();
+                    this.bufferPipeline?.Dispose();
                     this.browser.Dispose();
                 }
 
