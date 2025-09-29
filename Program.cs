@@ -1,4 +1,3 @@
-
 using CefSharp;
 using CefSharp.OffScreen;
 using Microsoft.AspNetCore.Builder;
@@ -9,7 +8,9 @@ using Microsoft.Extensions.Hosting;
 using NewTek;
 using NewTek.NDI;
 using Serilog;
-using System.Runtime.CompilerServices;
+using System;
+using System.Globalization;
+using System.Linq;
 using System.Runtime.InteropServices;
 using Tractus.HtmlToNdi.Chromium;
 using Tractus.HtmlToNdi.Models;
@@ -28,23 +29,16 @@ public class Program
         Directory.SetCurrentDirectory(exeDirectory);
         AppManagement.Initialize(args);
 
+        // --- Argument Parsing ---
         var ndiName = "HTML5";
         if (args.Any(x => x.StartsWith("--ndiname")))
         {
             try
             {
                 ndiName = args.FirstOrDefault(x => x.StartsWith("--ndiname")).Split("=")[1];
-
-                if (string.IsNullOrWhiteSpace(ndiName))
-                {
-                    throw new ArgumentException();
-                }
+                if (string.IsNullOrWhiteSpace(ndiName)) throw new ArgumentException();
             }
-            catch
-            {
-                Log.Error("Invalid NDI source name. Exiting.");
-                return;
-            }
+            catch { Log.Error("Invalid NDI source name. Exiting."); return; }
         }
         else
         {
@@ -59,15 +53,8 @@ public class Program
         var port = 9999;
         if (args.Any(x => x.StartsWith("--port")))
         {
-            try
-            {
-                port = int.Parse(args.FirstOrDefault(x => x.StartsWith("--port")).Split("=")[1]);
-            }
-            catch (Exception)
-            {
-                Log.Error("Could not parse the --port parameter. Exiting.");
-                return;
-            }
+            try { port = int.Parse(args.FirstOrDefault(x => x.StartsWith("--port")).Split("=")[1]); }
+            catch (Exception) { Log.Error("Could not parse the --port parameter. Exiting."); return; }
         }
         else
         {
@@ -82,105 +69,98 @@ public class Program
         var startUrl = "https://testpattern.tractusevents.com/";
         if (args.Any(x => x.StartsWith("--url")))
         {
-            try
-            {
-                startUrl = args.FirstOrDefault(x => x.StartsWith("--url")).Split("=")[1];
-            }
-            catch (Exception)
-            {
-                Log.Error("Could not parse the --url parameter. Exiting.");
-                return;
-            }
+            try { startUrl = args.FirstOrDefault(x => x.StartsWith("--url")).Split("=")[1]; }
+            catch (Exception) { Log.Error("Could not parse the --url parameter. Exiting."); return; }
         }
 
         var width = 1920;
-        var height = 1080;
-
         if (args.Any(x => x.StartsWith("--w")))
         {
-            try
-            {
-                width = int.Parse(args.FirstOrDefault(x => x.StartsWith("--w")).Split("=")[1]);
-            }
-            catch (Exception)
-            {
-                Log.Error("Could not parse the --w (width) parameter. Exiting.");
-                return;
-            }
+            try { width = int.Parse(args.FirstOrDefault(x => x.StartsWith("--w")).Split("=")[1]); }
+            catch (Exception) { Log.Error("Could not parse the --w (width) parameter. Exiting."); return; }
         }
 
+        var height = 1080;
         if (args.Any(x => x.StartsWith("--h")))
+        {
+            try { height = int.Parse(args.FirstOrDefault(x => x.StartsWith("--h")).Split("=")[1]); }
+            catch (Exception) { Log.Error("Could not parse the --h (height) parameter. Exiting."); return; }
+        }
+
+        var targetFps = 60d;
+        if (args.Any(x => x.StartsWith("--fps")))
         {
             try
             {
-                height = int.Parse(args.FirstOrDefault(x => x.StartsWith("--h")).Split("=")[1]);
+                var value = args.First(x => x.StartsWith("--fps")).Split("=")[1];
+                targetFps = double.Parse(value, CultureInfo.InvariantCulture);
+                if (targetFps <= 0) throw new ArgumentOutOfRangeException(nameof(targetFps));
             }
-            catch (Exception)
-            {
-                Log.Error("Could not parse the --h (height) parameter. Exiting.");
-                return;
-            }
+            catch (Exception) { Log.Error("Could not parse the --fps parameter. Exiting."); return; }
         }
 
+        var enableBuffering = args.Any(x => string.Equals(x, "--buffered", StringComparison.OrdinalIgnoreCase));
+        var bufferDepth = 3;
+        var bufferDepthArgument = args.FirstOrDefault(x => x.StartsWith("--buffer-depth"));
+        if (!string.IsNullOrEmpty(bufferDepthArgument))
+        {
+            try
+            {
+                var value = bufferDepthArgument.Split("=")[1];
+                var parsedDepth = int.Parse(value, CultureInfo.InvariantCulture);
+                if (parsedDepth <= 0)
+                {
+                    enableBuffering = false;
+                }
+                else
+                {
+                    enableBuffering = true;
+                    bufferDepth = parsedDepth;
+                }
+            }
+            catch (Exception) { Log.Error("Could not parse the --buffer-depth parameter. Exiting."); return; }
+        }
+        if (enableBuffering) bufferDepth = Math.Max(1, bufferDepth);
+
+        var pipelineOptions = new NdiVideoPipelineOptions
+        {
+            TargetFrameRate = targetFps,
+            EnableBuffering = enableBuffering,
+            BufferDepth = bufferDepth,
+        };
+
+        // --- Initialization ---
         AsyncContext.Run(async delegate
         {
             var settings = new CefSettings();
-            if (!Directory.Exists(launchCachePath))
-            {
-                Directory.CreateDirectory(launchCachePath);
-            }
-
+            if (!Directory.Exists(launchCachePath)) Directory.CreateDirectory(launchCachePath);
             settings.RootCachePath = launchCachePath;
-            //settings.CefCommandLineArgs.Add("--disable-gpu-sandbox");
-            //settings.CefCommandLineArgs.Add("--no-sandbox");
-            //settings.CefCommandLineArgs.Add("--in-process-gpu");
-            //settings.SetOffScreenRenderingBestPerformanceArgs();
             settings.CefCommandLineArgs.Add("autoplay-policy", "no-user-gesture-required");
-            //settings.CefCommandLineArgs.Add("off-screen-frame-rate", "60");
-            //settings.CefCommandLineArgs.Add("disable-frame-rate-limit");
             settings.EnableAudio();
             Cef.Initialize(settings);
-            browserWrapper = new CefWrapper(
-                width,
-                height,
-                startUrl);
-
+            browserWrapper = new CefWrapper(width, height, startUrl, pipelineOptions);
             await browserWrapper.InitializeWrapperAsync();
         });
 
+        // --- Web App and NDI Setup ---
         var builder = WebApplication.CreateBuilder(args);
-
         builder.Services.AddSerilog();
-
         builder.WebHost.UseUrls($"http://*:{port}");
-
-        // Add services to the container.
         builder.Services.AddAuthorization();
-
-        // Learn more about configuring Swagger/OpenAPI at https://aka.ms/aspnetcore/swashbuckle
         builder.Services.AddEndpointsApiExplorer();
         builder.Services.AddSwaggerGen();
-
         var app = builder.Build();
         app.UseSwagger();
         app.UseSwaggerUI();
 
-        var settings_T = new NDIlib.send_create_t
-        {
-            p_ndi_name = UTF.StringToUtf8(ndiName)
-        };
-
+        var settings_T = new NDIlib.send_create_t { p_ndi_name = UTF.StringToUtf8(ndiName) };
         Program.NdiSenderPtr = NDIlib.send_create(ref settings_T);
 
+        // --- KVM and Metadata Thread ---
         var capabilitiesXml = $$"""<ndi_capabilities ntk_kvm="true" />""";
         capabilitiesXml += "\0";
         var capabilitiesPtr = UTF.StringToUtf8(capabilitiesXml);
-
-        var metaframe = new NDIlib.metadata_frame_t()
-        {
-            p_data = capabilitiesPtr
-        };
-
+        var metaframe = new NDIlib.metadata_frame_t() { p_data = capabilitiesPtr };
         NDIlib.send_add_connection_metadata(NdiSenderPtr, ref metaframe);
         Marshal.FreeHGlobal(capabilitiesPtr);
 
@@ -193,110 +173,57 @@ public class Program
             while (running)
             {
                 var result = NDIlib.send_capture(NdiSenderPtr, ref metadata, 1000);
-
-                if (result == NDIlib.frame_type_e.frame_type_none)
-                {
-                    continue;
-                }
+                if (result == NDIlib.frame_type_e.frame_type_none) continue;
                 else if (result == NDIlib.frame_type_e.frame_type_metadata)
                 {
                     var metadataConverted = UTF.Utf8ToString(metadata.p_data);
-
-                    if(metadataConverted.StartsWith("<ndi_kvm u=\""))
+                    if (metadataConverted.StartsWith("<ndi_kvm u=\""))
                     {
                         metadataConverted = metadataConverted.Replace("<ndi_kvm u=\"", "");
                         metadataConverted = metadataConverted.Replace("\"/>", "");
-
                         try
                         {
                             var binary = Convert.FromBase64String(metadataConverted);
-
                             var opcode = binary[0];
-
-                            if(opcode == 0x03)
+                            if (opcode == 0x03)
                             {
                                 x = BitConverter.ToSingle(binary, 1);
                                 y = BitConverter.ToSingle(binary, 5);
                             }
-                            else if(opcode == 0x04)
+                            else if (opcode == 0x04)
                             {
-                                // Mouse Left Down
                                 var screenX = (int)(x * width);
                                 var screenY = (int)(y * height);
-
                                 browserWrapper.Click(screenX, screenY);
                             }
-                            else if(opcode == 0x07)
-                            {
-                                // Mouse Left Up
-                            }
                         }
-                        catch
-                        {
-
-                        }
+                        catch { }
                     }
-
                     Log.Logger.Warning("Got metadata: " + metadataConverted);
                     NDIlib.send_free_metadata(NdiSenderPtr, ref metadata);
                 }
-
             }
         });
         thread.Start();
 
+        // --- API Routes ---
+        app.MapPost("/seturl", (HttpContext httpContext, GoToUrlModel url) => { browserWrapper.SetUrl(url.Url); return true; }).WithOpenApi();
+        app.MapGet("/scroll/{increment}", (int increment) => { browserWrapper.ScrollBy(increment); }).WithOpenApi();
+        app.MapGet("/click/{x}/{y}", (int x, int y) => { browserWrapper.Click(x, y); }).WithOpenApi();
+        app.MapPost("/keystroke", (SendKeystrokeModel model) => { browserWrapper.SendKeystrokes(model); }).WithOpenApi();
+        app.MapGet("/type/{toType}", (string toType) => { browserWrapper.SendKeystrokes(new SendKeystrokeModel { ToSend = toType }); }).WithOpenApi();
+        app.MapGet("/refresh", () => { browserWrapper.RefreshPage(); }).WithOpenApi();
 
-        app.MapPost("/seturl", (HttpContext httpContext, GoToUrlModel url) =>
-        {
-            browserWrapper.SetUrl(url.Url);
-            return true;
-        })
-        .WithOpenApi();
-
-        app.MapGet("/scroll/{increment}", (int increment) =>
-        {
-            browserWrapper.ScrollBy(increment);
-        }).WithOpenApi();
-
-        app.MapGet("/click/{x}/{y}", (int x, int y) =>
-        {
-            browserWrapper.Click(x, y);
-        }).WithOpenApi();
-
-        app.MapPost("/keystroke", (SendKeystrokeModel model) =>
-        {
-            browserWrapper.SendKeystrokes(model);
-        }).WithOpenApi();
-
-        app.MapGet("/type/{toType}", (string toType) =>
-        {
-            browserWrapper.SendKeystrokes(new SendKeystrokeModel
-            {
-                ToSend = toType
-            });
-        }).WithOpenApi();
-
-        app.MapGet("/refresh", () =>
-        {
-            browserWrapper.RefreshPage();
-        }).WithOpenApi();
-
+        // --- Run and Shutdown ---
         app.Run();
-
         running = false;
         thread.Join();
         browserWrapper.Dispose();
 
         if (Directory.Exists(launchCachePath))
         {
-            try
-            {
-                Directory.Delete(launchCachePath, true);
-            }
-            catch
-            {
-
-            }
+            try { Directory.Delete(launchCachePath, true); }
+            catch { }
         }
     }
 }
