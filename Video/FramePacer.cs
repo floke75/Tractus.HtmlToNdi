@@ -106,7 +106,6 @@ public sealed class FramePacer : IDisposable
         if (readResult.HasFrame)
         {
             var latestFrame = readResult.Frame!;
-            latestFrame.AddReference();
             this.currentFrame?.Dispose();
             this.currentFrame = latestFrame;
             this.lastSequence = readResult.Sequence;

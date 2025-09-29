@@ -43,21 +43,41 @@ public sealed class FrameRingBuffer : IDisposable
 
     public FrameReadResult ReadLatest(long lastSequence)
     {
-        var current = Volatile.Read(ref this.publishedSequence);
-        if (current == 0 || current == lastSequence)
+        while (true)
         {
-            return FrameReadResult.Empty(lastSequence);
-        }
+            var current = Volatile.Read(ref this.publishedSequence);
+            if (current == 0 || current == lastSequence)
+            {
+                return FrameReadResult.Empty(lastSequence);
+            }
 
-        var index = (int)((current - 1) % this.capacity);
-        var frame = Volatile.Read(ref this.slots[index]);
-        if (frame is null)
-        {
-            return FrameReadResult.Empty(lastSequence);
-        }
+            var index = (int)((current - 1) % this.capacity);
+            var frame = Volatile.Read(ref this.slots[index]);
+            if (frame is null)
+            {
+                continue;
+            }
 
-        var dropped = lastSequence == 0 ? 0 : (int)Math.Max(0, current - lastSequence - 1);
-        return FrameReadResult.WithFrame(frame, current, dropped);
+            try
+            {
+                frame.AddReference();
+            }
+            catch (ObjectDisposedException)
+            {
+                // The producer disposed this slot before we could retain it. Try again with the latest sequence.
+                continue;
+            }
+
+            if (Volatile.Read(ref this.publishedSequence) != current)
+            {
+                // A newer frame was published after we read the sequence. Release this frame and retry for the freshest data.
+                frame.Dispose();
+                continue;
+            }
+
+            var dropped = lastSequence == 0 ? 0 : (int)Math.Max(0, current - lastSequence - 1);
+            return FrameReadResult.WithFrame(frame, current, dropped);
+        }
     }
 
     public void Dispose()
