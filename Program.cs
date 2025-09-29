@@ -9,6 +9,7 @@ using Microsoft.Extensions.Hosting;
 using NewTek;
 using NewTek.NDI;
 using Serilog;
+using System.Globalization;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using Tractus.HtmlToNdi.Chromium;
@@ -122,6 +123,79 @@ public class Program
             }
         }
 
+        var targetFps = 29.97;
+        if (args.Any(x => x.StartsWith("--target-fps")))
+        {
+            try
+            {
+                var fpsValue = args.FirstOrDefault(x => x.StartsWith("--target-fps")).Split("=")[1];
+                if (!double.TryParse(fpsValue, NumberStyles.Float, CultureInfo.InvariantCulture, out targetFps) || targetFps <= 0)
+                {
+                    throw new ArgumentException("Invalid FPS");
+                }
+            }
+            catch
+            {
+                Log.Error("Could not parse the --target-fps parameter. Exiting.");
+                return;
+            }
+        }
+
+        var bufferDepth = 3;
+        if (args.Any(x => x.StartsWith("--buffer-depth")))
+        {
+            try
+            {
+                bufferDepth = int.Parse(args.FirstOrDefault(x => x.StartsWith("--buffer-depth")).Split("=")[1]);
+                if (bufferDepth <= 0)
+                {
+                    throw new ArgumentOutOfRangeException(nameof(bufferDepth));
+                }
+            }
+            catch
+            {
+                Log.Error("Could not parse the --buffer-depth parameter. Exiting.");
+                return;
+            }
+        }
+
+        var windowlessFrameRate = 60;
+        if (args.Any(x => x.StartsWith("--windowless-frame-rate")))
+        {
+            try
+            {
+                windowlessFrameRate = int.Parse(args.FirstOrDefault(x => x.StartsWith("--windowless-frame-rate")).Split("=")[1]);
+                if (windowlessFrameRate <= 0)
+                {
+                    throw new ArgumentOutOfRangeException(nameof(windowlessFrameRate));
+                }
+            }
+            catch
+            {
+                Log.Error("Could not parse the --windowless-frame-rate parameter. Exiting.");
+                return;
+            }
+        }
+
+        var disableGpuVsync = args.Contains("--disable-gpu-vsync");
+        var disableFrameRateLimit = args.Contains("--disable-frame-rate-limit");
+
+        Log.Information(
+            "Frame pacing configured with target fps {TargetFps:F3}, buffer depth {BufferDepth}, Chromium windowless frame rate {WindowlessFrameRate}",
+            targetFps,
+            bufferDepth,
+            windowlessFrameRate);
+
+        if (disableGpuVsync)
+        {
+            Log.Information("Chromium GPU VSync disabled via --disable-gpu-vsync");
+        }
+
+        if (disableFrameRateLimit)
+        {
+            Log.Information("Chromium frame rate limiter disabled via --disable-frame-rate-limit");
+        }
+
         AsyncContext.Run(async delegate
         {
             var settings = new CefSettings();
@@ -137,13 +211,24 @@ public class Program
             //settings.SetOffScreenRenderingBestPerformanceArgs();
             settings.CefCommandLineArgs.Add("autoplay-policy", "no-user-gesture-required");
             //settings.CefCommandLineArgs.Add("off-screen-frame-rate", "60");
-            //settings.CefCommandLineArgs.Add("disable-frame-rate-limit");
+            if (disableGpuVsync)
+            {
+                settings.CefCommandLineArgs.Add("disable-gpu-vsync");
+            }
+
+            if (disableFrameRateLimit)
+            {
+                settings.CefCommandLineArgs.Add("disable-frame-rate-limit");
+            }
+
             settings.EnableAudio();
             Cef.Initialize(settings);
+            var pacingOptions = new FramePacingOptions(targetFps, bufferDepth, windowlessFrameRate);
             browserWrapper = new CefWrapper(
                 width,
                 height,
-                startUrl);
+                startUrl,
+                pacingOptions);
 
             await browserWrapper.InitializeWrapperAsync();
         });
