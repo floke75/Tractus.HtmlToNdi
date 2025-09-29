@@ -14,7 +14,7 @@ public sealed class FramePacer : IDisposable
     private readonly object stateLock = new();
 
     private Thread? workerThread;
-    private bool running;
+    private volatile bool running;
     private bool disposed;
     private byte[] currentFrame = Array.Empty<byte>();
     private FrameMetadata currentMetadata;
