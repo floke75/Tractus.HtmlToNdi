@@ -1,7 +1,7 @@
-
 using CefSharp;
 using CefSharp.OffScreen;
-using NewTek;
+using Serilog;
+using Tractus.HtmlToNdi.Video;
 
 namespace Tractus.HtmlToNdi.Chromium;
 
@@ -9,6 +9,8 @@ public class CefWrapper : IDisposable
 {
     private bool disposedValue;
     private ChromiumWebBrowser? browser;
+    private readonly FrameRingBuffer frameBuffer;
+    private readonly int chromiumFrameRate;
 
     public int Width { get; private set; }
     public int Height { get; private set; }
@@ -18,11 +20,13 @@ public class CefWrapper : IDisposable
     private Thread RenderWatchdog;
     private DateTime lastPaint = DateTime.MinValue;
 
-    public CefWrapper(int width, int height, string initialUrl)
+    public CefWrapper(int width, int height, string initialUrl, FrameRingBuffer frameBuffer, int chromiumFrameRate)
     {
         this.Width = width;
         this.Height = height;
         this.Url = initialUrl;
+        this.frameBuffer = frameBuffer ?? throw new ArgumentNullException(nameof(frameBuffer));
+        this.chromiumFrameRate = chromiumFrameRate;
 
         this.browser = new ChromiumWebBrowser(initialUrl)
         {
@@ -38,7 +42,7 @@ public class CefWrapper : IDisposable
     {
         while (!this.disposedValue)
         {
-            if(DateTime.Now.Subtract(this.lastPaint).TotalSeconds >= 1.0)
+            if (this.browser is not null && DateTime.Now.Subtract(this.lastPaint).TotalSeconds >= 1.0)
             {
                 this.browser.GetBrowser().GetHost().Invalidate(PaintElementType.View);
             }
@@ -56,7 +60,7 @@ public class CefWrapper : IDisposable
 
         await this.browser.WaitForInitialLoadAsync();
 
-        this.browser.GetBrowserHost().WindowlessFrameRate = 60;
+        this.browser.GetBrowserHost().WindowlessFrameRate = this.chromiumFrameRate;
         this.browser.ToggleAudioMute();
 
         this.browser.Paint += this.OnBrowserPaint;
@@ -65,35 +69,23 @@ public class CefWrapper : IDisposable
 
     private void OnBrowserPaint(object? sender, OnPaintEventArgs e)
     {
-        if (Program.NdiSenderPtr == nint.Zero)
-        {
-            return;
-        }
-
-        var browser = sender as ChromiumWebBrowser;
-
-        if (browser is null)
-        {
-            return;
-        }
-
         this.lastPaint = DateTime.Now;
 
-        var videoFrame = new NDIlib.video_frame_v2_t()
+        if (e.Width <= 0 || e.Height <= 0)
         {
-            FourCC = NDIlib.FourCC_type_e.FourCC_type_BGRA,
-            frame_rate_N = 60,
-            frame_rate_D = 1,
-            frame_format_type = NDIlib.frame_format_type_e.frame_format_type_progressive,
-            line_stride_in_bytes = e.Width * 4,
-            picture_aspect_ratio = (float)e.Width / e.Height,
-            p_data = e.BufferHandle,
-            timecode = NDIlib.send_timecode_synthesize,
-            xres = e.Width,
-            yres = e.Height,
-        };
+            return;
+        }
 
-        NDIlib.send_send_video_v2(Program.NdiSenderPtr, ref videoFrame);
+        var stride = e.Width * 4;
+        var expectedLength = stride * e.Height;
+        if (e.Buffer is null || e.Buffer.Length < expectedLength)
+        {
+            Log.Warning("Received paint buffer smaller than expected (length={Length}, expected={Expected}).", e.Buffer?.Length ?? 0, expectedLength);
+            return;
+        }
+
+        var pixels = new ReadOnlySpan<byte>(e.Buffer, 0, expectedLength);
+        this.frameBuffer.WriteFrame(pixels, e.Width, e.Height, stride, DateTime.UtcNow);
     }
 
     protected virtual void Dispose(bool disposing)
@@ -111,15 +103,12 @@ public class CefWrapper : IDisposable
                 this.browser = null;
             }
 
-            // TODO: free unmanaged resources (unmanaged objects) and override finalizer
-            // TODO: set large fields to null
             this.disposedValue = true;
         }
     }
 
     public void Dispose()
     {
-        // Do not change this code. Put cleanup code in 'Dispose(bool disposing)' method
         this.Dispose(disposing: true);
         GC.SuppressFinalize(this);
     }
@@ -138,7 +127,7 @@ public class CefWrapper : IDisposable
 
     public void ScrollBy(int increment)
     {
-        this.browser.SendMouseWheelEvent(0, 0, 0, increment, CefEventFlags.None); 
+        this.browser?.SendMouseWheelEvent(0, 0, 0, increment, CefEventFlags.None);
     }
 
     public void Click(int x, int y)
@@ -177,6 +166,6 @@ public class CefWrapper : IDisposable
     }
     public void RefreshPage()
     {
-        this.browser.Reload();
+        this.browser?.Reload();
     }
 }
