@@ -1,4 +1,3 @@
-
 using CefSharp;
 using CefSharp.OffScreen;
 using NewTek;
@@ -7,6 +6,10 @@ namespace Tractus.HtmlToNdi.Chromium;
 
 public class CefWrapper : IDisposable
 {
+    private readonly double targetFrameRate;
+    private readonly bool useBufferedPipeline;
+    private readonly int bufferDepth;
+
     private bool disposedValue;
     private ChromiumWebBrowser? browser;
 
@@ -18,11 +21,19 @@ public class CefWrapper : IDisposable
     private Thread RenderWatchdog;
     private DateTime lastPaint = DateTime.MinValue;
 
-    public CefWrapper(int width, int height, string initialUrl)
+    private FramePump? framePump;
+    private FrameRingBuffer? frameRingBuffer;
+    private VideoFramePool? framePool;
+    private FramePacer? framePacer;
+
+    public CefWrapper(int width, int height, string initialUrl, double targetFrameRate, bool enableBufferedPipeline, int bufferDepth)
     {
         this.Width = width;
         this.Height = height;
         this.Url = initialUrl;
+        this.targetFrameRate = targetFrameRate;
+        this.useBufferedPipeline = enableBufferedPipeline;
+        this.bufferDepth = Math.Max(2, bufferDepth);
 
         this.browser = new ChromiumWebBrowser(initialUrl)
         {
@@ -31,14 +42,24 @@ public class CefWrapper : IDisposable
 
         this.browser.Size = new System.Drawing.Size(this.Width, this.Height);
 
-        this.RenderWatchdog = new Thread(this.RenderWatchDogThread);
+        this.RenderWatchdog = new Thread(this.RenderWatchDogThread)
+        {
+            IsBackground = true,
+            Name = "ChromiumRenderWatchdog"
+        };
+
+        if (this.useBufferedPipeline)
+        {
+            this.framePool = new VideoFramePool();
+            this.frameRingBuffer = new FrameRingBuffer(this.bufferDepth);
+        }
     }
 
     private void RenderWatchDogThread()
     {
         while (!this.disposedValue)
         {
-            if(DateTime.Now.Subtract(this.lastPaint).TotalSeconds >= 1.0)
+            if (DateTime.Now.Subtract(this.lastPaint).TotalSeconds >= 1.0 && this.browser is not null)
             {
                 this.browser.GetBrowser().GetHost().Invalidate(PaintElementType.View);
             }
@@ -56,41 +77,102 @@ public class CefWrapper : IDisposable
 
         await this.browser.WaitForInitialLoadAsync();
 
-        this.browser.GetBrowserHost().WindowlessFrameRate = 60;
+        this.browser.GetBrowserHost().WindowlessFrameRate = (int)Math.Round(this.targetFrameRate);
         this.browser.ToggleAudioMute();
 
         this.browser.Paint += this.OnBrowserPaint;
         this.RenderWatchdog.Start();
+
+        this.framePump = new FramePump(this.browser, this.targetFrameRate);
+
+        if (this.useBufferedPipeline && this.frameRingBuffer is not null)
+        {
+            this.framePacer = new FramePacer(
+                this.frameRingBuffer,
+                this.targetFrameRate,
+                frame => this.SendFrame(frame));
+        }
     }
 
     private void OnBrowserPaint(object? sender, OnPaintEventArgs e)
     {
-        if (Program.NdiSenderPtr == nint.Zero)
-        {
-            return;
-        }
-
-        var browser = sender as ChromiumWebBrowser;
-
-        if (browser is null)
+        if (this.browser is null)
         {
             return;
         }
 
         this.lastPaint = DateTime.Now;
 
+        if (this.useBufferedPipeline)
+        {
+            if (this.framePool is null || this.frameRingBuffer is null)
+            {
+                return;
+            }
+
+            var frame = this.framePool.Rent(e.Width, e.Height, e.Stride);
+
+            try
+            {
+                frame.CopyFrom(e.BufferHandle, e.Stride, e.Width, e.Height);
+            }
+            catch
+            {
+                frame.Release();
+                throw;
+            }
+
+            var droppedFrame = this.frameRingBuffer.Enqueue(frame);
+            droppedFrame?.Release();
+            return;
+        }
+
+        if (Program.NdiSenderPtr == nint.Zero)
+        {
+            return;
+        }
+
+        this.SendFrame(e.BufferHandle, e.Width, e.Height, e.Stride);
+    }
+
+    private void SendFrame(VideoFrame frame)
+    {
+        if (Program.NdiSenderPtr == nint.Zero)
+        {
+            return;
+        }
+
         var videoFrame = new NDIlib.video_frame_v2_t()
         {
             FourCC = NDIlib.FourCC_type_e.FourCC_type_BGRA,
-            frame_rate_N = 60,
+            frame_rate_N = (int)Math.Round(this.targetFrameRate),
             frame_rate_D = 1,
             frame_format_type = NDIlib.frame_format_type_e.frame_format_type_progressive,
-            line_stride_in_bytes = e.Width * 4,
-            picture_aspect_ratio = (float)e.Width / e.Height,
-            p_data = e.BufferHandle,
+            line_stride_in_bytes = frame.Stride,
+            picture_aspect_ratio = (float)frame.Width / frame.Height,
+            p_data = frame.Pointer,
             timecode = NDIlib.send_timecode_synthesize,
-            xres = e.Width,
-            yres = e.Height,
+            xres = frame.Width,
+            yres = frame.Height,
+        };
+
+        NDIlib.send_send_video_v2(Program.NdiSenderPtr, ref videoFrame);
+    }
+
+    private void SendFrame(nint bufferHandle, int width, int height, int stride)
+    {
+        var videoFrame = new NDIlib.video_frame_v2_t()
+        {
+            FourCC = NDIlib.FourCC_type_e.FourCC_type_BGRA,
+            frame_rate_N = (int)Math.Round(this.targetFrameRate),
+            frame_rate_D = 1,
+            frame_format_type = NDIlib.frame_format_type_e.frame_format_type_progressive,
+            line_stride_in_bytes = stride,
+            picture_aspect_ratio = (float)width / height,
+            p_data = bufferHandle,
+            timecode = NDIlib.send_timecode_synthesize,
+            xres = width,
+            yres = height,
         };
 
         NDIlib.send_send_video_v2(Program.NdiSenderPtr, ref videoFrame);
@@ -102,6 +184,20 @@ public class CefWrapper : IDisposable
         {
             if (disposing)
             {
+                this.framePump?.Dispose();
+                this.framePump = null;
+
+                this.framePacer?.Dispose();
+                this.framePacer = null;
+
+                if (this.frameRingBuffer is not null)
+                {
+                    foreach (var frame in this.frameRingBuffer.Drain())
+                    {
+                        frame.Release();
+                    }
+                }
+
                 if (this.browser is not null)
                 {
                     this.browser.Paint -= this.OnBrowserPaint;
@@ -111,15 +207,12 @@ public class CefWrapper : IDisposable
                 this.browser = null;
             }
 
-            // TODO: free unmanaged resources (unmanaged objects) and override finalizer
-            // TODO: set large fields to null
             this.disposedValue = true;
         }
     }
 
     public void Dispose()
     {
-        // Do not change this code. Put cleanup code in 'Dispose(bool disposing)' method
         this.Dispose(disposing: true);
         GC.SuppressFinalize(this);
     }
@@ -138,14 +231,14 @@ public class CefWrapper : IDisposable
 
     public void ScrollBy(int increment)
     {
-        this.browser.SendMouseWheelEvent(0, 0, 0, increment, CefEventFlags.None); 
+        this.browser?.SendMouseWheelEvent(0, 0, 0, increment, CefEventFlags.None);
     }
 
     public void Click(int x, int y)
     {
         var host = this.browser?.GetBrowser()?.GetHost();
 
-        if(host is null)
+        if (host is null)
         {
             return;
         }
@@ -166,7 +259,7 @@ public class CefWrapper : IDisposable
             return;
         }
 
-        foreach(var c in model.ToSend)
+        foreach (var c in model.ToSend)
         {
             host.SendKeyEvent(new KeyEvent()
             {
@@ -175,8 +268,9 @@ public class CefWrapper : IDisposable
             });
         }
     }
+
     public void RefreshPage()
     {
-        this.browser.Reload();
+        this.browser?.Reload();
     }
 }

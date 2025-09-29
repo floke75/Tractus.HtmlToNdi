@@ -15,10 +15,16 @@ If the web page you are loading has a transparent background, NDI will honor tha
 Parameter|Description
 ----|---
 `--ndiname="NDI Source Name"`|The source name this browser instance will send. Defaults to "`HTML5`".
-`--width=1920`|The width of the browser source. Defaults to `1920`.
-`--width=1080`|The height of the browser source. Defaults to `1080`.
+`--w=1920`|The width of the browser source. Defaults to `1920`.
+`--h=1080`|The height of the browser source. Defaults to `1080`.
 `--port=9999`|The port the HTTP server will listen on. Defaults to `9999`.
 `--url="https://www.tractus.ca"`|The startup webpage. Defaults to `https://testpattern.tractusevents.com/`.
+`--fps=60`|Target frame rate for Chromium invalidation and the advertised NDI frame cadence. Must be between `1` and `240` (defaul
+t `60`).
+`--buffered`|Enable an additional pacing buffer between Chromium and the NDI sender. Frames will be copied into a pool-backed CPU
+ buffer so the output cadence can be metronomic even if Chromium jitters. Disabled by default.
+`--buffer-depth=6`|Size of the frame pacing buffer when `--buffered` is active. Values between `2` and `60` are accepted. Providing
+ this switch implies `--buffered`.
 
 #### Example Launch
 

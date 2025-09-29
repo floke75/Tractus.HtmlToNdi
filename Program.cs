@@ -95,6 +95,9 @@ public class Program
 
         var width = 1920;
         var height = 1080;
+        var targetFrameRate = 60;
+        var enableBufferedPacing = false;
+        var bufferDepth = 6;
 
         if (args.Any(x => x.StartsWith("--w")))
         {
@@ -122,6 +125,46 @@ public class Program
             }
         }
 
+        if (args.Any(x => x.StartsWith("--fps")))
+        {
+            try
+            {
+                targetFrameRate = int.Parse(args.FirstOrDefault(x => x.StartsWith("--fps")).Split("=")[1]);
+
+                if (targetFrameRate <= 0 || targetFrameRate > 240)
+                {
+                    throw new ArgumentOutOfRangeException(nameof(targetFrameRate));
+                }
+            }
+            catch (Exception)
+            {
+                Log.Error("Could not parse the --fps parameter. It must be an integer between 1 and 240. Exiting.");
+                return;
+            }
+        }
+
+        enableBufferedPacing = args.Any(x => string.Equals(x, "--buffered", StringComparison.OrdinalIgnoreCase));
+
+        if (args.Any(x => x.StartsWith("--buffer-depth")))
+        {
+            try
+            {
+                bufferDepth = int.Parse(args.FirstOrDefault(x => x.StartsWith("--buffer-depth")).Split("=")[1]);
+
+                if (bufferDepth < 2 || bufferDepth > 60)
+                {
+                    throw new ArgumentOutOfRangeException(nameof(bufferDepth));
+                }
+
+                enableBufferedPacing = true;
+            }
+            catch (Exception)
+            {
+                Log.Error("Could not parse the --buffer-depth parameter. It must be an integer between 2 and 60. Exiting.");
+                return;
+            }
+        }
+
         AsyncContext.Run(async delegate
         {
             var settings = new CefSettings();
@@ -143,7 +186,10 @@ public class Program
             browserWrapper = new CefWrapper(
                 width,
                 height,
-                startUrl);
+                startUrl,
+                targetFrameRate,
+                enableBufferedPacing,
+                bufferDepth);
 
             await browserWrapper.InitializeWrapperAsync();
         });
