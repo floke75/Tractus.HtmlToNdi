@@ -18,6 +18,7 @@ public sealed class NdiVideoPipeline : INdiVideoSink, IDisposable
     private readonly int _bufferDepth;
     private readonly ILogger _logger;
     private readonly FramePump _framePump;
+    private readonly bool _hasValidSender;
     private readonly FrameTimeAverager _timeAverager = new();
     private readonly CancellationTokenSource? _pacerCts;
     private readonly Task? _pacerTask;
@@ -40,6 +41,14 @@ public sealed class NdiVideoPipeline : INdiVideoSink, IDisposable
         _framePump = framePump;
         _bufferQueue = new Queue<BufferedVideoFrame>(_bufferDepth);
 
+        _hasValidSender = ndiSender != nint.Zero;
+
+        if (!_hasValidSender)
+        {
+            _logger.Warning("NDI sender pointer is zero; suppressing video transmission.");
+            return;
+        }
+
         if (_useBuffer)
         {
             _pacerCts = new CancellationTokenSource();
@@ -49,6 +58,11 @@ public sealed class NdiVideoPipeline : INdiVideoSink, IDisposable
 
     public void HandleFrame(OnPaintEventArgs args)
     {
+        if (!_hasValidSender)
+        {
+            return;
+        }
+
         if (!_useBuffer)
         {
             SendDirect(args);
