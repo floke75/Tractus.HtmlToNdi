@@ -5,6 +5,8 @@ VisualStudioVersion = 17.11.35303.130
 MinimumVisualStudioVersion = 10.0.40219.1
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Tractus.HtmlToNdi", "Tractus.HtmlToNdi.csproj", "{6B6C038D-3984-455A-95CA-A9079B3FC4E2}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Tractus.HtmlToNdi.Tests", "Tractus.HtmlToNdi.Tests\\Tractus.HtmlToNdi.Tests.csproj", "{716CBECF-C13F-40CD-B285-4528A2DF8116}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -17,11 +19,19 @@ Global
 		{6B6C038D-3984-455A-95CA-A9079B3FC4E2}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{6B6C038D-3984-455A-95CA-A9079B3FC4E2}.Debug|x64.ActiveCfg = Debug|x64
 		{6B6C038D-3984-455A-95CA-A9079B3FC4E2}.Debug|x64.Build.0 = Debug|x64
-		{6B6C038D-3984-455A-95CA-A9079B3FC4E2}.Release|Any CPU.ActiveCfg = Release|Any CPU
-		{6B6C038D-3984-455A-95CA-A9079B3FC4E2}.Release|Any CPU.Build.0 = Release|Any CPU
-		{6B6C038D-3984-455A-95CA-A9079B3FC4E2}.Release|x64.ActiveCfg = Release|x64
-		{6B6C038D-3984-455A-95CA-A9079B3FC4E2}.Release|x64.Build.0 = Release|x64
-	EndGlobalSection
+                {6B6C038D-3984-455A-95CA-A9079B3FC4E2}.Release|Any CPU.ActiveCfg = Release|Any CPU
+                {6B6C038D-3984-455A-95CA-A9079B3FC4E2}.Release|Any CPU.Build.0 = Release|Any CPU
+                {6B6C038D-3984-455A-95CA-A9079B3FC4E2}.Release|x64.ActiveCfg = Release|x64
+                {6B6C038D-3984-455A-95CA-A9079B3FC4E2}.Release|x64.Build.0 = Release|x64
+                {716CBECF-C13F-40CD-B285-4528A2DF8116}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+                {716CBECF-C13F-40CD-B285-4528A2DF8116}.Debug|Any CPU.Build.0 = Debug|Any CPU
+                {716CBECF-C13F-40CD-B285-4528A2DF8116}.Debug|x64.ActiveCfg = Debug|Any CPU
+                {716CBECF-C13F-40CD-B285-4528A2DF8116}.Debug|x64.Build.0 = Debug|Any CPU
+                {716CBECF-C13F-40CD-B285-4528A2DF8116}.Release|Any CPU.ActiveCfg = Release|Any CPU
+                {716CBECF-C13F-40CD-B285-4528A2DF8116}.Release|Any CPU.Build.0 = Release|Any CPU
+                {716CBECF-C13F-40CD-B285-4528A2DF8116}.Release|x64.ActiveCfg = Release|Any CPU
+                {716CBECF-C13F-40CD-B285-4528A2DF8116}.Release|x64.Build.0 = Release|Any CPU
+        EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
 	EndGlobalSection
