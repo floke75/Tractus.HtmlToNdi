@@ -1,4 +1,3 @@
-
 using CefSharp;
 using CefSharp.OffScreen;
 using Microsoft.AspNetCore.Builder;
@@ -10,136 +9,82 @@ using NewTek;
 using NewTek.NDI;
 using Serilog;
 using System.Globalization;
-using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
+using System.Windows.Forms;
 using Tractus.HtmlToNdi.Chromium;
+using Tractus.HtmlToNdi.Launcher;
 using Tractus.HtmlToNdi.Models;
 using Tractus.HtmlToNdi.Video;
 
 namespace Tractus.HtmlToNdi;
+
 public class Program
 {
     public static nint NdiSenderPtr;
     public static CefWrapper browserWrapper;
 
+    [STAThread]
     public static void Main(string[] args)
     {
+        var sanitizedArgs = RemoveLauncherFlags(args);
+
         var launchCachePath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "cache", Guid.NewGuid().ToString());
 
         var exeDirectory = AppDomain.CurrentDomain.BaseDirectory;
         Directory.SetCurrentDirectory(exeDirectory);
-        AppManagement.Initialize(args);
+        AppManagement.Initialize(sanitizedArgs);
 
-        string? GetArgValue(string switchName)
-            => args.FirstOrDefault(x => x.StartsWith($"{switchName}=", StringComparison.Ordinal))?
-                .Split('=', 2)[1];
-
-        bool HasFlag(string flag) => args.Any(x => x.Equals(flag, StringComparison.Ordinal));
-
-        var ndiName = GetArgValue("--ndiname") ?? "HTML5";
-        if (string.IsNullOrWhiteSpace(ndiName))
+        LaunchParameters? parameters;
+        if (ShouldUseLauncher(args))
         {
-            do
-            {
-                Console.Write("NDI source name >");
-                ndiName = Console.ReadLine()?.Trim();
-            }
-            while (string.IsNullOrWhiteSpace(ndiName));
-        }
+            Application.SetHighDpiMode(HighDpiMode.SystemAware);
+            Application.EnableVisualStyles();
+            Application.SetCompatibleTextRenderingDefault(false);
 
-        var port = 9999;
-        var portArg = GetArgValue("--port");
-        if (portArg is not null)
-        {
-            if (!int.TryParse(portArg, NumberStyles.Integer, CultureInfo.InvariantCulture, out port))
+            var settings = LauncherSettingsStore.Load();
+            using var form = new LauncherForm(settings);
+            if (form.ShowDialog() != DialogResult.OK || form.SelectedParameters is null)
             {
-                Log.Error("Could not parse the --port parameter. Exiting.");
                 return;
             }
+
+            if (form.CurrentSettings is not null)
+            {
+                LauncherSettingsStore.Save(form.CurrentSettings);
+            }
+
+            parameters = form.SelectedParameters;
         }
         else
         {
-            var portNumber = "";
-            while (string.IsNullOrWhiteSpace(portNumber) || !int.TryParse(portNumber, out port))
+            if (!LaunchParameters.TryFromArgs(sanitizedArgs, out parameters) || parameters is null)
             {
-                Console.Write("HTTP API port # >");
-                portNumber = Console.ReadLine()?.Trim();
-            }
-        }
-
-        var startUrl = GetArgValue("--url") ?? "https://testpattern.tractusevents.com/";
-
-        if (!Uri.TryCreate(startUrl, UriKind.Absolute, out _))
-        {
-            Log.Error("Invalid --url parameter. Exiting.");
-            return;
-        }
-
-        var width = 1920;
-        var widthArg = GetArgValue("--w");
-        if (widthArg is not null && (!int.TryParse(widthArg, NumberStyles.Integer, CultureInfo.InvariantCulture, out width) || width <= 0))
-        {
-            Log.Error("Could not parse the --w (width) parameter. Exiting.");
-            return;
-        }
-
-        var height = 1080;
-        var heightArg = GetArgValue("--h");
-        if (heightArg is not null && (!int.TryParse(heightArg, NumberStyles.Integer, CultureInfo.InvariantCulture, out height) || height <= 0))
-        {
-            Log.Error("Could not parse the --h (height) parameter. Exiting.");
-            return;
-        }
-
-        var frameRate = FrameRate.Parse(GetArgValue("--fps"));
-
-        var bufferDepth = 0;
-        var bufferDepthArg = GetArgValue("--buffer-depth");
-        if (bufferDepthArg is not null && (!int.TryParse(bufferDepthArg, NumberStyles.Integer, CultureInfo.InvariantCulture, out bufferDepth) || bufferDepth < 0))
-        {
-            Log.Error("Could not parse the --buffer-depth parameter. Exiting.");
-            return;
-        }
-
-        var telemetryInterval = TimeSpan.FromSeconds(10);
-        var telemetryArg = GetArgValue("--telemetry-interval");
-        if (telemetryArg is not null)
-        {
-            if (!double.TryParse(telemetryArg, NumberStyles.Float, CultureInfo.InvariantCulture, out var telemetrySeconds) || telemetrySeconds <= 0)
-            {
-                Log.Error("Could not parse the --telemetry-interval parameter. Exiting.");
-                return;
-            }
-
-            telemetryInterval = TimeSpan.FromSeconds(telemetrySeconds);
-        }
-
-        var enableBuffering = HasFlag("--enable-output-buffer") || bufferDepth > 0;
-        var effectiveDepth = enableBuffering ? Math.Max(1, bufferDepth == 0 ? 3 : bufferDepth) : 1;
-
-        int? windowlessFrameRateOverride = null;
-        var windowlessRateArg = GetArgValue("--windowless-frame-rate");
-        if (windowlessRateArg is not null)
-        {
-            if (double.TryParse(windowlessRateArg, NumberStyles.Float, CultureInfo.InvariantCulture, out var windowlessRate) && windowlessRate > 0)
-            {
-                windowlessFrameRateOverride = (int)Math.Clamp(Math.Round(windowlessRate), 1, 240);
-            }
-            else
-            {
-                Log.Error("Could not parse the --windowless-frame-rate parameter. Exiting.");
                 return;
             }
         }
+
+        RunApplication(parameters, sanitizedArgs, launchCachePath);
+    }
+
+    private static void RunApplication(LaunchParameters parameters, string[] args, string launchCachePath)
+    {
+        var frameRate = parameters.FrameRate;
+        var width = parameters.Width;
+        var height = parameters.Height;
+        var startUrl = parameters.StartUrl;
+        var windowlessFrameRateOverride = parameters.WindowlessFrameRateOverride;
+
+        var enableBuffering = parameters.EnableBuffering;
+        var effectiveDepth = enableBuffering ? Math.Max(1, parameters.BufferDepth == 0 ? 3 : parameters.BufferDepth) : 1;
 
         var pipelineOptions = new NdiVideoPipelineOptions
         {
             EnableBuffering = enableBuffering,
             BufferDepth = effectiveDepth,
-            TelemetryInterval = telemetryInterval,
+            TelemetryInterval = parameters.TelemetryInterval,
         };
 
-        var ndiNamePtr = UTF.StringToUtf8(ndiName);
+        var ndiNamePtr = UTF.StringToUtf8(parameters.NdiName);
         try
         {
             var settings_T = new NDIlib.send_create_t
@@ -182,12 +127,12 @@ public class Program
                 var targetWindowlessRate = windowlessFrameRateOverride ?? Math.Clamp((int)Math.Round(frameRate.Value), 1, 240);
                 settings.CefCommandLineArgs.Add("off-screen-frame-rate", targetWindowlessRate.ToString(CultureInfo.InvariantCulture));
 
-                if (HasFlag("--disable-gpu-vsync"))
+                if (parameters.DisableGpuVsync)
                 {
                     settings.CefCommandLineArgs.Add("disable-gpu-vsync", "1");
                 }
 
-                if (HasFlag("--disable-frame-rate-limit"))
+                if (parameters.DisableFrameRateLimit)
                 {
                     settings.CefCommandLineArgs.Add("disable-frame-rate-limit", "1");
                 }
@@ -217,12 +162,10 @@ public class Program
 
         builder.Services.AddSerilog();
 
-        builder.WebHost.UseUrls($"http://*:{port}");
+        builder.WebHost.UseUrls($"http://*:{parameters.Port}");
 
-        // Add services to the container.
         builder.Services.AddAuthorization();
 
-        // Learn more about configuring Swagger/OpenAPI at https://aka.ms/aspnetcore/swashbuckle
         builder.Services.AddEndpointsApiExplorer();
         builder.Services.AddSwaggerGen();
 
@@ -260,7 +203,7 @@ public class Program
                 {
                     var metadataConverted = UTF.Utf8ToString(metadata.p_data);
 
-                    if(metadataConverted.StartsWith("<ndi_kvm u=\""))
+                    if (metadataConverted.StartsWith("<ndi_kvm u=\""))
                     {
                         metadataConverted = metadataConverted.Replace("<ndi_kvm u=\"", "");
                         metadataConverted = metadataConverted.Replace("\"/>", "");
@@ -271,38 +214,34 @@ public class Program
 
                             var opcode = binary[0];
 
-                            if(opcode == 0x03)
+                            if (opcode == 0x03)
                             {
                                 x = BitConverter.ToSingle(binary, 1);
                                 y = BitConverter.ToSingle(binary, 5);
                             }
-                            else if(opcode == 0x04)
+                            else if (opcode == 0x04)
                             {
-                                // Mouse Left Down
                                 var screenX = (int)(x * width);
                                 var screenY = (int)(y * height);
 
                                 browserWrapper.Click(screenX, screenY);
                             }
-                            else if(opcode == 0x07)
+                            else if (opcode == 0x07)
                             {
                                 // Mouse Left Up
                             }
                         }
                         catch
                         {
-
                         }
                     }
 
                     Log.Logger.Warning("Got metadata: " + metadataConverted);
                     NDIlib.send_free_metadata(NdiSenderPtr, ref metadata);
                 }
-
             }
         });
         thread.Start();
-
 
         app.MapPost("/seturl", (HttpContext httpContext, GoToUrlModel url) =>
         {
@@ -353,8 +292,67 @@ public class Program
             }
             catch
             {
-
             }
         }
     }
+
+    private static string[] RemoveLauncherFlags(string[] args)
+        => args.Where(static a => !IsLauncherFlag(a)).ToArray();
+
+    private static bool IsLauncherFlag(string arg)
+    {
+        if (!arg.StartsWith("--", StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        var flagName = arg.Split('=', 2)[0];
+        return flagName.Equals("--launcher", StringComparison.OrdinalIgnoreCase)
+            || flagName.Equals("--no-launcher", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool ShouldUseLauncher(string[] args)
+    {
+        if (args.Any(a => a.Equals("--launcher", StringComparison.OrdinalIgnoreCase)))
+        {
+            return true;
+        }
+
+        if (args.Any(a => a.Equals("--no-launcher", StringComparison.OrdinalIgnoreCase)))
+        {
+            return false;
+        }
+
+        foreach (var arg in args)
+        {
+            if (!arg.StartsWith("--", StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            var switchName = arg.Split('=', 2)[0];
+            if (ConfigurationSwitches.Contains(switchName))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private static readonly HashSet<string> ConfigurationSwitches = new(StringComparer.Ordinal)
+    {
+        "--ndiname",
+        "--port",
+        "--url",
+        "--w",
+        "--h",
+        "--fps",
+        "--buffer-depth",
+        "--telemetry-interval",
+        "--windowless-frame-rate",
+        "--enable-output-buffer",
+        "--disable-gpu-vsync",
+        "--disable-frame-rate-limit",
+    };
 }
