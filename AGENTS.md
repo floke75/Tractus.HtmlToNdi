@@ -25,7 +25,7 @@ This document is the ground-truth orientation guide. Treat it as a living specâ€
 
 | Flag | Example | Behaviour / Default |
 | --- | --- | --- |
-| `--ndiname=<value>` | `--ndiname="Studio Browser"` | Sets the NDI source name. If omitted, the app prompts on STDIN until the user types a non-empty name. Initial default is "HTML5" before prompting. |
+| `--ndiname=<value>` | `--ndiname="Studio Browser"` | Sets the NDI source name. In GUI mode this comes from the launcher; in CLI-only mode the app prompts on STDIN until a non-empty name is entered (default "HTML5"). |
 | `--port=<int>` | `--port=9999` | Sets the HTTP listener port. If omitted, prompts interactively until a valid integer is entered. |
 | `--url=<https://...>` | `--url=https://testpattern.tractusevents.com/` | Sets the startup page. Defaults to `https://testpattern.tractusevents.com/`. |
 | `--w=<int>` | `--w=1920` | Sets browser width in pixels. Defaults to 1920. |
@@ -39,10 +39,13 @@ This document is the ground-truth orientation guide. Treat it as a living specâ€
 | `--disable-frame-rate-limit` | `--disable-frame-rate-limit` | Passes `--disable-frame-rate-limit` to Chromium for maximum redraw throughput. |
 | `-debug` | `-debug` | Raises Serilog minimum level to `Debug`. |
 | `-quiet` | `-quiet` | Disables console logging (file logging remains). |
+| `--gui` | `--gui` | Force the Windows Forms launcher to appear even if other CLI arguments are supplied. |
+| `--no-gui` | `--no-gui` | Skip the launcher and fall back to console prompts/CLI defaults. |
 
 Other configuration surfaces:
 
 * Logging: Serilog writes to console (unless `-quiet`) and to `%USERPROFILE%/Documents/<AppName>_log.txt`. `AppManagement.LoggingLevel` is globally accessible.
+* Launcher persistence: When the WinForms launcher is used, settings are stored in `launcher-settings.json` next to the executable and pre-populated on the next run.
 * Build target: `Tractus.HtmlToNdi.csproj` targets **.NET 8.0**, `AllowUnsafeBlocks=true`, and forces `PlatformTarget=x64`. Do not assume .NET 6/7.
 * Assets copied at runtime: `HtmlToNdi.ico` and `HtmlToNdi.png` are always copied to the output directory.
 
