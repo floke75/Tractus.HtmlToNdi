@@ -10,9 +10,12 @@ using NewTek;
 using NewTek.NDI;
 using Serilog;
 using System.Globalization;
+using System.Linq;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
+using System.Windows.Forms;
 using Tractus.HtmlToNdi.Chromium;
+using Tractus.HtmlToNdi.Launcher;
 using Tractus.HtmlToNdi.Models;
 using Tractus.HtmlToNdi.Video;
 
@@ -22,7 +25,61 @@ public class Program
     public static nint NdiSenderPtr;
     public static CefWrapper browserWrapper;
 
+    [STAThread]
     public static void Main(string[] args)
+    {
+        var finalArgs = args ?? Array.Empty<string>();
+
+        if (ShouldShowLauncher(finalArgs))
+        {
+            var settings = LauncherSettings.Load();
+            Application.EnableVisualStyles();
+#pragma warning disable CA1416 // Windows only API usage is expected
+            Application.SetCompatibleTextRenderingDefault(false);
+#pragma warning restore CA1416
+            using var form = new LauncherForm(settings);
+            if (form.ShowDialog() != DialogResult.OK)
+            {
+                return;
+            }
+
+            var updatedSettings = form.UpdatedSettings;
+            updatedSettings.Save();
+            finalArgs = updatedSettings.ToArgs();
+        }
+
+        finalArgs = finalArgs
+            .Where(arg => !string.Equals(arg, "--gui", StringComparison.OrdinalIgnoreCase) &&
+                          !string.Equals(arg, "--no-gui", StringComparison.OrdinalIgnoreCase))
+            .ToArray();
+
+        RunApplication(finalArgs);
+    }
+
+    private static bool ShouldShowLauncher(string[] args)
+    {
+        if (args.Length == 0)
+        {
+            return true;
+        }
+
+        foreach (var arg in args)
+        {
+            if (string.Equals(arg, "--no-gui", StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+
+            if (string.Equals(arg, "--gui", StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static void RunApplication(string[] args)
     {
         var launchCachePath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "cache", Guid.NewGuid().ToString());
 

@@ -6,7 +6,8 @@ A simple wrapper around [CEFSharp](https://github.com/cefsharp/CefSharp) and [ND
 
 ## Usage
 
-Launch as-is for a 1920x1080 browser instance. The app will ask you for a source name if one is not provided on the command line.
+Launch the executable without arguments to open the desktop launcher. It remembers the most recent settings, lets you tweak
+them, and starts the capture when you press **Launch**. Use the `--no-gui` switch if you prefer the legacy console prompts.
 
 If the web page you are loading has a transparent background, NDI will honor that transparency.
 
@@ -26,6 +27,8 @@ Parameter|Description
 `--windowless-frame-rate=60`|Overrides CEF's internal repaint cadence. Defaults to the nearest integer of `--fps`.
 `--disable-gpu-vsync`|Disables Chromium's GPU vsync throttling.
 `--disable-frame-rate-limit`|Disables Chromium's frame rate limiter.
+`--gui`|Force the launcher window to appear even when command line arguments are supplied.
+`--no-gui`|Skip the launcher window and fall back to console prompts for required values.
 
 #### Example Launch
 
