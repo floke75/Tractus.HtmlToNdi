@@ -15,14 +15,16 @@ If the web page you are loading has a transparent background, NDI will honor tha
 Parameter|Description
 ----|---
 `--ndiname="NDI Source Name"`|The source name this browser instance will send. Defaults to "`HTML5`".
-`--width=1920`|The width of the browser source. Defaults to `1920`.
-`--width=1080`|The height of the browser source. Defaults to `1080`.
+`--w=1920`|The width of the browser source. Defaults to `1920`.
+`--h=1080`|The height of the browser source. Defaults to `1080`.
 `--port=9999`|The port the HTTP server will listen on. Defaults to `9999`.
 `--url="https://www.tractus.ca"`|The startup webpage. Defaults to `https://testpattern.tractusevents.com/`.
+`--fps=60`|Target rendering cadence for Chromium and the advertised NDI frame rate. Defaults to `60`.
+`--frame-buffer=0`|Optional buffered frame queue depth. `0` keeps the zero-copy pipeline, `>0` enables paced buffering with the specified queue length.
 
 #### Example Launch
 
-`.\Tractus.HtmlToNdi.exe --ndiname="HTML 5 Test" --w=1080 --h=1080 --url="https://testpattern.tractusevents.com"`
+`.\Tractus.HtmlToNdi.exe --ndiname="HTML 5 Test" --w=1080 --h=1080 --fps=60 --url="https://testpattern.tractusevents.com"`
 
 ## API Routes
 
@@ -35,7 +37,7 @@ Route|Method|Description|Example
 - Frames are sent to NDI in RGBA format. Some machines may experience a slight performance penalty.
 - H.264 and any other non-free codecs are not available for video playback since this uses Chromium. Sites like YouTube likely won't work.
 - Audio data received from the browser is passed to NDI directly.
-- NDI frame rate is set to 60 frames per second. The internal max render frame rate is set to be capped at 60 frames per second.
+- NDI frame rate defaults to 60 frames per second but can be overridden with `--fps`. When buffering is enabled the pacer also runs at that cadence.
 
 ## More Tools
 
