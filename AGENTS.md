@@ -9,7 +9,7 @@ This document is the ground-truth orientation guide. Treat it as a living spec‚Ä
 
 ## 1. What the current build actually does (net8.0, December 2024 snapshot)
 
-* Entry point: `Program.Main` (`Program.cs`). It sets the working directory, initializes logging via `AppManagement.Initialize`, parses CLI flags (including `--fps`, buffering, and telemetry settings), allocates the NDI sender up front, constructs an `NdiVideoPipeline`, then starts CefSharp OffScreen inside a dedicated synchronization context. After the browser bootstraps the app spins up the ASP.NET Core minimal API.
+* Entry point: `Program.Main` (`Program.cs`). It sets the working directory, initializes logging via `AppManagement.Initialize`, optionally displays a WinForms launcher to collect settings, parses CLI flags (including `--fps`, buffering, and telemetry settings), allocates the NDI sender up front, constructs an `NdiVideoPipeline`, then starts CefSharp OffScreen inside a dedicated synchronization context. After the browser bootstraps the app spins up the ASP.NET Core minimal API.
 * Chromium lifecycle: `AsyncContext.Run` + `SingleThreadSynchronizationContext` keep CefSharp happy on one STA-like thread. `CefWrapper.InitializeWrapperAsync` waits for the first page load, unmutes audio (CEF starts muted), subscribes to the `Paint` event, and starts a `FramePump` that invalidates Chromium at the requested cadence while a watchdog keeps the UI thread alive.
 * Video path: `ChromiumWebBrowser.Paint` forwards frames to the `NdiVideoPipeline`. In zero-copy mode the pipeline sends the GPU buffer directly; when buffering is enabled it copies into a pooled ring buffer that a paced loop drains while repeating the latest frame on underruns. Frame-rate metadata is advertised using either the configured target cadence or the measured average.
 * Audio path: `CustomAudioHandler` exposes Cef audio, allocates a float buffer sized for one second, copies each planar channel into contiguous blocks inside that buffer, and sends it with `NDIlib.send_send_audio_v2`. (Note: the code claims ‚Äúinterleaved‚Äù but still stores channels sequentially; downstream receivers must cope with planar-like layout.)
@@ -37,13 +37,16 @@ This document is the ground-truth orientation guide. Treat it as a living spec‚Ä
 | `--windowless-frame-rate=<double>` | `--windowless-frame-rate=60` | Overrides Chromium's internal repaint cadence. Defaults to the rounded value of `--fps`. |
 | `--disable-gpu-vsync` | `--disable-gpu-vsync` | Passes `--disable-gpu-vsync` to Chromium to remove GPU vsync throttling. |
 | `--disable-frame-rate-limit` | `--disable-frame-rate-limit` | Passes `--disable-frame-rate-limit` to Chromium for maximum redraw throughput. |
+| `--launcher` | `--launcher` | Forces the WinForms launcher UI to appear before startup even when switches are provided. |
+| `--no-launcher` | `--no-launcher` | Bypasses the launcher UI and relies entirely on command-line arguments. |
 | `-debug` | `-debug` | Raises Serilog minimum level to `Debug`. |
 | `-quiet` | `-quiet` | Disables console logging (file logging remains). |
 
 Other configuration surfaces:
 
 * Logging: Serilog writes to console (unless `-quiet`) and to `%USERPROFILE%/Documents/<AppName>_log.txt`. `AppManagement.LoggingLevel` is globally accessible.
-* Build target: `Tractus.HtmlToNdi.csproj` targets **.NET 8.0**, `AllowUnsafeBlocks=true`, and forces `PlatformTarget=x64`. Do not assume .NET 6/7.
+* Launcher preferences persist in `launcher-settings.json` under `AppManagement.DataDirectory` and are loaded when the UI opens.
+* Build target: `Tractus.HtmlToNdi.csproj` targets **.NET 8.0-windows**, `AllowUnsafeBlocks=true`, and forces `PlatformTarget=x64`. Do not assume .NET 6/7.
 * Assets copied at runtime: `HtmlToNdi.ico` and `HtmlToNdi.png` are always copied to the output directory.
 
 ---
@@ -68,6 +71,11 @@ Other configuration surfaces:
   NdiVideoPipelineOptions.cs          # Options for configuring buffering/telemetry
 /Models/
   GoToUrlModel.cs                     # DTOs for `/seturl` and `/keystroke`
+/Launcher/
+  LaunchParameters.cs                 # Shared validation for CLI + launcher inputs
+  LauncherForm.cs                     # WinForms UI that collects launch settings and persists them
+  LauncherSettings.cs                 # POCO storing persisted launcher options
+  LauncherSettingsStore.cs            # JSON load/save helper under AppManagement.DataDirectory
 AppManagement.cs                      # Logging bootstrap, per-app data helpers, CLI flags (-debug/-quiet)
 Program.cs                            # Main: CLI parsing, Cef initialization, HTTP API, NDI sender, KVM thread
 Tractus.HtmlToNdi.csproj              # net8.0 exe, package references (CefSharp OffScreen, Serilog, Swashbuckle, NDILib)
