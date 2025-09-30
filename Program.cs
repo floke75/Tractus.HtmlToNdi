@@ -12,9 +12,11 @@ using Serilog;
 using System.Globalization;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
+using System.Windows.Forms;
 using Tractus.HtmlToNdi.Chromium;
 using Tractus.HtmlToNdi.Models;
 using Tractus.HtmlToNdi.Video;
+using Tractus.HtmlToNdi.Launcher;
 
 namespace Tractus.HtmlToNdi;
 public class Program
@@ -22,6 +24,7 @@ public class Program
     public static nint NdiSenderPtr;
     public static CefWrapper browserWrapper;
 
+    [STAThread]
     public static void Main(string[] args)
     {
         var launchCachePath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "cache", Guid.NewGuid().ToString());
@@ -29,6 +32,28 @@ public class Program
         var exeDirectory = AppDomain.CurrentDomain.BaseDirectory;
         Directory.SetCurrentDirectory(exeDirectory);
         AppManagement.Initialize(args);
+
+        if (ShouldUseLauncher(args))
+        {
+            Application.EnableVisualStyles();
+            Application.SetCompatibleTextRenderingDefault(false);
+
+            var persistedSettings = LauncherSettingsStorage.Load();
+            using var launcherForm = new LauncherForm(persistedSettings);
+            var dialogResult = launcherForm.ShowDialog();
+            if (dialogResult != DialogResult.OK || launcherForm.SelectedSettings is null)
+            {
+                Log.Information("Launcher closed without starting the application.");
+                return;
+            }
+
+            LauncherSettingsStorage.Save(launcherForm.SelectedSettings);
+
+            var passthroughFlags = args.Where(arg => arg.StartsWith('-', StringComparison.Ordinal) && !arg.StartsWith("--", StringComparison.Ordinal));
+            args = passthroughFlags
+                .Concat(launcherForm.SelectedSettings.BuildArguments())
+                .ToArray();
+        }
 
         string? GetArgValue(string switchName)
             => args.FirstOrDefault(x => x.StartsWith($"{switchName}=", StringComparison.Ordinal))?
@@ -356,5 +381,23 @@ public class Program
 
             }
         }
+    }
+
+    private static bool ShouldUseLauncher(string[] args)
+    {
+        if (args.Length == 0)
+        {
+            return true;
+        }
+
+        foreach (var arg in args)
+        {
+            if (arg.StartsWith("--", StringComparison.Ordinal))
+            {
+                return false;
+            }
+        }
+
+        return true;
     }
 }
