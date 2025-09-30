@@ -5,6 +5,8 @@ VisualStudioVersion = 17.11.35303.130
 MinimumVisualStudioVersion = 10.0.40219.1
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Tractus.HtmlToNdi", "Tractus.HtmlToNdi.csproj", "{6B6C038D-3984-455A-95CA-A9079B3FC4E2}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Tractus.HtmlToNdi.Tests", "Tractus.HtmlToNdi.Tests\Tractus.HtmlToNdi.Tests.csproj", "{8C9C2C68-7F38-4B3C-88DE-1E8CB8B3FFCC}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -19,9 +21,15 @@ Global
 		{6B6C038D-3984-455A-95CA-A9079B3FC4E2}.Debug|x64.Build.0 = Debug|x64
 		{6B6C038D-3984-455A-95CA-A9079B3FC4E2}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{6B6C038D-3984-455A-95CA-A9079B3FC4E2}.Release|Any CPU.Build.0 = Release|Any CPU
-		{6B6C038D-3984-455A-95CA-A9079B3FC4E2}.Release|x64.ActiveCfg = Release|x64
-		{6B6C038D-3984-455A-95CA-A9079B3FC4E2}.Release|x64.Build.0 = Release|x64
-	EndGlobalSection
+                {6B6C038D-3984-455A-95CA-A9079B3FC4E2}.Release|x64.ActiveCfg = Release|x64
+                {6B6C038D-3984-455A-95CA-A9079B3FC4E2}.Release|x64.Build.0 = Release|x64
+                {8C9C2C68-7F38-4B3C-88DE-1E8CB8B3FFCC}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+                {8C9C2C68-7F38-4B3C-88DE-1E8CB8B3FFCC}.Debug|Any CPU.Build.0 = Debug|Any CPU
+                {8C9C2C68-7F38-4B3C-88DE-1E8CB8B3FFCC}.Debug|x64.ActiveCfg = Debug|Any CPU
+                {8C9C2C68-7F38-4B3C-88DE-1E8CB8B3FFCC}.Release|Any CPU.ActiveCfg = Release|Any CPU
+                {8C9C2C68-7F38-4B3C-88DE-1E8CB8B3FFCC}.Release|Any CPU.Build.0 = Release|Any CPU
+                {8C9C2C68-7F38-4B3C-88DE-1E8CB8B3FFCC}.Release|x64.ActiveCfg = Release|Any CPU
+        EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
 	EndGlobalSection
