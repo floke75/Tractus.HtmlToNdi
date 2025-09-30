@@ -1,4 +1,3 @@
-
 using CefSharp;
 using CefSharp.OffScreen;
 using Microsoft.AspNetCore.Builder;
@@ -9,16 +8,19 @@ using Microsoft.Extensions.Hosting;
 using NewTek;
 using NewTek.NDI;
 using Serilog;
-using System.Runtime.CompilerServices;
+using System.Globalization;
 using System.Runtime.InteropServices;
 using Tractus.HtmlToNdi.Chromium;
 using Tractus.HtmlToNdi.Models;
+using Tractus.HtmlToNdi.Video;
 
 namespace Tractus.HtmlToNdi;
 public class Program
 {
     public static nint NdiSenderPtr;
     public static CefWrapper browserWrapper;
+
+    private static FramePacer? framePacer;
 
     public static void Main(string[] args)
     {
@@ -61,7 +63,7 @@ public class Program
         {
             try
             {
-                port = int.Parse(args.FirstOrDefault(x => x.StartsWith("--port")).Split("=")[1]);
+                port = int.Parse(args.FirstOrDefault(x => x.StartsWith("--port")).Split("=")[1], CultureInfo.InvariantCulture);
             }
             catch (Exception)
             {
@@ -100,7 +102,7 @@ public class Program
         {
             try
             {
-                width = int.Parse(args.FirstOrDefault(x => x.StartsWith("--w")).Split("=")[1]);
+                width = int.Parse(args.FirstOrDefault(x => x.StartsWith("--w")).Split("=")[1], CultureInfo.InvariantCulture);
             }
             catch (Exception)
             {
@@ -113,7 +115,7 @@ public class Program
         {
             try
             {
-                height = int.Parse(args.FirstOrDefault(x => x.StartsWith("--h")).Split("=")[1]);
+                height = int.Parse(args.FirstOrDefault(x => x.StartsWith("--h")).Split("=")[1], CultureInfo.InvariantCulture);
             }
             catch (Exception)
             {
@@ -121,6 +123,80 @@ public class Program
                 return;
             }
         }
+
+        var bufferDepth = 5;
+        if (args.Any(x => x.StartsWith("--buffer-depth", StringComparison.OrdinalIgnoreCase)))
+        {
+            try
+            {
+                var value = args.First(x => x.StartsWith("--buffer-depth", StringComparison.OrdinalIgnoreCase)).Split("=")[1];
+                bufferDepth = int.Parse(value, CultureInfo.InvariantCulture);
+                if (bufferDepth <= 0)
+                {
+                    throw new ArgumentOutOfRangeException(nameof(bufferDepth));
+                }
+            }
+            catch (Exception)
+            {
+                Log.Error("Could not parse the --buffer-depth parameter. Exiting.");
+                return;
+            }
+        }
+
+        var targetFrameRate = FrameRate.Ntsc2997;
+        if (args.Any(x => x.StartsWith("--fps", StringComparison.OrdinalIgnoreCase)))
+        {
+            var value = args.First(x => x.StartsWith("--fps", StringComparison.OrdinalIgnoreCase)).Split("=")[1];
+            if (!FrameRate.TryParse(value, out targetFrameRate))
+            {
+                Log.Error("Could not parse the --fps parameter. Expected a decimal (e.g. 29.97) or ratio (e.g. 30000/1001). Exiting.");
+                return;
+            }
+        }
+
+        int? windowlessFrameRateOverride = null;
+        if (args.Any(x => x.StartsWith("--windowless-frame-rate", StringComparison.OrdinalIgnoreCase)))
+        {
+            try
+            {
+                var value = args.First(x => x.StartsWith("--windowless-frame-rate", StringComparison.OrdinalIgnoreCase)).Split("=")[1];
+                var parsed = int.Parse(value, CultureInfo.InvariantCulture);
+                if (parsed <= 0)
+                {
+                    throw new ArgumentOutOfRangeException(nameof(parsed));
+                }
+
+                windowlessFrameRateOverride = parsed;
+            }
+            catch (Exception)
+            {
+                Log.Error("Could not parse the --windowless-frame-rate parameter. Exiting.");
+                return;
+            }
+        }
+
+        var disableGpuVsync = args.Any(x => string.Equals(x, "--disable-gpu-vsync", StringComparison.OrdinalIgnoreCase));
+        var disableFrameRateLimit = args.Any(x => string.Equals(x, "--disable-frame-rate-limit", StringComparison.OrdinalIgnoreCase));
+
+        var chromiumFrameRate = windowlessFrameRateOverride ?? Math.Max(60, (int)Math.Ceiling(targetFrameRate.FramesPerSecond * 2));
+
+        Log.Information(
+            "Frame pacing configured for {Fps:F3} fps with buffer depth {Depth} and Chromium windowless frame rate {ChromiumFps} fps.",
+            targetFrameRate.FramesPerSecond,
+            bufferDepth,
+            chromiumFrameRate);
+
+        if (disableGpuVsync)
+        {
+            Log.Information("Chromium GPU VSync disabled via --disable-gpu-vsync.");
+        }
+
+        if (disableFrameRateLimit)
+        {
+            Log.Information("Chromium frame rate limiter disabled via --disable-frame-rate-limit.");
+        }
+
+        var frameBuffer = new FrameRingBuffer(bufferDepth);
 
         AsyncContext.Run(async delegate
         {
@@ -136,14 +212,24 @@ public class Program
             //settings.CefCommandLineArgs.Add("--in-process-gpu");
             //settings.SetOffScreenRenderingBestPerformanceArgs();
             settings.CefCommandLineArgs.Add("autoplay-policy", "no-user-gesture-required");
-            //settings.CefCommandLineArgs.Add("off-screen-frame-rate", "60");
-            //settings.CefCommandLineArgs.Add("disable-frame-rate-limit");
+            if (disableGpuVsync)
+            {
+                settings.CefCommandLineArgs.Add("disable-gpu-vsync");
+            }
+
+            if (disableFrameRateLimit)
+            {
+                settings.CefCommandLineArgs.Add("disable-frame-rate-limit");
+            }
+
             settings.EnableAudio();
             Cef.Initialize(settings);
             browserWrapper = new CefWrapper(
                 width,
                 height,
-                startUrl);
+                startUrl,
+                frameBuffer,
+                chromiumFrameRate);
 
             await browserWrapper.InitializeWrapperAsync();
         });
@@ -171,6 +257,42 @@ public class Program
         };
 
         Program.NdiSenderPtr = NDIlib.send_create(ref settings_T);
+
+        framePacer = new FramePacer(frameBuffer, targetFrameRate, output =>
+        {
+            if (Program.NdiSenderPtr == nint.Zero)
+            {
+                return;
+            }
+
+            if (output.Metadata.Width == 0 || output.Metadata.Height == 0 || output.Metadata.BufferLength == 0)
+            {
+                return;
+            }
+
+            unsafe
+            {
+                var span = output.PixelData.Span;
+                fixed (byte* dataPtr = span)
+                {
+                    var videoFrame = new NDIlib.video_frame_v2_t()
+                    {
+                        FourCC = NDIlib.FourCC_type_e.FourCC_type_BGRA,
+                        frame_rate_N = targetFrameRate.Numerator,
+                        frame_rate_D = targetFrameRate.Denominator,
+                        frame_format_type = NDIlib.frame_format_type_e.frame_format_type_progressive,
+                        line_stride_in_bytes = output.Metadata.Stride,
+                        picture_aspect_ratio = (float)output.Metadata.Width / output.Metadata.Height,
+                        p_data = (nint)dataPtr,
+                        timecode = NDIlib.send_timecode_synthesize,
+                        xres = output.Metadata.Width,
+                        yres = output.Metadata.Height,
+                    };
+
+                    NDIlib.send_send_video_v2(Program.NdiSenderPtr, ref videoFrame);
+                }
+            }
+        });
 
         var capabilitiesXml = $$"""<ndi_capabilities ntk_kvm="true" />""";
         capabilitiesXml += "\0";
@@ -285,6 +407,7 @@ public class Program
 
         running = false;
         thread.Join();
+        framePacer?.Dispose();
         browserWrapper.Dispose();
 
         if (Directory.Exists(launchCachePath))

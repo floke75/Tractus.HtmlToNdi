@@ -30,6 +30,11 @@ This document is the ground-truth orientation guide. Treat it as a living spec�
 | `--url=<https://...>` | `--url=https://testpattern.tractusevents.com/` | Sets the startup page. Defaults to `https://testpattern.tractusevents.com/`. |
 | `--w=<int>` | `--w=1920` | Sets browser width in pixels. Defaults to 1920. |
 | `--h=<int>` | `--h=1080` | Sets browser height in pixels. Defaults to 1080. |
+| `--fps=<decimal or ratio>` | `--fps=29.97` | Sets the NDI frame rate target. Accepts decimals (e.g. `29.97`) or rational pairs (e.g. `30000/1001`). Defaults to 29.97 fps. |
+| `--buffer-depth=<int>` | `--buffer-depth=5` | Sets the video pacing ring buffer depth. Higher values add latency but improve burst tolerance. Defaults to 5. |
+| `--windowless-frame-rate=<int>` | `--windowless-frame-rate=120` | Overrides Chromium's windowless frame rate; otherwise the app picks `max(60, fps*2)`. |
+| `--disable-gpu-vsync` | `--disable-gpu-vsync` | Forwards the `disable-gpu-vsync` flag to Chromium. |
+| `--disable-frame-rate-limit` | `--disable-frame-rate-limit` | Forwards `disable-frame-rate-limit` to Chromium. |
 | `-debug` | `-debug` | Raises Serilog minimum level to `Debug`. |
 | `-quiet` | `-quiet` | Disables console logging (file logging remains). |
 
@@ -46,13 +51,21 @@ Other configuration surfaces:
 ```
 /Chromium/
   AsyncContext.cs                     # Single-threaded async pump for CefSharp startup
-  CefWrapper.cs                       # Owns ChromiumWebBrowser instance, paint-to-NDI bridge, HTTP input helpers
+  CefWrapper.cs                       # Owns ChromiumWebBrowser instance, captures paints into the pacing buffer
   CustomAudioHandler.cs               # IAudioHandler implementation, planar float → contiguous buffer → NDI audio
   SingleThreadSynchronizationContext.cs # BlockingCollection-backed synchronization context
 /Models/
   GoToUrlModel.cs                     # DTOs for `/seturl` and `/keystroke`
+/Video/
+  FrameMetadata.cs                    # Metadata describing a captured Chromium frame
+  FrameOutput.cs                      # Frame payload delivered to the pacer callback
+  FramePacer.cs                       # Worker thread that emits frames at the target cadence
+  FramePacerMetrics.cs                # Snapshot returned for summary logging/diagnostics
+  FramePacerOptions.cs                # Options for the pacer (auto-start, logging cadence)
+  FrameRate.cs                        # Helper for parsing/normalising frame rates
+  FrameRingBuffer.cs                  # Single-producer/single-consumer ring buffer for captured frames
 AppManagement.cs                      # Logging bootstrap, per-app data helpers, CLI flags (-debug/-quiet)
-Program.cs                            # Main: CLI parsing, Cef initialization, HTTP API, NDI sender, KVM thread
+Program.cs                            # Main: CLI parsing, Cef/NDI init, HTTP API, frame pacing -> NDI sender, KVM thread
 Tractus.HtmlToNdi.csproj              # net8.0 exe, package references (CefSharp OffScreen, Serilog, Swashbuckle, NDILib)
 Tractus.HtmlToNdi.http                # Sample HTTP requests for manual testing (update alongside API changes)
 README.md                             # End-user documentation (currently missing some routes—keep in sync when editing)
@@ -71,18 +84,20 @@ Main
  │    ├─ Hook AppDomain.UnhandledException for Serilog logging
  │    ├─ Configure Serilog sinks (console + Documents/<AppName>_log.txt)
  │    └─ Respect -debug / -quiet flags
- ├─ Prompt/parse CLI flags (see §2)
+ ├─ Prompt/parse CLI flags (see §2) including frame pacing parameters
+ ├─ Instantiate FrameRingBuffer(bufferDepth) for Chromium paint frames
  ├─ AsyncContext.Run(async)
- │    ├─ Configure CefSettings (RootCachePath=cache/<guid>, autoplay-policy override, EnableAudio)
+ │    ├─ Configure CefSettings (RootCachePath=cache/<guid>, autoplay-policy override, EnableAudio, optional vsync/fps toggles)
  │    ├─ Cef.Initialize(settings)
- │    └─ Instantiate CefWrapper(width, height, url) and await InitializeWrapperAsync()
+ │    └─ Instantiate CefWrapper(width, height, url, frameBuffer, frameRate, chromiumFrameRate) and await InitializeWrapperAsync()
  ├─ Build WebApplication (Serilog integration, Swagger, authorization middleware added but unused)
  ├─ Create NDI sender (NDIlib.send_create)
  │    ├─ Advertise `<ndi_capabilities ntk_kvm="true" />`
  │    └─ Launch background thread polling NDI metadata (1 s timeout)
+ ├─ Start FramePacer to read from the ring buffer and push paced frames to NDI
  ├─ Map HTTP routes directly to CefWrapper methods
  ├─ app.Run()   # blocks until shutdown
- ├─ On shutdown: stop metadata thread, dispose CefWrapper
+ ├─ On shutdown: stop metadata thread, dispose FramePacer and CefWrapper
  └─ Delete temporary Cef cache directory (best-effort)
 ```
 
@@ -114,10 +129,17 @@ When adding routes, update **both** this table and `Tractus.HtmlToNdi.http` samp
 ### CefWrapper (`Chromium/CefWrapper.cs`)
 * `ChromiumWebBrowser` is constructed with `AudioHandler = new CustomAudioHandler()` and a fixed `System.Drawing.Size(width,height)`.
 * `RenderWatchdog` thread invalidates the view once per second if no `Paint` events arrive, preventing NDI receivers from freezing on static pages.
+* `OnBrowserPaint` copies the BGRA buffer into the shared `Video.FrameRingBuffer`; NDI emission happens later on the pacing thread.
 * `ScrollBy` always uses `(x=0,y=0)` as the mouse location; complex scrolling (e.g., inside scrolled divs) may require additional API work.
 * `Click` only supports the left mouse button; drag, double-click, or right-click interactions are not implemented.
 * `SendKeystrokes` issues **only** `KeyDown` events with `NativeKeyCode=Convert.ToInt32(char)`. There is no key-up, modifiers, or IME support—uppercase letters require the page to handle them despite missing Shift state.
-* `Dispose` detaches the `Paint` handler and disposes the browser, but still has TODO comments for unmanaged cleanup.
+* `Dispose` detaches the `Paint` handler and disposes the browser.
+### Frame pacing (`Video/*`)
+* `FrameRingBuffer` is a single-producer/single-consumer buffer sized by `--buffer-depth`; Chromium writes the latest BGRA frame into it.
+* `FramePacer` runs on a high-priority thread, waking at the requested cadence (`--fps`) to copy from the ring buffer and push frames to NDI.
+* `FramePacerMetrics` exposes aggregated jitter/drop stats used for periodic logs and a shutdown summary.
+* The pacer honours optional overrides such as `--windowless-frame-rate`, `--disable-gpu-vsync`, and `--disable-frame-rate-limit`.
+
 
 ### CustomAudioHandler (`Chromium/CustomAudioHandler.cs`)
 * `ChannelLayoutToChannelCount` covers most layouts but returns 0 for unsupported ones, causing `GetAudioParameters` to fail (muting audio).
