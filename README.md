@@ -8,6 +8,13 @@ A simple wrapper around [CEFSharp](https://github.com/cefsharp/CefSharp) and [ND
 
 Launch as-is for a 1920x1080 browser instance. The app will ask you for a source name if one is not provided on the command line.
 
+### Windows launcher
+
+The repository now includes a Windows launcher (`Tractus.HtmlToNdi.Launcher.exe`) that removes the need to remember command-line
+arguments. The launcher exposes all runtime options in a simple form, remembers the most recent values, and starts the main
+`Tractus.HtmlToNdi.exe` with those arguments when you click **Launch**. Settings are saved to
+`%APPDATA%\Tractus.HtmlToNdi\launcher-settings.json` so they are available the next time you open the launcher.
+
 If the web page you are loading has a transparent background, NDI will honor that transparency.
 
 ## Command Line Parameters
