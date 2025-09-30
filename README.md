@@ -14,11 +14,16 @@ If the web page you are loading has a transparent background, NDI will honor tha
 
 Parameter|Description
 ----|---
-`--ndiname="NDI Source Name"`|The source name this browser instance will send. Defaults to "`HTML5`".
-`--width=1920`|The width of the browser source. Defaults to `1920`.
-`--width=1080`|The height of the browser source. Defaults to `1080`.
+`--ndiname="NDI Source Name"`|The source name this browser instance will send. Defaults to `HTML5`.
+`--w=1920`|The width of the browser source. Defaults to `1920`.
+`--h=1080`|The height of the browser source. Defaults to `1080`.
 `--port=9999`|The port the HTTP server will listen on. Defaults to `9999`.
 `--url="https://www.tractus.ca"`|The startup webpage. Defaults to `https://testpattern.tractusevents.com/`.
+`--fps=29.97`|Target output frame rate. Accepts decimals (`29.97`) or ratios (`30000/1001`). Defaults to NTSC 29.97 fps.
+`--buffer-depth=5`|Number of frames to keep in the pacing buffer. Larger values smooth jitter at the cost of latency.
+`--windowless-frame-rate=60`|Overrides the internal Chromium render cadence. Defaults to twice the requested FPS, but never below 60.
+`--disable-gpu-vsync`|Disables Chromium's GPU vsync. Useful when pacing to non-60 fps outputs.
+`--disable-frame-rate-limit`|Lifts Chromium's renderer frame-rate limiter. Combine with vsync disabling for high-refresh experiments.
 
 #### Example Launch
 
@@ -32,10 +37,10 @@ Route|Method|Description|Example
 
 ## Known Limitations
 
-- Frames are sent to NDI in RGBA format. Some machines may experience a slight performance penalty.
+- Frames are sent to NDI in BGRA format. Some machines may experience a slight performance penalty.
 - H.264 and any other non-free codecs are not available for video playback since this uses Chromium. Sites like YouTube likely won't work.
 - Audio data received from the browser is passed to NDI directly.
-- NDI frame rate is set to 60 frames per second. The internal max render frame rate is set to be capped at 60 frames per second.
+- The frame pacer repeats the latest frame when Chromium stalls, but extremely long stalls (> buffer depth) still cause visible drops.
 
 ## More Tools
 
