@@ -1,7 +1,10 @@
 
 using CefSharp;
 using CefSharp.OffScreen;
-using NewTek;
+using System.Runtime.InteropServices;
+using System.Threading;
+using Serilog;
+using Tractus.HtmlToNdi.Video;
 
 namespace Tractus.HtmlToNdi.Chromium;
 
@@ -9,6 +12,8 @@ public class CefWrapper : IDisposable
 {
     private bool disposedValue;
     private ChromiumWebBrowser? browser;
+    private readonly FrameRingBuffer frameBuffer;
+    private long frameSequence;
 
     public int Width { get; private set; }
     public int Height { get; private set; }
@@ -18,11 +23,12 @@ public class CefWrapper : IDisposable
     private Thread RenderWatchdog;
     private DateTime lastPaint = DateTime.MinValue;
 
-    public CefWrapper(int width, int height, string initialUrl)
+    public CefWrapper(int width, int height, string initialUrl, FrameRingBuffer frameBuffer)
     {
         this.Width = width;
         this.Height = height;
         this.Url = initialUrl;
+        this.frameBuffer = frameBuffer;
 
         this.browser = new ChromiumWebBrowser(initialUrl)
         {
@@ -65,11 +71,6 @@ public class CefWrapper : IDisposable
 
     private void OnBrowserPaint(object? sender, OnPaintEventArgs e)
     {
-        if (Program.NdiSenderPtr == nint.Zero)
-        {
-            return;
-        }
-
         var browser = sender as ChromiumWebBrowser;
 
         if (browser is null)
@@ -79,21 +80,17 @@ public class CefWrapper : IDisposable
 
         this.lastPaint = DateTime.Now;
 
-        var videoFrame = new NDIlib.video_frame_v2_t()
-        {
-            FourCC = NDIlib.FourCC_type_e.FourCC_type_BGRA,
-            frame_rate_N = 60,
-            frame_rate_D = 1,
-            frame_format_type = NDIlib.frame_format_type_e.frame_format_type_progressive,
-            line_stride_in_bytes = e.Width * 4,
-            picture_aspect_ratio = (float)e.Width / e.Height,
-            p_data = e.BufferHandle,
-            timecode = NDIlib.send_timecode_synthesize,
-            xres = e.Width,
-            yres = e.Height,
-        };
+        var stride = e.Width * 4;
+        var length = stride * e.Height;
 
-        NDIlib.send_send_video_v2(Program.NdiSenderPtr, ref videoFrame);
+        var pixels = new byte[length];
+        Marshal.Copy(e.BufferHandle, pixels, 0, length);
+
+        var sequence = Interlocked.Increment(ref this.frameSequence);
+        var frame = new VideoFrameData(e.Width, e.Height, stride, pixels, sequence, DateTime.UtcNow);
+
+        this.frameBuffer.Write(frame);
+        Log.Logger.Debug("Captured frame {Sequence} stride={Stride}", sequence, stride);
     }
 
     protected virtual void Dispose(bool disposing)
