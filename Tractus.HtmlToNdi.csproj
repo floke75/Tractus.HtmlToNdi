@@ -2,7 +2,7 @@
 
   <PropertyGroup>
 	  <OutputType>Exe</OutputType>
-	  <TargetFramework>net8.0</TargetFramework>
+	  <TargetFramework>net8.0-windows</TargetFramework>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
 	  <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
@@ -12,6 +12,8 @@
 	  <PlatformTarget>x64</PlatformTarget>
 	  <Platforms>AnyCPU;x64</Platforms>
 	  <Company>Tractus Events</Company>
+          <UseWindowsForms>true</UseWindowsForms>
+          <EnableWindowsTargeting>true</EnableWindowsTargeting>
 
   </PropertyGroup>
 
