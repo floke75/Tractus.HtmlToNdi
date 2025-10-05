@@ -3,6 +3,7 @@ using Serilog;
 using Serilog.Core;
 using Tractus.HtmlToNdi.Video;
 using Xunit;
+using NewTek;
 using NewTek.NDI;
 
 namespace Tractus.HtmlToNdi.Tests;

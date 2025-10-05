@@ -44,6 +44,7 @@ Other configuration surfaces:
 
 * Logging: Serilog writes to console (unless `-quiet`) and to `%USERPROFILE%/Documents/<AppName>_log.txt`. `AppManagement.LoggingLevel` is globally accessible.
 * Build target: `Tractus.HtmlToNdi.csproj` targets **.NET 8.0**, `AllowUnsafeBlocks=true`, and forces `PlatformTarget=x64`. Do not assume .NET 6/7.
+* The app project excludes everything under `Tests/` from its default `Compile/None/Content` globs so solution builds do not accidentally compile the xUnit sources or their generated `obj` artifacts. Keep test-only assets inside `Tests/` (or a sibling directory) to preserve this separation.
 * Assets copied at runtime: `HtmlToNdi.ico` and `HtmlToNdi.png` are always copied to the output directory.
 
 ---

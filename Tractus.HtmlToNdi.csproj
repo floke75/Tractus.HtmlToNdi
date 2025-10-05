@@ -24,6 +24,13 @@
   </ItemGroup>
 
   <ItemGroup>
+    <Compile Remove="Tests\**\*.cs" />
+    <None Remove="Tests\**\*" />
+    <Content Remove="Tests\**\*" />
+    <EmbeddedResource Remove="Tests\**\*" />
+  </ItemGroup>
+
+  <ItemGroup>
     <Content Include="HtmlToNdi.ico">
       <CopyToOutputDirectory>Always</CopyToOutputDirectory>
     </Content>

@@ -6,7 +6,7 @@ using Tractus.HtmlToNdi.Video;
 
 namespace Tractus.HtmlToNdi.Chromium;
 
-public class CefWrapper : IDisposable
+internal class CefWrapper : IDisposable
 {
     private bool disposedValue;
     private ChromiumWebBrowser? browser;

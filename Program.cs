@@ -23,7 +23,7 @@ namespace Tractus.HtmlToNdi;
 public class Program
 {
     public static nint NdiSenderPtr;
-    public static CefWrapper browserWrapper;
+    internal static CefWrapper browserWrapper;
 
     [STAThread]
     public static void Main(string[] args)

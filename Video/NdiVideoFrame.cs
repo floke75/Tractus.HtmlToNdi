@@ -28,7 +28,7 @@ internal sealed class NdiVideoFrame : IDisposable
         var buffer = Marshal.AllocHGlobal(size);
         unsafe
         {
-            Buffer.MemoryCopy((void*)frame.Buffer, (void*)buffer, size, size);
+            System.Buffer.MemoryCopy((void*)frame.Buffer, (void*)buffer, size, size);
         }
 
         return new NdiVideoFrame(frame.Width, frame.Height, frame.Stride, buffer)
