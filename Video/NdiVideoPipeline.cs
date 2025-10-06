@@ -2,6 +2,7 @@ using NewTek;
 using NewTek.NDI;
 using Serilog;
 using System.Runtime.CompilerServices;
+using System.Threading;
 
 namespace Tractus.HtmlToNdi.Video;
 
@@ -14,6 +15,11 @@ internal sealed class NdiVideoPipeline : IDisposable
     private readonly CancellationTokenSource cancellation = new();
     private readonly FrameRingBuffer<NdiVideoFrame>? ringBuffer;
     private readonly ILogger logger;
+    private readonly SemaphoreSlim framesAvailable = new(0);
+    private readonly TimeProvider timeProvider;
+    private readonly TimeSpan nominalInterval;
+    private TimeSpan pacedInterval;
+    private DateTimeOffset? lastCapturedTimestamp;
 
     private Task? pacingTask;
     private NdiVideoFrame? lastSentFrame;
@@ -22,12 +28,20 @@ internal sealed class NdiVideoPipeline : IDisposable
     private long repeatedFrames;
     private DateTime lastTelemetry = DateTime.UtcNow;
 
-    public NdiVideoPipeline(INdiVideoSender sender, FrameRate frameRate, NdiVideoPipelineOptions options, ILogger logger)
+    public NdiVideoPipeline(
+        INdiVideoSender sender,
+        FrameRate frameRate,
+        NdiVideoPipelineOptions options,
+        ILogger logger,
+        TimeProvider? timeProvider = null)
     {
         this.sender = sender ?? throw new ArgumentNullException(nameof(sender));
         configuredFrameRate = frameRate;
         this.options = options ?? throw new ArgumentNullException(nameof(options));
         this.logger = logger;
+        this.timeProvider = timeProvider ?? TimeProvider.System;
+        nominalInterval = frameRate.FrameDuration;
+        pacedInterval = nominalInterval;
 
         if (options.EnableBuffering)
         {
@@ -46,12 +60,25 @@ internal sealed class NdiVideoPipeline : IDisposable
             return;
         }
 
+        pacedInterval = nominalInterval;
+        lastCapturedTimestamp = null;
         pacingTask = Task.Run(async () => await RunPacedLoopAsync(cancellation.Token));
     }
 
     public void Stop()
     {
         cancellation.Cancel();
+        if (BufferingEnabled)
+        {
+            try
+            {
+                framesAvailable.Release();
+            }
+            catch (SemaphoreFullException)
+            {
+                // already signalled
+            }
+        }
         try
         {
             pacingTask?.Wait();
@@ -83,38 +110,126 @@ internal sealed class NdiVideoPipeline : IDisposable
         var copy = NdiVideoFrame.CopyFrom(frame);
         ringBuffer.Enqueue(copy, out dropped);
         dropped?.Dispose();
+        if (ringBuffer.Count == 1)
+        {
+            try
+            {
+                framesAvailable.Release();
+            }
+            catch (SemaphoreFullException)
+            {
+                // already signalled
+            }
+        }
         EmitTelemetryIfNeeded();
     }
 
     private async Task RunPacedLoopAsync(CancellationToken token)
     {
-        var timer = new PeriodicTimer(FrameRate.FrameDuration);
+        if (ringBuffer is null)
+        {
+            return;
+        }
+
+        var nextPresentation = timeProvider.GetUtcNow();
+
         try
         {
-            while (await timer.WaitForNextTickAsync(token))
+            while (!token.IsCancellationRequested)
             {
-                if (token.IsCancellationRequested)
+                var now = timeProvider.GetUtcNow();
+                var signalledEarly = false;
+
+                if (now < nextPresentation)
                 {
-                    break;
+                    var delay = nextPresentation - now;
+                    if (delay > TimeSpan.Zero)
+                    {
+                        using var delayCts = CancellationTokenSource.CreateLinkedTokenSource(token);
+                        delayCts.CancelAfter(delay);
+                        try
+                        {
+                            await framesAvailable.WaitAsync(delayCts.Token);
+                            signalledEarly = true;
+                            nextPresentation = timeProvider.GetUtcNow();
+                        }
+                        catch (OperationCanceledException) when (!token.IsCancellationRequested && delayCts.IsCancellationRequested)
+                        {
+                            // timeout – fall through to send on schedule
+                        }
+                    }
+                }
+                else
+                {
+                    signalledEarly = framesAvailable.Wait(0);
                 }
 
-                NdiVideoFrame? frame = ringBuffer?.DequeueLatest();
-                if (frame is not null)
+                var frame = ringBuffer.DequeueLatest();
+                if (frame is null)
                 {
-                    SendBufferedFrame(frame);
+                    if (lastSentFrame is not null)
+                    {
+                        RepeatLastFrame();
+                        nextPresentation += pacedInterval;
+                        continue;
+                    }
+
+                    if (!signalledEarly)
+                    {
+                        await framesAvailable.WaitAsync(token);
+                    }
+
+                    nextPresentation = timeProvider.GetUtcNow();
                     continue;
                 }
 
-                if (lastSentFrame is not null)
+                if (!signalledEarly && framesAvailable.CurrentCount > 0)
                 {
-                    RepeatLastFrame();
+                    framesAvailable.Wait(0);
+                }
+
+                UpdatePacedInterval(frame.Timestamp);
+                SendBufferedFrame(frame);
+
+                nextPresentation += pacedInterval;
+
+                var afterSend = timeProvider.GetUtcNow();
+                if (afterSend - nextPresentation > pacedInterval)
+                {
+                    nextPresentation = afterSend;
                 }
             }
         }
-        finally
+        catch (OperationCanceledException)
         {
-            timer.Dispose();
+            // shutting down
         }
+    }
+
+    private void UpdatePacedInterval(DateTime capturedUtc)
+    {
+        var captured = new DateTimeOffset(DateTime.SpecifyKind(capturedUtc, DateTimeKind.Utc));
+        if (lastCapturedTimestamp is DateTimeOffset last)
+        {
+            var delta = captured - last;
+            if (delta <= TimeSpan.Zero)
+            {
+                delta = nominalInterval;
+            }
+
+            var errorTicks = delta.Ticks - nominalInterval.Ticks;
+            var adjustmentTicks = (long)(errorTicks * 0.25);
+            var newTicks = nominalInterval.Ticks + adjustmentTicks;
+            var minTicks = (long)(nominalInterval.Ticks * 0.5);
+            var maxTicks = (long)(nominalInterval.Ticks * 1.5);
+            pacedInterval = TimeSpan.FromTicks(Math.Clamp(newTicks, minTicks, maxTicks));
+        }
+        else
+        {
+            pacedInterval = nominalInterval;
+        }
+
+        lastCapturedTimestamp = captured;
     }
 
     private void SendDirect(CapturedFrame frame)
@@ -242,5 +357,6 @@ internal sealed class NdiVideoPipeline : IDisposable
         ringBuffer?.Clear();
         lastSentFrame?.Dispose();
         cancellation.Dispose();
+        framesAvailable.Dispose();
     }
 }
