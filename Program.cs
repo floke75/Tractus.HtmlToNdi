@@ -9,11 +9,13 @@ using NewTek;
 using NewTek.NDI;
 using Serilog;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Linq;
 using System.Globalization;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Text;
+using System.Threading.Tasks;
 using System.Windows.Forms;
 using Tractus.HtmlToNdi.Chromium;
 using Tractus.HtmlToNdi.Launcher;
@@ -30,16 +32,45 @@ public class Program
     private static bool NdiLibraryConfigured;
     private static string[] NdiLibraryCandidates = Array.Empty<string>();
     private static string[] NdiSearchDirectories = Array.Empty<string>();
+    private static readonly Stopwatch StartupStopwatch = Stopwatch.StartNew();
+    private static nint NdiNativeLibraryHandle;
 
     [STAThread]
     public static void Main(string[] args)
     {
+        AppDomain.CurrentDomain.UnhandledException += (sender, eventArgs) =>
+        {
+            var exception = eventArgs.ExceptionObject as Exception;
+            if (exception is not null)
+            {
+                Log.Fatal(exception, "AppDomain unhandled exception (IsTerminating={IsTerminating})", eventArgs.IsTerminating);
+            }
+            else
+            {
+                Log.Fatal("AppDomain unhandled exception object: {ExceptionObject} (IsTerminating={IsTerminating})", eventArgs.ExceptionObject, eventArgs.IsTerminating);
+            }
+        };
+
+        TaskScheduler.UnobservedTaskException += (sender, eventArgs) =>
+        {
+            Log.Fatal(eventArgs.Exception, "Unobserved task exception captured");
+            eventArgs.SetObserved();
+        };
+
+        Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
+        Application.ThreadException += (sender, eventArgs) =>
+        {
+            Log.Fatal(eventArgs.Exception, "WinForms UI thread exception");
+        };
+
         var sanitizedArgs = RemoveLauncherFlags(args);
         var launchCachePath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "cache", Guid.NewGuid().ToString());
 
         var exeDirectory = AppDomain.CurrentDomain.BaseDirectory;
         Directory.SetCurrentDirectory(exeDirectory);
         AppManagement.Initialize(sanitizedArgs);
+
+        Log.Information("Startup arguments sanitized. Original={OriginalArgs} Sanitized={SanitizedArgs}", string.Join(' ', args), string.Join(' ', sanitizedArgs));
 
         LaunchParameters? parameters;
         if (ShouldUseLauncher(args))
@@ -63,13 +94,17 @@ public class Program
             }
 
             parameters = launcherForm.SelectedParameters;
+            Log.Information("Launcher accepted parameters: {@Parameters}", parameters);
         }
         else
         {
             if (!LaunchParameters.TryFromArgs(sanitizedArgs, out parameters) || parameters is null)
             {
+                Log.Error("Failed to parse command-line parameters; exiting early");
                 return;
             }
+
+            Log.Information("Command-line parameters parsed: {@Parameters}", parameters);
         }
 
         try
@@ -84,10 +119,16 @@ public class Program
         {
             Log.Fatal(ex, "Fatal exception during startup");
         }
+        finally
+        {
+            Log.Information("Program.Main exiting after {Elapsed}ms", StartupStopwatch.ElapsedMilliseconds);
+        }
     }
 
     private static void RunApplication(LaunchParameters parameters, string[] args, string launchCachePath)
     {
+        Log.Information("RunApplication starting with {@Parameters} (cache={CachePath})", parameters, launchCachePath);
+
         var frameRate = parameters.FrameRate;
         var width = parameters.Width;
         var height = parameters.Height;
@@ -104,7 +145,9 @@ public class Program
             TelemetryInterval = parameters.TelemetryInterval,
         };
 
+        Log.Information("Ensuring NDI native runtime is available...");
         EnsureNdiNativeLibraryLoaded();
+        Log.Information("NDI native runtime setup complete");
 
         var ndiNamePtr = UTF.StringToUtf8(parameters.NdiName);
         try
@@ -139,11 +182,14 @@ public class Program
             return;
         }
 
+        Log.Information("NDI sender created successfully");
+
         var ndiSender = new NativeNdiVideoSender(Program.NdiSenderPtr);
         var videoPipeline = new NdiVideoPipeline(ndiSender, frameRate, pipelineOptions, Log.Logger);
 
         try
         {
+            Log.Information("Initialising Chromium via AsyncContext");
             AsyncContext.Run(async delegate
             {
                 var settings = new CefSettings();
@@ -180,6 +226,7 @@ public class Program
                     windowlessFrameRateOverride);
 
                 await browserWrapper.InitializeWrapperAsync();
+                Log.Information("Chromium initialised successfully");
             });
         }
         catch (Exception ex)
@@ -189,6 +236,7 @@ public class Program
             return;
         }
 
+        Log.Information("Building ASP.NET Core host on port {Port}", parameters.Port);
         var builder = WebApplication.CreateBuilder(args);
 
         builder.Services.AddSerilog();
@@ -315,7 +363,9 @@ public class Program
             browserWrapper.RefreshPage();
         }).WithOpenApi();
 
+        Log.Information("Starting ASP.NET Core host");
         app.Run();
+        Log.Information("ASP.NET Core host exited");
 
         running = false;
         thread.Join();
@@ -327,11 +377,13 @@ public class Program
             {
                 Directory.Delete(launchCachePath, true);
             }
-            catch
+            catch (Exception ex)
             {
-
+                Log.Warning(ex, "Failed to delete launch cache {CachePath}", launchCachePath);
             }
         }
+
+        Log.Information("RunApplication completed after {Elapsed}ms", StartupStopwatch.ElapsedMilliseconds);
     }
 
     private static void EnsureNdiNativeLibraryLoaded()
@@ -350,22 +402,70 @@ public class Program
 
             NdiSearchDirectories = BuildNdiProbeDirectories();
             NdiLibraryCandidates = BuildNdiCandidateFiles(NdiSearchDirectories);
+            Log.Information("NDI probe directories: {Directories}", NdiSearchDirectories);
+            Log.Information("NDI library candidates: {Candidates}", NdiLibraryCandidates);
 
             if (NdiLibraryCandidates.Length == 0)
             {
                 throw new DllNotFoundException(CreateNdiFailureMessage());
             }
 
-            var runtimeDirectory = NdiLibraryCandidates
-                .Select(Path.GetDirectoryName)
-                .FirstOrDefault(d => !string.IsNullOrWhiteSpace(d));
+            static bool IsManagedWrapper(string path)
+            {
+                var fileName = Path.GetFileName(path);
+                return fileName.Contains("DotNet", StringComparison.OrdinalIgnoreCase)
+                    || fileName.EndsWith("DotNetCore.dll", StringComparison.OrdinalIgnoreCase)
+                    || fileName.EndsWith("DotNetCoreBase.dll", StringComparison.OrdinalIgnoreCase);
+            }
 
+            var nativeCandidates = NdiLibraryCandidates
+                .Where(path => !IsManagedWrapper(path))
+                .ToArray();
+
+            if (nativeCandidates.Length == 0)
+            {
+                nativeCandidates = NdiLibraryCandidates;
+            }
+
+            var archSuffix = Environment.Is64BitProcess ? "x64" : "x86";
+            var preferredNames = new[]
+            {
+                $"Processing.NDI.Lib.{archSuffix}.dll",
+                $"NDIlib.{archSuffix}.dll",
+                "NDIlib.dll"
+            };
+
+            string? SelectPreferredCandidate(IEnumerable<string> candidates)
+            {
+                foreach (var preferredName in preferredNames)
+                {
+                    var match = candidates.FirstOrDefault(path =>
+                        string.Equals(Path.GetFileName(path), preferredName, StringComparison.OrdinalIgnoreCase));
+                    if (match is not null)
+                    {
+                        return match;
+                    }
+                }
+
+                return candidates.FirstOrDefault();
+            }
+
+            var selectedLibrary = SelectPreferredCandidate(nativeCandidates);
+
+            if (string.IsNullOrWhiteSpace(selectedLibrary))
+            {
+                throw new DllNotFoundException(CreateNdiFailureMessage());
+            }
+
+            var runtimeDirectory = Path.GetDirectoryName(selectedLibrary);
             if (string.IsNullOrWhiteSpace(runtimeDirectory))
             {
                 throw new DllNotFoundException(CreateNdiFailureMessage());
             }
 
             runtimeDirectory = Path.GetFullPath(runtimeDirectory);
+            Log.Information("Using NDI runtime directory {RuntimeDirectory}", runtimeDirectory);
+            Log.Information("Selected NDI native library {Library}", selectedLibrary);
             Environment.SetEnvironmentVariable("NDILIB_REDIST_FOLDER", runtimeDirectory);
 
             TryPrependToPath(runtimeDirectory);
@@ -375,12 +475,22 @@ public class Program
                 if (!SetDllDirectory(runtimeDirectory))
                 {
                     var error = Marshal.GetLastWin32Error();
-                    Log.Debug("SetDllDirectory failed for {Path} with error {Error}", runtimeDirectory, error);
+                    Log.Warning("SetDllDirectory failed for {Path} with error {Error}", runtimeDirectory, error);
                 }
             }
             catch (EntryPointNotFoundException)
             {
                 // Older Windows versions may not expose SetDllDirectory; ignore.
+            }
+
+            if (NativeLibrary.TryLoad(selectedLibrary, out var handle))
+            {
+                NdiNativeLibraryHandle = handle;
+                Log.Information("Loaded native NDI library from {Library}", selectedLibrary);
+            }
+            else
+            {
+                Log.Warning("NativeLibrary.TryLoad was unable to load {Library}; relying on default probing.", selectedLibrary);
             }
 
             try
@@ -563,7 +673,7 @@ public class Program
             }
             catch (Exception ex)
             {
-                Log.Debug(ex, "Failed to enumerate native NDI libraries under {Directory}", directory);
+                Log.Warning(ex, "Failed to enumerate native NDI libraries under {Directory}", directory);
             }
         }
 
@@ -655,3 +765,4 @@ public class Program
         "--disable-frame-rate-limit",
     };
 }
+
