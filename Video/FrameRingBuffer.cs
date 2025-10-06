@@ -5,6 +5,7 @@ internal sealed class FrameRingBuffer<T>
 {
     private readonly int capacity;
     private readonly Queue<T> frames;
+    private int overflowSinceLastDequeue;
 
     public FrameRingBuffer(int capacity)
     {
@@ -43,6 +44,10 @@ internal sealed class FrameRingBuffer<T>
             {
                 dropped = frames.Dequeue();
                 DroppedFromOverflow++;
+                if (overflowSinceLastDequeue < capacity)
+                {
+                    overflowSinceLastDequeue++;
+                }
             }
 
             frames.Enqueue(frame);
@@ -62,9 +67,17 @@ internal sealed class FrameRingBuffer<T>
             {
                 var stale = frames.Dequeue();
                 stale.Dispose();
-                DroppedAsStale++;
+                if (overflowSinceLastDequeue > 0)
+                {
+                    overflowSinceLastDequeue--;
+                }
+                else
+                {
+                    DroppedAsStale++;
+                }
             }
 
+            overflowSinceLastDequeue = 0;
             return frames.Dequeue();
         }
     }
@@ -77,6 +90,7 @@ internal sealed class FrameRingBuffer<T>
             {
                 frames.Dequeue().Dispose();
             }
+            overflowSinceLastDequeue = 0;
         }
     }
 }

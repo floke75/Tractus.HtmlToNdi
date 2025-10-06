@@ -148,6 +148,10 @@ When adding routes, update **both** this table and `Tractus.HtmlToNdi.http` samp
 * Metadata loop logs every metadata frame at `Warning` level (`Log.Logger.Warning("Got metadata: ...")`), which can flood logs if receivers send frequent updates.
 * Only opcodes `0x03` (mouse move) and `0x04` (left click) are handled; `0x07` (mouse up) is ignored intentionally. There is no translation for scroll, keyboard, or multi-button events.
 
+### Frame buffering (`Video/FrameRingBuffer.cs`)
+* `FrameRingBuffer<T>` drops the oldest frame when capacity is exceeded and surfaces it via the `out` parameter. That action increments `DroppedFromOverflow` but does **not** dispose the frame; the caller must do so.
+* When the paced loop calls `DequeueLatest`, the buffer disposes older frames before returning the newest. To keep telemetry accurate, it only increments `DroppedAsStale` for frames not already counted as overflow since the previous dequeue, avoiding double-counting when producers outrun the consumer briefly.
+
 ### Logging & diagnostics (`AppManagement.cs`)
 * `AppManagement.InstanceName` composes `<os>_<arch>_<machinename>` for telemetry or metadata (not currently used elsewhere).
 * On fatal `AppDomain` exceptions, details are logged but the process is not explicitly terminated beyond .NET’s default behaviour.
