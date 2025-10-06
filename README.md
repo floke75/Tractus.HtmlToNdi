@@ -33,6 +33,20 @@ Parameter|Description
 `--launcher`|Forces the launcher window to appear even when other parameters are supplied.
 `--no-launcher`|Skips the launcher and honours the supplied command-line arguments only.
 
+### Frame pacing, the output buffer, and vSync
+
+Chromium renders off-screen for this application. Each `FramePump` tick invalidates the view so CEF composites a new frame, and
+`NdiVideoPipeline` either forwards it immediately or queues it for paced delivery. When GPU vSync is *enabled* (the default),
+Chromium’s GPU process still honours the desktop refresh cadence, so even if the pump fires early the compositor withholds the
+paint until the next system vBlank. That keeps the capture cadence close to the monitor rate (≈16.6 ms at 60 Hz) and gives the
+adaptive pacer a stable interval to track.
+
+Supplying `--disable-gpu-vsync` removes that guard. In that mode the compositor will present as soon as both the pump and
+Chromium’s internal `WindowlessFrameRate` permit it, so bursty invalidations can land back-to-back. The paced buffer continues
+to adapt to the actual paint timestamps, but without vSync the source cadence can show more jitter because nothing upstream is
+phase-locking Chromium to the display hardware. Use the flag only when you deliberately want Chromium to outrun the monitor (for
+stress testing or high-speed captures) and let the paced buffer smooth the residual jitter.
+
 #### Example Launch
 
 `.\Tractus.HtmlToNdi.exe --ndiname="HTML 5 Test" --w=1080 --h=1080 --url="https://testpattern.tractusevents.com"`
