@@ -11,7 +11,6 @@ using Serilog;
 using System.Collections.Generic;
 using System.Linq;
 using System.Globalization;
-using System.Reflection;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Text;
@@ -31,6 +30,7 @@ public class Program
     private static bool NdiLibraryConfigured;
     private static string[] NdiLibraryCandidates = Array.Empty<string>();
     private static string[] NdiSearchDirectories = Array.Empty<string>();
+    private static nint NdiNativeLibraryHandle;
 
     [STAThread]
     public static void Main(string[] args)
@@ -352,7 +352,70 @@ public class Program
             NdiSearchDirectories = BuildNdiProbeDirectories();
             NdiLibraryCandidates = BuildNdiCandidateFiles(NdiSearchDirectories);
 
-            NativeLibrary.SetDllImportResolver(typeof(NDIlib).Assembly, ResolveNdiNativeLibrary);
+            if (NdiLibraryCandidates.Length == 0)
+            {
+                throw new DllNotFoundException(CreateNdiFailureMessage());
+            }
+
+            foreach (var candidate in NdiLibraryCandidates)
+            {
+                try
+                {
+                    if (NativeLibrary.TryLoad(candidate, out var handle))
+                    {
+                        NdiNativeLibraryHandle = handle;
+                        Log.Information("Loaded NDI native library from {Path}", candidate);
+
+                        var directory = Path.GetDirectoryName(candidate);
+                        if (!string.IsNullOrWhiteSpace(directory))
+                        {
+                            Environment.SetEnvironmentVariable("NDILIB_REDIST_FOLDER", directory);
+                        }
+
+                        break;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Log.Debug(ex, "Failed to load NDI native library from {Path}", candidate);
+                }
+            }
+
+            if (NdiNativeLibraryHandle == nint.Zero)
+            {
+                // Rebuild and retry in case an install completed after we collected directories.
+                NdiSearchDirectories = BuildNdiProbeDirectories();
+                NdiLibraryCandidates = BuildNdiCandidateFiles(NdiSearchDirectories);
+
+                foreach (var candidate in NdiLibraryCandidates)
+                {
+                    try
+                    {
+                        if (NativeLibrary.TryLoad(candidate, out var handle))
+                        {
+                            NdiNativeLibraryHandle = handle;
+                            Log.Information("Loaded NDI native library from {Path}", candidate);
+
+                            var directory = Path.GetDirectoryName(candidate);
+                            if (!string.IsNullOrWhiteSpace(directory))
+                            {
+                                Environment.SetEnvironmentVariable("NDILIB_REDIST_FOLDER", directory);
+                            }
+
+                            break;
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        Log.Debug(ex, "Failed to load NDI native library from {Path}", candidate);
+                    }
+                }
+            }
+
+            if (NdiNativeLibraryHandle == nint.Zero)
+            {
+                throw new DllNotFoundException(CreateNdiFailureMessage());
+            }
 
             try
             {
@@ -374,48 +437,6 @@ public class Program
 
             NdiLibraryConfigured = true;
         }
-    }
-
-    private static IntPtr ResolveNdiNativeLibrary(string libraryName, Assembly assembly, DllImportSearchPath? searchPath)
-    {
-        if (!string.Equals(libraryName, "NDILib", StringComparison.OrdinalIgnoreCase))
-        {
-            return IntPtr.Zero;
-        }
-
-        foreach (var candidate in NdiLibraryCandidates)
-        {
-            try
-            {
-                var handle = NativeLibrary.Load(candidate);
-                Log.Debug("Loaded NDI native library from {Path}", candidate);
-                return handle;
-            }
-            catch (Exception ex)
-            {
-                Log.Debug(ex, "Failed to load NDI native library from {Path}", candidate);
-            }
-        }
-
-        // Refresh search locations in case the runtime was installed after startup.
-        NdiSearchDirectories = BuildNdiProbeDirectories();
-        NdiLibraryCandidates = BuildNdiCandidateFiles(NdiSearchDirectories);
-
-        foreach (var candidate in NdiLibraryCandidates)
-        {
-            try
-            {
-                var handle = NativeLibrary.Load(candidate);
-                Log.Debug("Loaded NDI native library from {Path}", candidate);
-                return handle;
-            }
-            catch (Exception ex)
-            {
-                Log.Debug(ex, "Failed to load NDI native library from {Path}", candidate);
-            }
-        }
-
-        throw new DllNotFoundException(CreateNdiFailureMessage());
     }
 
     private static string[] BuildNdiProbeDirectories()
