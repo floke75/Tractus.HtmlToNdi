@@ -73,7 +73,18 @@ public class Program
             }
         }
 
-        RunApplication(parameters, sanitizedArgs, launchCachePath);
+        try
+        {
+            RunApplication(parameters, sanitizedArgs, launchCachePath);
+        }
+        catch (DllNotFoundException ex) when (ex.Message.Contains("NDI", StringComparison.OrdinalIgnoreCase))
+        {
+            Log.Fatal(ex, "Unable to start because the native NDI runtime was not found. {Reason}", ex.Message);
+        }
+        catch (Exception ex)
+        {
+            Log.Fatal(ex, "Fatal exception during startup");
+        }
     }
 
     private static void RunApplication(LaunchParameters parameters, string[] args, string launchCachePath)
