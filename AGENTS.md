@@ -144,6 +144,7 @@ When adding routes, update **both** this table and `Tractus.HtmlToNdi.http` samp
 * Memory is manually allocated/freed via `Marshal.AllocHGlobal` / `FreeHGlobal`. Failing to call `Dispose` will leak unmanaged memory.
 
 ### NDI integration (`Program.cs`)
+* `EnsureNdiNativeLibraryLoaded` scans common NDI install paths (for example, `C:\Program Files\NDI\NDI 6 Runtime\v6` and `...\NDI 6 SDK\Bin\x64`) plus overrides such as `NDILIB_REDIST_FOLDER`, then wires a `DllImportResolver` so the managed wrapper can locate `Processing.NDI.Lib.*`. If the runtime is missing, the app surfaces a descriptive error that lists every path it probed.
 * `Program.NdiSenderPtr` is created before Chromium bootstraps so the `NdiVideoPipeline` can send immediately; there is currently **no** call to `NDIlib.send_destroy`. Adding explicit teardown requires guarding against `nint.Zero` in paint/audio handlers.
 * Metadata loop logs every metadata frame at `Warning` level (`Log.Logger.Warning("Got metadata: ...")`), which can flood logs if receivers send frequent updates.
 * Only opcodes `0x03` (mouse move) and `0x04` (left click) are handled; `0x07` (mouse up) is ignored intentionally. There is no translation for scroll, keyboard, or multi-button events.

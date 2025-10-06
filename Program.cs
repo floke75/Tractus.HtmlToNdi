@@ -11,8 +11,10 @@ using Serilog;
 using System.Collections.Generic;
 using System.Linq;
 using System.Globalization;
+using System.Reflection;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
+using System.Text;
 using System.Windows.Forms;
 using Tractus.HtmlToNdi.Chromium;
 using Tractus.HtmlToNdi.Launcher;
@@ -24,6 +26,11 @@ public class Program
 {
     public static nint NdiSenderPtr;
     internal static CefWrapper browserWrapper;
+
+    private static readonly object NdiLibraryLock = new();
+    private static bool NdiLibraryConfigured;
+    private static string[] NdiLibraryCandidates = Array.Empty<string>();
+    private static string[] NdiSearchDirectories = Array.Empty<string>();
 
     [STAThread]
     public static void Main(string[] args)
@@ -87,6 +94,8 @@ public class Program
             TelemetryInterval = parameters.TelemetryInterval,
         };
 
+        EnsureNdiNativeLibraryLoaded();
+
         var ndiNamePtr = UTF.StringToUtf8(parameters.NdiName);
         try
         {
@@ -95,7 +104,16 @@ public class Program
                 p_ndi_name = ndiNamePtr
             };
 
-            Program.NdiSenderPtr = NDIlib.send_create(ref settings_T);
+            try
+            {
+                Program.NdiSenderPtr = NDIlib.send_create(ref settings_T);
+            }
+            catch (DllNotFoundException ex)
+            {
+                var message = CreateNdiFailureMessage();
+                Log.Fatal(ex, message);
+                throw;
+            }
         }
         finally
         {
@@ -304,6 +322,268 @@ public class Program
 
             }
         }
+    }
+
+    private static void EnsureNdiNativeLibraryLoaded()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        lock (NdiLibraryLock)
+        {
+            if (NdiLibraryConfigured)
+            {
+                return;
+            }
+
+            NdiSearchDirectories = BuildNdiProbeDirectories();
+            NdiLibraryCandidates = BuildNdiCandidateFiles(NdiSearchDirectories);
+
+            NativeLibrary.SetDllImportResolver(typeof(NDIlib).Assembly, ResolveNdiNativeLibrary);
+
+            try
+            {
+                var versionPtr = NDIlib.version();
+                var version = Marshal.PtrToStringAnsi(versionPtr);
+                if (!string.IsNullOrWhiteSpace(version))
+                {
+                    Log.Information("Detected NDI runtime {Version}", version);
+                }
+            }
+            catch (DllNotFoundException)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                Log.Debug(ex, "Unable to query NDI runtime version");
+            }
+
+            NdiLibraryConfigured = true;
+        }
+    }
+
+    private static IntPtr ResolveNdiNativeLibrary(string libraryName, Assembly assembly, DllImportSearchPath? searchPath)
+    {
+        if (!string.Equals(libraryName, "NDILib", StringComparison.OrdinalIgnoreCase))
+        {
+            return IntPtr.Zero;
+        }
+
+        foreach (var candidate in NdiLibraryCandidates)
+        {
+            try
+            {
+                var handle = NativeLibrary.Load(candidate);
+                Log.Debug("Loaded NDI native library from {Path}", candidate);
+                return handle;
+            }
+            catch (Exception ex)
+            {
+                Log.Debug(ex, "Failed to load NDI native library from {Path}", candidate);
+            }
+        }
+
+        // Refresh search locations in case the runtime was installed after startup.
+        NdiSearchDirectories = BuildNdiProbeDirectories();
+        NdiLibraryCandidates = BuildNdiCandidateFiles(NdiSearchDirectories);
+
+        foreach (var candidate in NdiLibraryCandidates)
+        {
+            try
+            {
+                var handle = NativeLibrary.Load(candidate);
+                Log.Debug("Loaded NDI native library from {Path}", candidate);
+                return handle;
+            }
+            catch (Exception ex)
+            {
+                Log.Debug(ex, "Failed to load NDI native library from {Path}", candidate);
+            }
+        }
+
+        throw new DllNotFoundException(CreateNdiFailureMessage());
+    }
+
+    private static string[] BuildNdiProbeDirectories()
+    {
+        var directories = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        void AddIfExists(string? path)
+        {
+            if (string.IsNullOrWhiteSpace(path))
+            {
+                return;
+            }
+
+            try
+            {
+                var full = Path.GetFullPath(path);
+                if (Directory.Exists(full))
+                {
+                    directories.Add(full);
+                }
+            }
+            catch
+            {
+                // ignore malformed paths
+            }
+        }
+
+        AddIfExists(AppContext.BaseDirectory);
+        AddIfExists(Path.Combine(AppContext.BaseDirectory, Environment.Is64BitProcess ? "x64" : "x86"));
+        AddIfExists(Path.Combine(AppContext.BaseDirectory, "runtimes", Environment.Is64BitProcess ? "win-x64" : "win-x86", "native"));
+
+        var envVars = new[]
+        {
+            "NDILIB_REDIST_FOLDER",
+            "NDI_RUNTIME_DIR",
+            "NDI_RUNTIME_DIR_V6",
+            "NDI_SDK_DIR",
+            "NDI_SDK",
+            "NDI_LIB_PATH",
+        };
+
+        foreach (var envVar in envVars)
+        {
+            AddIfExists(Environment.GetEnvironmentVariable(envVar));
+        }
+
+        foreach (var root in new[]
+        {
+            Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),
+            Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86),
+        })
+        {
+            if (string.IsNullOrWhiteSpace(root))
+            {
+                continue;
+            }
+
+            var ndiRoot = Path.Combine(root, "NDI");
+            AddIfExists(ndiRoot);
+
+            if (Directory.Exists(ndiRoot))
+            {
+                try
+                {
+                    foreach (var sub in Directory.EnumerateDirectories(ndiRoot))
+                    {
+                        AddIfExists(sub);
+                        AddIfExists(Path.Combine(sub, "v6"));
+                        AddIfExists(Path.Combine(sub, "Runtime"));
+                        AddIfExists(Path.Combine(sub, "Bin"));
+                        AddIfExists(Path.Combine(sub, "Bin", Environment.Is64BitProcess ? "x64" : "x86"));
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Log.Debug(ex, "Failed to enumerate NDI install directories under {Root}", ndiRoot);
+                }
+            }
+
+            AddIfExists(Path.Combine(root, "NDI", "NDI 6 Runtime", "v6"));
+            AddIfExists(Path.Combine(root, "NDI", "NDI 6 SDK"));
+            AddIfExists(Path.Combine(root, "NDI", "NDI 6 SDK", "Bin"));
+            AddIfExists(Path.Combine(root, "NDI", "NDI 6 SDK", "Bin", Environment.Is64BitProcess ? "x64" : "x86"));
+            AddIfExists(Path.Combine(root, "NDI", "NDI 6 Tools", "Runtime"));
+        }
+
+        return directories.ToArray();
+    }
+
+    private static string[] BuildNdiCandidateFiles(string[] directories)
+    {
+        var archSuffix = Environment.Is64BitProcess ? "x64" : "x86";
+        var fileNames = new[]
+        {
+            "NDILib.dll",
+            $"NDILib.{archSuffix}.dll",
+            $"Processing.NDI.Lib.{archSuffix}.dll",
+        };
+
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var result = new List<string>();
+
+        void AddCandidate(string path)
+        {
+            if (string.IsNullOrWhiteSpace(path))
+            {
+                return;
+            }
+
+            try
+            {
+                var full = Path.GetFullPath(path);
+                if (File.Exists(full) && seen.Add(full))
+                {
+                    result.Add(full);
+                }
+            }
+            catch
+            {
+            }
+        }
+
+        foreach (var directory in directories)
+        {
+            foreach (var name in fileNames)
+            {
+                AddCandidate(Path.Combine(directory, name));
+            }
+
+            try
+            {
+                foreach (var file in Directory.EnumerateFiles(directory, $"Processing.NDI.Lib.{archSuffix}.dll", SearchOption.AllDirectories))
+                {
+                    AddCandidate(file);
+                }
+
+                foreach (var file in Directory.EnumerateFiles(directory, "NDILib*.dll", SearchOption.AllDirectories))
+                {
+                    AddCandidate(file);
+                }
+            }
+            catch (Exception ex)
+            {
+                Log.Debug(ex, "Failed to enumerate native NDI libraries under {Directory}", directory);
+            }
+        }
+
+        // As a final fallback, check for a sibling Processing.NDI.Lib.* next to the executable even if the directory was not captured above.
+        foreach (var name in fileNames)
+        {
+            AddCandidate(Path.Combine(AppContext.BaseDirectory, name));
+        }
+
+        return result.ToArray();
+    }
+
+    private static string CreateNdiFailureMessage()
+    {
+        var builder = new StringBuilder();
+        builder.Append("Unable to locate the native NDI runtime (expecting NDILib.dll or Processing.NDI.Lib.*). ");
+
+        if (NdiLibraryCandidates.Length > 0)
+        {
+            builder.Append("Attempted paths: ");
+            builder.Append(string.Join(", ", NdiLibraryCandidates));
+            builder.Append(". ");
+        }
+
+        if (NdiSearchDirectories.Length > 0)
+        {
+            builder.Append("Searched directories: ");
+            builder.Append(string.Join(", ", NdiSearchDirectories));
+            builder.Append(". ");
+        }
+
+        builder.Append("Install the NDI Runtime (for example, \"C\\Program Files\\NDI\\NDI 6 Runtime\\v6\") or copy Processing.NDI.Lib.x64.dll next to Tractus.HtmlToNdi.exe, then restart the application. ");
+        builder.Append("You can also set the NDILIB_REDIST_FOLDER environment variable to the folder that contains the native library.");
+
+        return builder.ToString();
     }
 
     private static string[] RemoveLauncherFlags(string[] args)
