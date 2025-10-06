@@ -30,7 +30,6 @@ public class Program
     private static bool NdiLibraryConfigured;
     private static string[] NdiLibraryCandidates = Array.Empty<string>();
     private static string[] NdiSearchDirectories = Array.Empty<string>();
-    private static nint NdiNativeLibraryHandle;
 
     [STAThread]
     public static void Main(string[] args)
@@ -357,64 +356,31 @@ public class Program
                 throw new DllNotFoundException(CreateNdiFailureMessage());
             }
 
-            foreach (var candidate in NdiLibraryCandidates)
-            {
-                try
-                {
-                    if (NativeLibrary.TryLoad(candidate, out var handle))
-                    {
-                        NdiNativeLibraryHandle = handle;
-                        Log.Information("Loaded NDI native library from {Path}", candidate);
+            var runtimeDirectory = NdiLibraryCandidates
+                .Select(Path.GetDirectoryName)
+                .FirstOrDefault(d => !string.IsNullOrWhiteSpace(d));
 
-                        var directory = Path.GetDirectoryName(candidate);
-                        if (!string.IsNullOrWhiteSpace(directory))
-                        {
-                            Environment.SetEnvironmentVariable("NDILIB_REDIST_FOLDER", directory);
-                        }
-
-                        break;
-                    }
-                }
-                catch (Exception ex)
-                {
-                    Log.Debug(ex, "Failed to load NDI native library from {Path}", candidate);
-                }
-            }
-
-            if (NdiNativeLibraryHandle == nint.Zero)
-            {
-                // Rebuild and retry in case an install completed after we collected directories.
-                NdiSearchDirectories = BuildNdiProbeDirectories();
-                NdiLibraryCandidates = BuildNdiCandidateFiles(NdiSearchDirectories);
-
-                foreach (var candidate in NdiLibraryCandidates)
-                {
-                    try
-                    {
-                        if (NativeLibrary.TryLoad(candidate, out var handle))
-                        {
-                            NdiNativeLibraryHandle = handle;
-                            Log.Information("Loaded NDI native library from {Path}", candidate);
-
-                            var directory = Path.GetDirectoryName(candidate);
-                            if (!string.IsNullOrWhiteSpace(directory))
-                            {
-                                Environment.SetEnvironmentVariable("NDILIB_REDIST_FOLDER", directory);
-                            }
-
-                            break;
-                        }
-                    }
-                    catch (Exception ex)
-                    {
-                        Log.Debug(ex, "Failed to load NDI native library from {Path}", candidate);
-                    }
-                }
-            }
-
-            if (NdiNativeLibraryHandle == nint.Zero)
+            if (string.IsNullOrWhiteSpace(runtimeDirectory))
             {
                 throw new DllNotFoundException(CreateNdiFailureMessage());
+            }
+
+            runtimeDirectory = Path.GetFullPath(runtimeDirectory);
+            Environment.SetEnvironmentVariable("NDILIB_REDIST_FOLDER", runtimeDirectory);
+
+            TryPrependToPath(runtimeDirectory);
+
+            try
+            {
+                if (!SetDllDirectory(runtimeDirectory))
+                {
+                    var error = Marshal.GetLastWin32Error();
+                    Log.Debug("SetDllDirectory failed for {Path} with error {Error}", runtimeDirectory, error);
+                }
+            }
+            catch (EntryPointNotFoundException)
+            {
+                // Older Windows versions may not expose SetDllDirectory; ignore.
             }
 
             try
@@ -436,6 +402,23 @@ public class Program
             }
 
             NdiLibraryConfigured = true;
+        }
+    }
+
+    [DllImport("kernel32", SetLastError = true, CharSet = CharSet.Unicode)]
+    private static extern bool SetDllDirectory(string lpPathName);
+
+    private static void TryPrependToPath(string directory)
+    {
+        var current = Environment.GetEnvironmentVariable("PATH") ?? string.Empty;
+        var paths = current.Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries);
+        if (!paths.Any(p => string.Equals(p.Trim(), directory, StringComparison.OrdinalIgnoreCase)))
+        {
+            var updated = string.IsNullOrEmpty(current)
+                ? directory
+                : directory + Path.PathSeparator + current;
+
+            Environment.SetEnvironmentVariable("PATH", updated);
         }
     }
 
