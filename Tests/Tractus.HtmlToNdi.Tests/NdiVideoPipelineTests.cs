@@ -101,6 +101,72 @@ public class NdiVideoPipelineTests
         Assert.True(frames.Count >= 2, "Expected at least one repeat frame");
         Assert.Equal(frames[0].p_data, frames[1].p_data);
     }
+
+    [Fact]
+    public void WarmUpTicksRepeatUntilBufferFilled()
+    {
+        var sender = new CollectingSender();
+        var options = new NdiVideoPipelineOptions
+        {
+            EnableBuffering = true,
+            BufferDepth = 3,
+            TelemetryInterval = TimeSpan.FromDays(1)
+        };
+
+        var pipeline = new NdiVideoPipeline(sender, new FrameRate(60, 1), options, CreateNullLogger());
+
+        var width = 2;
+        var height = 2;
+        var stride = 8;
+        var size = 4 * width * height;
+        var buffers = new IntPtr[6];
+
+        try
+        {
+            for (var i = 0; i < buffers.Length; i++)
+            {
+                buffers[i] = Marshal.AllocHGlobal(size);
+            }
+
+            pipeline.HandleFrame(new CapturedFrame(buffers[0], width, height, stride));
+            pipeline.HandleFrame(new CapturedFrame(buffers[1], width, height, stride));
+            pipeline.HandleFrame(new CapturedFrame(buffers[2], width, height, stride));
+
+            pipeline.ProcessPacingTick();
+
+            var frames = sender.Frames;
+            Assert.Single(frames);
+            var lastPointer = frames[0].p_data;
+
+            pipeline.HandleFrame(new CapturedFrame(buffers[3], width, height, stride));
+            pipeline.ProcessWarmUpTick();
+            pipeline.HandleFrame(new CapturedFrame(buffers[4], width, height, stride));
+            pipeline.ProcessWarmUpTick();
+
+            frames = sender.Frames;
+            Assert.Equal(3, frames.Count);
+            Assert.Equal(lastPointer, frames[1].p_data);
+            Assert.Equal(lastPointer, frames[2].p_data);
+
+            pipeline.HandleFrame(new CapturedFrame(buffers[5], width, height, stride));
+            pipeline.ProcessWarmUpTick();
+
+            frames = sender.Frames;
+            Assert.Equal(3, frames.Count);
+        }
+        finally
+        {
+            for (var i = 0; i < buffers.Length; i++)
+            {
+                if (buffers[i] != IntPtr.Zero)
+                {
+                    Marshal.FreeHGlobal(buffers[i]);
+                }
+            }
+
+            pipeline.Dispose();
+        }
+    }
 }
 
 internal sealed class NullSink : ILogEventSink
