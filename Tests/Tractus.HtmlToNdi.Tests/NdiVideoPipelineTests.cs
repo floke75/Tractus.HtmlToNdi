@@ -101,6 +101,54 @@ public class NdiVideoPipelineTests
         Assert.True(frames.Count >= 2, "Expected at least one repeat frame");
         Assert.Equal(frames[0].p_data, frames[1].p_data);
     }
+
+    [Fact]
+    public async Task UnderrunsIncrementOnlyOncePerWarmup()
+    {
+        var sender = new CollectingSender();
+        var options = new NdiVideoPipelineOptions
+        {
+            EnableBuffering = true,
+            BufferDepth = 2,
+            TelemetryInterval = TimeSpan.FromDays(1)
+        };
+
+        var pipeline = new NdiVideoPipeline(sender, new FrameRate(120, 1), options, CreateNullLogger());
+        pipeline.Start();
+
+        var size = 4 * 2 * 2;
+        var buffer = Marshal.AllocHGlobal(size);
+        try
+        {
+            var frame = new CapturedFrame(buffer, 2, 2, 8);
+            pipeline.HandleFrame(frame);
+            pipeline.HandleFrame(frame);
+
+            await WaitForUnderrunAsync(pipeline, TimeSpan.FromSeconds(2));
+
+            var underrunsAfterFirstWarmup = pipeline.Underruns;
+
+            await Task.Delay(200);
+
+            Assert.Equal(underrunsAfterFirstWarmup, pipeline.Underruns);
+        }
+        finally
+        {
+            Marshal.FreeHGlobal(buffer);
+            pipeline.Dispose();
+        }
+    }
+
+    private static async Task WaitForUnderrunAsync(NdiVideoPipeline pipeline, TimeSpan timeout)
+    {
+        var deadline = DateTime.UtcNow + timeout;
+        while (pipeline.Underruns == 0 && DateTime.UtcNow < deadline)
+        {
+            await Task.Delay(10);
+        }
+
+        Assert.True(pipeline.Underruns > 0, "Pipeline never reported an underrun.");
+    }
 }
 
 internal sealed class NullSink : ILogEventSink

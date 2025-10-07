@@ -14,13 +14,17 @@ internal sealed class NdiVideoPipeline : IDisposable
     private readonly CancellationTokenSource cancellation = new();
     private readonly FrameRingBuffer<NdiVideoFrame>? ringBuffer;
     private readonly ILogger logger;
+    private readonly int bufferPrimeThreshold;
 
     private Task? pacingTask;
     private NdiVideoFrame? lastSentFrame;
     private long capturedFrames;
     private long sentFrames;
     private long repeatedFrames;
+    private long underruns;
     private DateTime lastTelemetry = DateTime.UtcNow;
+    private volatile bool bufferPrimed;
+    private volatile bool underrunGateArmed;
 
     public NdiVideoPipeline(INdiVideoSender sender, FrameRate frameRate, NdiVideoPipelineOptions options, ILogger logger)
     {
@@ -31,13 +35,24 @@ internal sealed class NdiVideoPipeline : IDisposable
 
         if (options.EnableBuffering)
         {
-            ringBuffer = new FrameRingBuffer<NdiVideoFrame>(Math.Max(1, options.BufferDepth));
+            var depth = Math.Max(1, options.BufferDepth);
+            ringBuffer = new FrameRingBuffer<NdiVideoFrame>(depth);
+            bufferPrimeThreshold = depth;
         }
+        else
+        {
+            bufferPrimeThreshold = 0;
+        }
+
+        bufferPrimed = !BufferingEnabled;
+        underrunGateArmed = false;
     }
 
     public bool BufferingEnabled => options.EnableBuffering;
 
     public FrameRate FrameRate => configuredFrameRate;
+
+    internal long Underruns => Interlocked.Read(ref underruns);
 
     public void Start()
     {
@@ -62,6 +77,8 @@ internal sealed class NdiVideoPipeline : IDisposable
         }
 
         pacingTask = null;
+        bufferPrimed = !BufferingEnabled;
+        underrunGateArmed = false;
     }
 
     public void HandleFrame(CapturedFrame frame)
@@ -83,6 +100,13 @@ internal sealed class NdiVideoPipeline : IDisposable
         var copy = NdiVideoFrame.CopyFrom(frame);
         ringBuffer.Enqueue(copy, out dropped);
         dropped?.Dispose();
+
+        if (!bufferPrimed && ringBuffer.Count >= bufferPrimeThreshold)
+        {
+            bufferPrimed = true;
+            underrunGateArmed = true;
+        }
+
         EmitTelemetryIfNeeded();
     }
 
@@ -104,6 +128,8 @@ internal sealed class NdiVideoPipeline : IDisposable
                     SendBufferedFrame(frame);
                     continue;
                 }
+
+                HandleUnderrun();
 
                 if (lastSentFrame is not null)
                 {
@@ -159,6 +185,29 @@ internal sealed class NdiVideoPipeline : IDisposable
         sender.Send(ref ndiFrame);
         Interlocked.Increment(ref repeatedFrames);
         EmitTelemetryIfNeeded();
+    }
+
+    private void HandleUnderrun()
+    {
+        if (!BufferingEnabled)
+        {
+            return;
+        }
+
+        if (!bufferPrimed)
+        {
+            return;
+        }
+
+        bufferPrimed = false;
+
+        if (!underrunGateArmed)
+        {
+            return;
+        }
+
+        Interlocked.Increment(ref underruns);
+        underrunGateArmed = false;
     }
 
     private (int numerator, int denominator) ResolveFrameRate(DateTime timestamp)
@@ -228,10 +277,11 @@ internal sealed class NdiVideoPipeline : IDisposable
             : string.Empty;
 
         logger.Information(
-            "NDI video pipeline stats: captured={Captured}, sent={Sent}, repeated={Repeated}{BufferStats} (caller={Caller})",
+            "NDI video pipeline stats: captured={Captured}, sent={Sent}, repeated={Repeated}, underruns={Underruns}{BufferStats} (caller={Caller})",
             Interlocked.Read(ref capturedFrames),
             Interlocked.Read(ref sentFrames),
             Interlocked.Read(ref repeatedFrames),
+            Interlocked.Read(ref underruns),
             bufferStats,
             caller);
     }
