@@ -188,7 +188,8 @@ internal sealed class NdiVideoPipeline : IDisposable
                     signalledEarly = framesAvailable.Wait(0);
                 }
 
-                if (!ringBuffer.TryDequeue(out var frame) || frame is null)
+                var frame = ringBuffer.DequeueLatest();
+                if (frame is null)
                 {
                     Interlocked.Increment(ref underruns);
                     bufferPrimed = false;
@@ -211,7 +212,7 @@ internal sealed class NdiVideoPipeline : IDisposable
                     continue;
                 }
 
-                if (!signalledEarly && framesAvailable.CurrentCount > 0)
+                while (framesAvailable.CurrentCount > ringBuffer.Count)
                 {
                     framesAvailable.Wait(0);
                 }
