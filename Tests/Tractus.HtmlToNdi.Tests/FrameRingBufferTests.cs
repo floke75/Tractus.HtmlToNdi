@@ -58,4 +58,41 @@ public class FrameRingBufferTests
         Assert.True(second.Disposed);
         Assert.Equal(2, buffer.DroppedAsStale);
     }
+
+    [Fact]
+    public void OverflowThenFifoConsumptionMaintainsStaleTelemetry()
+    {
+        var buffer = new FrameRingBuffer<DisposableStub>(2);
+        var first = new DisposableStub();
+        var second = new DisposableStub();
+        var third = new DisposableStub();
+        var fourth = new DisposableStub();
+        var fifth = new DisposableStub();
+
+        buffer.Enqueue(first, out var dropped);
+        Assert.Null(dropped);
+
+        buffer.Enqueue(second, out dropped);
+        Assert.Null(dropped);
+
+        buffer.Enqueue(third, out dropped);
+        Assert.Same(first, dropped);
+        dropped?.Dispose();
+
+        buffer.Enqueue(fourth, out dropped);
+        Assert.Same(second, dropped);
+        dropped?.Dispose();
+
+        var dequeued = buffer.TryDequeue(out var consumed);
+        Assert.True(dequeued);
+        Assert.Same(third, consumed);
+
+        buffer.Enqueue(fifth, out dropped);
+        Assert.Null(dropped);
+
+        var latest = buffer.DequeueLatest();
+        Assert.Same(fifth, latest);
+        Assert.Equal(0, buffer.DroppedAsStale);
+        Assert.Equal(2, buffer.DroppedFromOverflow);
+    }
 }
