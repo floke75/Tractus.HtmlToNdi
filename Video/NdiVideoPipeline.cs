@@ -157,6 +157,7 @@ internal sealed class NdiVideoPipeline : IDisposable
             lowBufferTickCount++;
             if (lowBufferTickCount > 1)
             {
+                DrainRemainingBufferedFrames(buffer);
                 EnterWarmupFromUnderrun();
                 return;
             }
@@ -173,6 +174,14 @@ internal sealed class NdiVideoPipeline : IDisposable
         }
 
         SendBufferedFrame(frame);
+    }
+
+    private void DrainRemainingBufferedFrames(FrameRingBuffer<NdiVideoFrame> buffer)
+    {
+        while (buffer.TryDequeue(out var frame))
+        {
+            SendBufferedFrame(frame);
+        }
     }
 
     private void EnterWarmupFromUnderrun()

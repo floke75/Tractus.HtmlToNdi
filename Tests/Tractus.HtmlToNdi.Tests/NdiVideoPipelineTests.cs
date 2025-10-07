@@ -51,12 +51,12 @@ public class NdiVideoPipelineTests
         }
     }
 
-    private static NdiVideoPipeline CreatePipeline(FakeSender sender)
+    private static NdiVideoPipeline CreatePipeline(FakeSender sender, int bufferDepth = 2)
     {
         var options = new NdiVideoPipelineOptions
         {
             EnableBuffering = true,
-            BufferDepth = 2,
+            BufferDepth = bufferDepth,
             TelemetryInterval = TimeSpan.FromHours(1)
         };
 
@@ -130,6 +130,32 @@ public class NdiVideoPipelineTests
         pipeline.ProcessPacingTick();
         Assert.True(pipeline.IsBufferPrimed);
         Assert.Equal(new byte[] { 0x10, 0x20, 0x30, 0x30, 0x30, 0x40 }, sender.PayloadMarkers);
+        Assert.Equal(1, pipeline.UnderrunCount);
+    }
+
+    [Fact]
+    public void BufferedPipelineDrainsBacklogBeforeWarmup()
+    {
+        var sender = new FakeSender();
+        using var pipeline = CreatePipeline(sender, bufferDepth: 3);
+
+        pipeline.ProcessPacingTick();
+
+        EnqueueFrame(pipeline, 0x10);
+        EnqueueFrame(pipeline, 0x20);
+        EnqueueFrame(pipeline, 0x30);
+
+        pipeline.ProcessPacingTick();
+        pipeline.ProcessPacingTick();
+
+        Assert.Equal(new byte[] { 0x10, 0x20 }, sender.PayloadMarkers);
+        Assert.True(pipeline.IsBufferPrimed);
+
+        pipeline.ProcessPacingTick();
+
+        Assert.Equal(new byte[] { 0x10, 0x20, 0x30, 0x30 }, sender.PayloadMarkers);
+        Assert.False(pipeline.IsBufferPrimed);
+        Assert.Equal(sender.SentPointers[^1], sender.SentPointers[^2]);
         Assert.Equal(1, pipeline.UnderrunCount);
     }
 }
