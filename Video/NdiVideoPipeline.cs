@@ -25,7 +25,6 @@ internal sealed class NdiVideoPipeline : IDisposable
     private long warmupCycles;
     private long lastWarmupDurationMilliseconds;
     private int bufferPrimedFlag;
-    private int consecutiveBelowThresholdTicks;
     private DateTime? warmupStart;
     private DateTime lastTelemetry = DateTime.UtcNow;
 
@@ -139,21 +138,6 @@ internal sealed class NdiVideoPipeline : IDisposable
             PromoteBufferToPrimed();
             count = buffer.Count;
         }
-        var shouldRewarm = false;
-
-        if (count < targetDepth)
-        {
-            consecutiveBelowThresholdTicks++;
-            if (consecutiveBelowThresholdTicks > 1)
-            {
-                shouldRewarm = true;
-            }
-        }
-        else
-        {
-            consecutiveBelowThresholdTicks = 0;
-        }
-
         if (buffer.TryDequeue(out var frame) && frame is not null)
         {
             SendBufferedFrame(frame);
@@ -173,11 +157,6 @@ internal sealed class NdiVideoPipeline : IDisposable
                 EmitTelemetryIfNeeded();
             }
 
-            shouldRewarm = true;
-        }
-
-        if (shouldRewarm)
-        {
             BeginRewarm();
         }
     }
@@ -187,7 +166,6 @@ internal sealed class NdiVideoPipeline : IDisposable
     private void PromoteBufferToPrimed()
     {
         Volatile.Write(ref bufferPrimedFlag, 1);
-        consecutiveBelowThresholdTicks = 0;
 
         if (warmupStart.HasValue)
         {
@@ -201,7 +179,6 @@ internal sealed class NdiVideoPipeline : IDisposable
     private void BeginRewarm()
     {
         Volatile.Write(ref bufferPrimedFlag, 0);
-        consecutiveBelowThresholdTicks = 0;
         warmupStart = DateTime.UtcNow;
     }
 
