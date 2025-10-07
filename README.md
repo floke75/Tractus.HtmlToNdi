@@ -24,8 +24,8 @@ Parameter|Description
 `--port=9999`|The port the HTTP server will listen on. Defaults to `9999`.
 `--url="https://www.tractus.ca"`|The startup webpage. Defaults to `https://testpattern.tractusevents.com/`.
 `--fps=59.94`|Target NDI frame rate. Accepts integer, decimal or rational values (e.g. `60000/1001`). Defaults to `60`.
-`--buffer-depth=3`|Enable the paced output buffer with the specified frame capacity. Set to `0` (default) to run zero-copy.
-`--enable-output-buffer`|Shortcut to turn on paced buffering with the default depth of 3 frames.
+`--buffer-depth=3`|Enable the paced output buffer with the specified frame capacity. Expect roughly `depth / fps` of intentional latency once the queue primes. Set to `0` (default) to run zero-copy.
+`--enable-output-buffer`|Shortcut to turn on paced buffering with the default depth of 3 frames (≈`3 / fps` seconds of latency once primed).
 `--telemetry-interval=10`|Seconds between video pipeline telemetry log entries. Defaults to 10 seconds.
 `--windowless-frame-rate=60`|Overrides CEF's internal repaint cadence. Defaults to the nearest integer of `--fps`.
 `--disable-gpu-vsync`|Disables Chromium's GPU vsync throttling.
