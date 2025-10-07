@@ -58,4 +58,36 @@ public class FrameRingBufferTests
         Assert.True(second.Disposed);
         Assert.Equal(2, buffer.DroppedAsStale);
     }
+
+    [Fact]
+    public void TryDequeueReturnsOldestWithoutDisposing()
+    {
+        var buffer = new FrameRingBuffer<DisposableStub>(3);
+        var first = new DisposableStub();
+        var second = new DisposableStub();
+
+        buffer.Enqueue(first, out _);
+        buffer.Enqueue(second, out _);
+
+        var dequeuedFirst = buffer.TryDequeue(out var item1);
+        Assert.True(dequeuedFirst);
+        Assert.Same(first, item1);
+        Assert.False(first.Disposed);
+        Assert.False(second.Disposed);
+
+        var dequeuedSecond = buffer.TryDequeue(out var item2);
+        Assert.True(dequeuedSecond);
+        Assert.Same(second, item2);
+    }
+
+    [Fact]
+    public void TryDequeueReturnsFalseWhenEmpty()
+    {
+        var buffer = new FrameRingBuffer<DisposableStub>(2);
+
+        var result = buffer.TryDequeue(out var frame);
+
+        Assert.False(result);
+        Assert.Null(frame);
+    }
 }
