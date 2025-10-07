@@ -101,6 +101,43 @@ public class NdiVideoPipelineTests
         Assert.True(frames.Count >= 2, "Expected at least one repeat frame");
         Assert.Equal(frames[0].p_data, frames[1].p_data);
     }
+
+    [Fact]
+    public void BufferedModeHonoursUnderrunTolerance()
+    {
+        var sender = new CollectingSender();
+        var options = new NdiVideoPipelineOptions
+        {
+            EnableBuffering = true,
+            BufferDepth = 2,
+            TelemetryInterval = TimeSpan.FromDays(1)
+        };
+
+        var pipeline = new NdiVideoPipeline(sender, new FrameRate(30, 1), options, CreateNullLogger());
+
+        var size = 4 * 2 * 2;
+        var buffer = Marshal.AllocHGlobal(size);
+        try
+        {
+            var frame = new CapturedFrame(buffer, 2, 2, 8);
+            pipeline.HandleFrame(frame);
+
+            pipeline.ProcessPacedTick(); // Drain the queued frame
+            Assert.Single(sender.Frames);
+
+            pipeline.ProcessPacedTick(); // First underrun tick should be tolerated
+            Assert.Single(sender.Frames);
+
+            pipeline.ProcessPacedTick(); // Second underrun tick should trigger a repeat
+            Assert.Equal(2, sender.Frames.Count);
+            Assert.Equal(sender.Frames[0].p_data, sender.Frames[1].p_data);
+        }
+        finally
+        {
+            Marshal.FreeHGlobal(buffer);
+            pipeline.Dispose();
+        }
+    }
 }
 
 internal sealed class NullSink : ILogEventSink

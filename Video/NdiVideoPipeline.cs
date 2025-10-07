@@ -7,6 +7,8 @@ namespace Tractus.HtmlToNdi.Video;
 
 internal sealed class NdiVideoPipeline : IDisposable
 {
+    private const int LowBacklogToleranceTicks = 2;
+
     private readonly INdiVideoSender sender;
     private readonly FrameRate configuredFrameRate;
     private readonly NdiVideoPipelineOptions options;
@@ -21,6 +23,7 @@ internal sealed class NdiVideoPipeline : IDisposable
     private long sentFrames;
     private long repeatedFrames;
     private DateTime lastTelemetry = DateTime.UtcNow;
+    private int consecutiveLowBacklogTicks;
 
     public NdiVideoPipeline(INdiVideoSender sender, FrameRate frameRate, NdiVideoPipelineOptions options, ILogger logger)
     {
@@ -98,17 +101,7 @@ internal sealed class NdiVideoPipeline : IDisposable
                     break;
                 }
 
-                NdiVideoFrame? frame = ringBuffer?.DequeueLatest();
-                if (frame is not null)
-                {
-                    SendBufferedFrame(frame);
-                    continue;
-                }
-
-                if (lastSentFrame is not null)
-                {
-                    RepeatLastFrame();
-                }
+                ProcessPacedTick();
             }
         }
         finally
@@ -159,6 +152,35 @@ internal sealed class NdiVideoPipeline : IDisposable
         sender.Send(ref ndiFrame);
         Interlocked.Increment(ref repeatedFrames);
         EmitTelemetryIfNeeded();
+    }
+
+    internal void ProcessPacedTick()
+    {
+        if (ringBuffer is null)
+        {
+            return;
+        }
+
+        var frame = ringBuffer.DequeueLatest();
+        if (frame is not null)
+        {
+            consecutiveLowBacklogTicks = 0;
+            SendBufferedFrame(frame);
+            return;
+        }
+
+        consecutiveLowBacklogTicks++;
+        if (consecutiveLowBacklogTicks < LowBacklogToleranceTicks || lastSentFrame is null)
+        {
+            return;
+        }
+
+        HandleUnderrun();
+    }
+
+    private void HandleUnderrun()
+    {
+        RepeatLastFrame();
     }
 
     private (int numerator, int denominator) ResolveFrameRate(DateTime timestamp)
