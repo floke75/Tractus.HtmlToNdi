@@ -114,7 +114,7 @@ public class NdiVideoPipelineTests
             pipeline.HandleFrame(new CapturedFrame(buffer1, 2, 2, 8));
             pipeline.HandleFrame(new CapturedFrame(buffer2, 2, 2, 8));
 
-            await Task.Delay(200);
+            await Task.Delay(600);
         }
         finally
         {
@@ -124,7 +124,7 @@ public class NdiVideoPipelineTests
         }
 
         var frames = sender.Frames;
-        Assert.True(frames.Count >= 3, "Expected at least one repeat frame after draining buffer");
+        Assert.True(frames.Count >= 5, "Expected paced pipeline to continue repeating frames while idle");
         var lastActual = frames[^2];
         var repeated = frames[^1];
         Assert.Equal(lastActual.Frame.p_data, repeated.Frame.p_data);

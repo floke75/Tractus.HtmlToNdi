@@ -120,6 +120,7 @@ internal sealed class NdiVideoPipeline : IDisposable
                     continue;
                 }
 
+                var shouldAttemptDequeue = bufferPrimed;
                 var count = ringBuffer.Count;
 
                 if (!bufferPrimed)
@@ -128,13 +129,14 @@ internal sealed class NdiVideoPipeline : IDisposable
                     {
                         bufferPrimed = true;
                         belowThresholdLastTick = false;
+                        shouldAttemptDequeue = true;
                         var duration = DateTime.UtcNow - warmupStartTime;
                         Interlocked.Increment(ref warmupCycles);
                         Volatile.Write(ref lastWarmupDurationTicks, duration.Ticks);
                     }
                     else
                     {
-                        continue;
+                        shouldAttemptDequeue = false;
                     }
                 }
                 else if (count < bufferDepthThreshold)
@@ -144,26 +146,29 @@ internal sealed class NdiVideoPipeline : IDisposable
                         bufferPrimed = false;
                         warmupStartTime = DateTime.UtcNow;
                         belowThresholdLastTick = false;
-                        continue;
+                        shouldAttemptDequeue = false;
                     }
-
-                    belowThresholdLastTick = true;
+                    else
+                    {
+                        belowThresholdLastTick = true;
+                        shouldAttemptDequeue = true;
+                    }
                 }
                 else
                 {
                     belowThresholdLastTick = false;
+                    shouldAttemptDequeue = true;
                 }
 
-                if (ringBuffer.TryDequeue(out var frame) && frame is not null)
+                if (shouldAttemptDequeue && ringBuffer.TryDequeue(out var frame) && frame is not null)
                 {
                     SendBufferedFrame(frame);
                     continue;
                 }
 
-                Interlocked.Increment(ref underruns);
-
                 if (lastSentFrame is not null)
                 {
+                    Interlocked.Increment(ref underruns);
                     RepeatLastFrame();
                 }
             }
