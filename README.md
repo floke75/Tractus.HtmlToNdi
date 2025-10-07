@@ -24,7 +24,7 @@ Parameter|Description
 `--port=9999`|The port the HTTP server will listen on. Defaults to `9999`.
 `--url="https://www.tractus.ca"`|The startup webpage. Defaults to `https://testpattern.tractusevents.com/`.
 `--fps=59.94`|Target NDI frame rate. Accepts integer, decimal or rational values (e.g. `60000/1001`). Defaults to `60`.
-`--buffer-depth=3`|Enable the paced output buffer with the specified frame capacity. Set to `0` (default) to run zero-copy.
+`--buffer-depth=3`|Enable the paced output buffer with the specified frame capacity. Set to `0` (default) to run zero-copy. When enabled the sender waits until the bucket contains `BufferDepth` frames before transmitting, adding roughly `BufferDepth / fps` seconds of latency.
 `--enable-output-buffer`|Shortcut to turn on paced buffering with the default depth of 3 frames.
 `--telemetry-interval=10`|Seconds between video pipeline telemetry log entries. Defaults to 10 seconds.
 `--windowless-frame-rate=60`|Overrides CEF's internal repaint cadence. Defaults to the nearest integer of `--fps`.
@@ -48,6 +48,12 @@ phase-locking Chromium to the display hardware. Use the flag only when you delib
 stress testing or high-speed captures) and let the paced buffer smooth the residual jitter. When the pacer reaches a
 presentation deadline without a fresh frame it repeats the most recently captured frame so NDI receivers maintain a stable
 cadence.
+
+With buffering enabled the paced loop now treats the ring buffer as a FIFO bucket: it waits until `BufferDepth` frames are queued
+before the first send, consumes frames in arrival order to keep presentation delay stable, and requires the bucket to refill after
+any underrun. Expect an intentional `BufferDepth / fps` delay while the pipeline warms up and after a stall before fresh video
+resumes. See [`Docs/paced-output-buffer.md`](Docs/paced-output-buffer.md) for a deeper walkthrough of the priming/rewarm flow and
+the new telemetry counters.
 
 #### Example Launch
 

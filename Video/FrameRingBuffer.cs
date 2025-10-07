@@ -82,6 +82,22 @@ internal sealed class FrameRingBuffer<T>
         }
     }
 
+    public bool TryDequeue(out T? frame)
+    {
+        lock (frames)
+        {
+            if (frames.Count == 0)
+            {
+                frame = null;
+                return false;
+            }
+
+            frame = frames.Dequeue();
+            overflowSinceLastDequeue = 0;
+            return true;
+        }
+    }
+
     public void Clear()
     {
         lock (frames)
