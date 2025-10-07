@@ -24,14 +24,16 @@ Parameter|Description
 `--port=9999`|The port the HTTP server will listen on. Defaults to `9999`.
 `--url="https://www.tractus.ca"`|The startup webpage. Defaults to `https://testpattern.tractusevents.com/`.
 `--fps=59.94`|Target NDI frame rate. Accepts integer, decimal or rational values (e.g. `60000/1001`). Defaults to `60`.
-`--buffer-depth=3`|Enable the paced output buffer with the specified frame capacity. Set to `0` (default) to run zero-copy.
-`--enable-output-buffer`|Shortcut to turn on paced buffering with the default depth of 3 frames.
+`--buffer-depth=3`|Enable the paced output buffer with the specified frame capacity. When enabled the sender waits for the queue to hold `depth` frames before transmitting, adding roughly `depth / fps` seconds of intentional latency. Set to `0` (default) to run zero-copy.
+`--enable-output-buffer`|Shortcut to turn on paced buffering with the default depth of 3 frames (≈`3 / fps` seconds of latency once primed).
 `--telemetry-interval=10`|Seconds between video pipeline telemetry log entries. Defaults to 10 seconds.
 `--windowless-frame-rate=60`|Overrides CEF's internal repaint cadence. Defaults to the nearest integer of `--fps`.
 `--disable-gpu-vsync`|Disables Chromium's GPU vsync throttling.
 `--disable-frame-rate-limit`|Disables Chromium's frame rate limiter.
 `--launcher`|Forces the launcher window to appear even when other parameters are supplied.
 `--no-launcher`|Skips the launcher and honours the supplied command-line arguments only.
+
+When the paced buffer is enabled the pipeline repeats the most recently transmitted frame while warming up or recovering from an underrun so receivers continue to see a stable cadence. See [`Docs/paced-output-buffer.md`](Docs/paced-output-buffer.md) for a deeper walkthrough of the priming and telemetry behaviour.
 
 #### Example Launch
 
