@@ -139,21 +139,8 @@ internal sealed class NdiVideoPipeline : IDisposable
     private async Task RunPacedLoopAsync(CancellationToken token)
     {
         var warmupStart = DateTime.UtcNow;
-        while (!isBufferPrimed && !token.IsCancellationRequested)
-        {
-            var waitResult = await frameAvailableSignal.WaitAsync(TimeSpan.FromSeconds(1), token);
-            if (waitResult && ringBuffer is not null && ringBuffer.Count >= ringBuffer.Capacity)
-            {
-                isBufferPrimed = true;
-                lastWarmupDuration = DateTime.UtcNow - warmupStart;
-            }
-            else
-            {
-                logger.Debug("Paced pipeline is warming up (backlog: {Count}/{Capacity})", ringBuffer?.Count, ringBuffer?.Capacity);
-            }
-        }
-
         var timer = new PeriodicTimer(FrameRate.FrameDuration);
+
         try
         {
             while (await timer.WaitForNextTickAsync(token))
@@ -168,17 +155,46 @@ internal sealed class NdiVideoPipeline : IDisposable
                     continue;
                 }
 
+                if (!isBufferPrimed)
+                {
+                    // STATE: WARMING UP
+                    if (ringBuffer.Count >= ringBuffer.Capacity)
+                    {
+                        isBufferPrimed = true;
+                        lastWarmupDuration = DateTime.UtcNow - warmupStart;
+                        logger.Information("Paced pipeline primed after {Duration}ms.", lastWarmupDuration.TotalMilliseconds);
+                    }
+                    else
+                    {
+                        logger.Debug("Paced pipeline is warming up (backlog: {Count}/{Capacity})", ringBuffer.Count, ringBuffer.Capacity);
+                        continue;
+                    }
+                }
+
+                // STATE: PRIMED AND RUNNING
                 if (frameAvailableSignal.Wait(0))
                 {
                     if (ringBuffer.TryDequeue(out var frame))
                     {
                         SendBufferedFrame(frame);
-                        continue;
+                    }
+                    else
+                    {
+                        // This indicates a logic error - semaphore and queue are out of sync.
+                        Interlocked.Increment(ref underruns);
+                        isBufferPrimed = false; // Force re-warm
+                        warmupStart = DateTime.UtcNow;
+                        RepeatLastFrame();
                     }
                 }
-
-                Interlocked.Increment(ref underruns);
-                RepeatLastFrame();
+                else
+                {
+                    // Underrun: pacer is faster than producer.
+                    Interlocked.Increment(ref underruns);
+                    isBufferPrimed = false;
+                    warmupStart = DateTime.UtcNow;
+                    RepeatLastFrame();
+                }
             }
         }
         finally
