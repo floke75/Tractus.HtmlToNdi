@@ -1,111 +1,161 @@
 using System.Runtime.InteropServices;
+using NewTek.NDI;
 using Serilog;
-using Serilog.Core;
 using Tractus.HtmlToNdi.Video;
 using Xunit;
-using NewTek;
-using NewTek.NDI;
 
 namespace Tractus.HtmlToNdi.Tests;
 
 public class NdiVideoPipelineTests
 {
-    private sealed class CollectingSender : INdiVideoSender
+    private sealed class FakeSender : INdiVideoSender
     {
-        private readonly object gate = new();
-        private readonly List<NDIlib.video_frame_v2_t> frames = new();
+        public List<byte> PayloadMarkers { get; } = new();
 
-        public IReadOnlyList<NDIlib.video_frame_v2_t> Frames
-        {
-            get
-            {
-                lock (gate)
-                {
-                    return frames.ToList();
-                }
-            }
-        }
+        public List<IntPtr> SentPointers { get; } = new();
 
         public void Send(ref NDIlib.video_frame_v2_t frame)
         {
-            lock (gate)
+            SentPointers.Add(frame.p_data);
+            if (frame.p_data != IntPtr.Zero)
             {
-                frames.Add(frame);
+                PayloadMarkers.Add(Marshal.ReadByte(frame.p_data));
+            }
+            else
+            {
+                PayloadMarkers.Add(0);
             }
         }
     }
 
-    private static ILogger CreateNullLogger() => new LoggerConfiguration().WriteTo.Sink(new NullSink()).CreateLogger();
-
-    [Fact]
-    public void DirectModeSendsImmediately()
+    private static CapturedFrame CreateFrame(byte marker, out IntPtr allocated)
     {
-        var sender = new CollectingSender();
-        var options = new NdiVideoPipelineOptions
-        {
-            EnableBuffering = false,
-            TelemetryInterval = TimeSpan.FromDays(1)
-        };
+        var buffer = Marshal.AllocHGlobal(4);
+        var pattern = new byte[4];
+        Array.Fill(pattern, marker);
+        Marshal.Copy(pattern, 0, buffer, pattern.Length);
+        allocated = buffer;
+        return new CapturedFrame(buffer, 1, 1, 4);
+    }
 
-        var pipeline = new NdiVideoPipeline(sender, new FrameRate(60, 1), options, CreateNullLogger());
-
-        var size = 4 * 2 * 2;
-        var buffer = Marshal.AllocHGlobal(size);
+    private static void EnqueueFrame(NdiVideoPipeline pipeline, byte marker)
+    {
+        var frame = CreateFrame(marker, out var allocated);
         try
         {
-            var frame = new CapturedFrame(buffer, 2, 2, 8);
             pipeline.HandleFrame(frame);
         }
         finally
         {
-            Marshal.FreeHGlobal(buffer);
-            pipeline.Dispose();
+            Marshal.FreeHGlobal(allocated);
         }
-
-        var frames = sender.Frames;
-        Assert.Single(frames);
-        Assert.Equal(60, frames[0].frame_rate_N);
-        Assert.Equal(1, frames[0].frame_rate_D);
     }
 
-    [Fact]
-    public async Task BufferedModeRepeatsLastFrameWhenIdle()
+    private static NdiVideoPipeline CreatePipeline(FakeSender sender, int bufferDepth = 2)
     {
-        var sender = new CollectingSender();
         var options = new NdiVideoPipelineOptions
         {
             EnableBuffering = true,
-            BufferDepth = 2,
-            TelemetryInterval = TimeSpan.FromDays(1)
+            BufferDepth = bufferDepth,
+            TelemetryInterval = TimeSpan.FromHours(1)
         };
 
-        var pipeline = new NdiVideoPipeline(sender, new FrameRate(30, 1), options, CreateNullLogger());
-        pipeline.Start();
-
-        var size = 4 * 2 * 2;
-        var buffer = Marshal.AllocHGlobal(size);
-        try
-        {
-            var frame = new CapturedFrame(buffer, 2, 2, 8);
-            pipeline.HandleFrame(frame);
-
-            await Task.Delay(200);
-        }
-        finally
-        {
-            Marshal.FreeHGlobal(buffer);
-            pipeline.Dispose();
-        }
-
-        var frames = sender.Frames;
-        Assert.True(frames.Count >= 2, "Expected at least one repeat frame");
-        Assert.Equal(frames[0].p_data, frames[1].p_data);
+        var logger = new LoggerConfiguration().CreateLogger();
+        return new NdiVideoPipeline(sender, new FrameRate(60, 1), options, logger);
     }
-}
 
-internal sealed class NullSink : ILogEventSink
-{
-    public void Emit(Serilog.Events.LogEvent logEvent)
+    [Fact]
+    public void BufferedPipelineWarmsUpBeforeSending()
     {
+        var sender = new FakeSender();
+        using var pipeline = CreatePipeline(sender);
+
+        pipeline.ProcessPacingTick();
+        Assert.Empty(sender.PayloadMarkers);
+        Assert.False(pipeline.IsBufferPrimed);
+
+        EnqueueFrame(pipeline, 0x11);
+        pipeline.ProcessPacingTick();
+        Assert.Empty(sender.PayloadMarkers);
+        Assert.False(pipeline.IsBufferPrimed);
+
+        EnqueueFrame(pipeline, 0x22);
+        pipeline.ProcessPacingTick();
+
+        Assert.True(pipeline.IsBufferPrimed);
+        Assert.Equal(new byte[] { 0x11 }, sender.PayloadMarkers);
+
+        EnqueueFrame(pipeline, 0x33);
+        pipeline.ProcessPacingTick();
+
+        Assert.Equal(new byte[] { 0x11, 0x22 }, sender.PayloadMarkers);
+        Assert.True(pipeline.IsBufferPrimed);
+    }
+
+    [Fact]
+    public void BufferedPipelineRewarmsAndCountsUnderruns()
+    {
+        var sender = new FakeSender();
+        using var pipeline = CreatePipeline(sender);
+
+        pipeline.ProcessPacingTick();
+        EnqueueFrame(pipeline, 0x10);
+        pipeline.ProcessPacingTick();
+        EnqueueFrame(pipeline, 0x20);
+        pipeline.ProcessPacingTick();
+        EnqueueFrame(pipeline, 0x30);
+        pipeline.ProcessPacingTick();
+
+        Assert.Equal(new byte[] { 0x10, 0x20 }, sender.PayloadMarkers);
+        Assert.True(pipeline.IsBufferPrimed);
+        Assert.Equal(0, pipeline.UnderrunCount);
+
+        pipeline.ProcessPacingTick();
+        Assert.Equal(new byte[] { 0x10, 0x20, 0x30 }, sender.PayloadMarkers);
+        Assert.True(pipeline.IsBufferPrimed);
+
+        pipeline.ProcessPacingTick();
+        Assert.Equal(new byte[] { 0x10, 0x20, 0x30, 0x30 }, sender.PayloadMarkers);
+        Assert.False(pipeline.IsBufferPrimed);
+        Assert.Equal(1, pipeline.UnderrunCount);
+        Assert.Equal(sender.SentPointers[^1], sender.SentPointers[^2]);
+
+        EnqueueFrame(pipeline, 0x40);
+        pipeline.ProcessPacingTick();
+        Assert.Equal(new byte[] { 0x10, 0x20, 0x30, 0x30, 0x30 }, sender.PayloadMarkers);
+        Assert.False(pipeline.IsBufferPrimed);
+        Assert.Equal(1, pipeline.UnderrunCount);
+
+        EnqueueFrame(pipeline, 0x50);
+        pipeline.ProcessPacingTick();
+        Assert.True(pipeline.IsBufferPrimed);
+        Assert.Equal(new byte[] { 0x10, 0x20, 0x30, 0x30, 0x30, 0x40 }, sender.PayloadMarkers);
+        Assert.Equal(1, pipeline.UnderrunCount);
+    }
+
+    [Fact]
+    public void BufferedPipelineDrainsBacklogBeforeWarmup()
+    {
+        var sender = new FakeSender();
+        using var pipeline = CreatePipeline(sender, bufferDepth: 3);
+
+        pipeline.ProcessPacingTick();
+
+        EnqueueFrame(pipeline, 0x10);
+        EnqueueFrame(pipeline, 0x20);
+        EnqueueFrame(pipeline, 0x30);
+
+        pipeline.ProcessPacingTick();
+        pipeline.ProcessPacingTick();
+
+        Assert.Equal(new byte[] { 0x10, 0x20 }, sender.PayloadMarkers);
+        Assert.True(pipeline.IsBufferPrimed);
+
+        pipeline.ProcessPacingTick();
+
+        Assert.Equal(new byte[] { 0x10, 0x20, 0x30, 0x30 }, sender.PayloadMarkers);
+        Assert.False(pipeline.IsBufferPrimed);
+        Assert.Equal(sender.SentPointers[^1], sender.SentPointers[^2]);
+        Assert.Equal(1, pipeline.UnderrunCount);
     }
 }
