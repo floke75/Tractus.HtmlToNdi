@@ -14,12 +14,20 @@ internal sealed class NdiVideoPipeline : IDisposable
     private readonly CancellationTokenSource cancellation = new();
     private readonly FrameRingBuffer<NdiVideoFrame>? ringBuffer;
     private readonly ILogger logger;
+    private readonly int bufferDepthThreshold;
 
     private Task? pacingTask;
     private NdiVideoFrame? lastSentFrame;
     private long capturedFrames;
     private long sentFrames;
     private long repeatedFrames;
+    private long underruns;
+    private long warmupCycles;
+    private long lastWarmupDurationTicks;
+    private bool bufferPrimed;
+    private bool belowThresholdLastTick;
+    private bool underrunRecordedThisWarmup;
+    private DateTime warmupStartTime = DateTime.UtcNow;
     private DateTime lastTelemetry = DateTime.UtcNow;
 
     public NdiVideoPipeline(INdiVideoSender sender, FrameRate frameRate, NdiVideoPipelineOptions options, ILogger logger)
@@ -31,7 +39,12 @@ internal sealed class NdiVideoPipeline : IDisposable
 
         if (options.EnableBuffering)
         {
-            ringBuffer = new FrameRingBuffer<NdiVideoFrame>(Math.Max(1, options.BufferDepth));
+            bufferDepthThreshold = Math.Max(1, options.BufferDepth);
+            ringBuffer = new FrameRingBuffer<NdiVideoFrame>(bufferDepthThreshold);
+        }
+        else
+        {
+            bufferDepthThreshold = 0;
         }
     }
 
@@ -45,6 +58,11 @@ internal sealed class NdiVideoPipeline : IDisposable
         {
             return;
         }
+
+        warmupStartTime = DateTime.UtcNow;
+        bufferPrimed = false;
+        belowThresholdLastTick = false;
+        underrunRecordedThisWarmup = false;
 
         pacingTask = Task.Run(async () => await RunPacedLoopAsync(cancellation.Token));
     }
@@ -62,6 +80,7 @@ internal sealed class NdiVideoPipeline : IDisposable
         }
 
         pacingTask = null;
+        bufferPrimed = false;
     }
 
     public void HandleFrame(CapturedFrame frame)
@@ -98,17 +117,48 @@ internal sealed class NdiVideoPipeline : IDisposable
                     break;
                 }
 
-                NdiVideoFrame? frame = ringBuffer?.DequeueLatest();
-                if (frame is not null)
+                if (ringBuffer is null)
                 {
-                    SendBufferedFrame(frame);
                     continue;
                 }
 
-                if (lastSentFrame is not null)
+                if (!bufferPrimed)
                 {
-                    RepeatLastFrame();
+                    if (ringBuffer.Count >= bufferDepthThreshold)
+                    {
+                        PromoteBufferToPrimed();
+                    }
+                    else
+                    {
+                        RepeatLastFrame();
+                        continue;
+                    }
                 }
+                else
+                {
+                    if (ringBuffer.Count < bufferDepthThreshold)
+                    {
+                        if (belowThresholdLastTick)
+                        {
+                            BeginWarmupFromUnderrun();
+                            continue;
+                        }
+
+                        belowThresholdLastTick = true;
+                    }
+                    else
+                    {
+                        belowThresholdLastTick = false;
+                    }
+                }
+
+                if (!ringBuffer.TryDequeue(out var frame) || frame is null)
+                {
+                    BeginWarmupFromUnderrun();
+                    continue;
+                }
+
+                SendBufferedFrame(frame);
             }
         }
         finally
@@ -159,6 +209,42 @@ internal sealed class NdiVideoPipeline : IDisposable
         sender.Send(ref ndiFrame);
         Interlocked.Increment(ref repeatedFrames);
         EmitTelemetryIfNeeded();
+    }
+
+    private void BeginWarmupFromUnderrun()
+    {
+        if (!BufferingEnabled)
+        {
+            return;
+        }
+
+        bufferPrimed = false;
+        belowThresholdLastTick = false;
+        warmupStartTime = DateTime.UtcNow;
+
+        if (!underrunRecordedThisWarmup)
+        {
+            Interlocked.Increment(ref underruns);
+            underrunRecordedThisWarmup = true;
+        }
+
+        RepeatLastFrame();
+    }
+
+    private void PromoteBufferToPrimed()
+    {
+        bufferPrimed = true;
+        belowThresholdLastTick = false;
+        underrunRecordedThisWarmup = false;
+
+        var duration = DateTime.UtcNow - warmupStartTime;
+        if (duration < TimeSpan.Zero)
+        {
+            duration = TimeSpan.Zero;
+        }
+
+        Interlocked.Increment(ref warmupCycles);
+        Interlocked.Exchange(ref lastWarmupDurationTicks, duration.Ticks);
     }
 
     private (int numerator, int denominator) ResolveFrameRate(DateTime timestamp)
@@ -224,7 +310,7 @@ internal sealed class NdiVideoPipeline : IDisposable
         lastTelemetry = DateTime.UtcNow;
 
         var bufferStats = BufferingEnabled && ringBuffer is not null
-            ? $", buffered={ringBuffer.Count}, droppedOverflow={ringBuffer.DroppedFromOverflow}, droppedStale={ringBuffer.DroppedAsStale}"
+            ? $", primed={bufferPrimed}, buffered={ringBuffer.Count}, droppedOverflow={ringBuffer.DroppedFromOverflow}, droppedStale={ringBuffer.DroppedAsStale}, underruns={Interlocked.Read(ref underruns)}, warmups={Interlocked.Read(ref warmupCycles)}, lastWarmupMs={TimeSpan.FromTicks(Interlocked.Read(ref lastWarmupDurationTicks)).TotalMilliseconds:F0}"
             : string.Empty;
 
         logger.Information(
@@ -235,6 +321,12 @@ internal sealed class NdiVideoPipeline : IDisposable
             bufferStats,
             caller);
     }
+
+    internal bool BufferPrimed => bufferPrimed;
+
+    internal long BufferUnderruns => Interlocked.Read(ref underruns);
+
+    internal TimeSpan LastWarmupDuration => TimeSpan.FromTicks(Interlocked.Read(ref lastWarmupDurationTicks));
 
     public void Dispose()
     {
