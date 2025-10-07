@@ -5,6 +5,8 @@
 
 This document is the ground-truth orientation guide. Treat it as a living spec—update it whenever behaviour changes.
 
+For the current paced-buffer design direction and recommendations, review `Docs/paced-buffer-improvement-plan.md` alongside the historical evaluation in `Docs/paced-buffer-pr-evaluation.md`.
+
 ---
 
 ## 1. What the current build actually does (net8.0, December 2024 snapshot)
