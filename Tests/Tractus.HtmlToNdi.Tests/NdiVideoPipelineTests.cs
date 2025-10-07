@@ -1,3 +1,4 @@
+using System;
 using System.Linq;
 using System.Runtime.InteropServices;
 using Serilog;
@@ -141,6 +142,7 @@ public class NdiVideoPipelineTests
             Assert.Equal(2, Marshal.ReadInt32(frames[1].p_data));
             Assert.Equal(3, Marshal.ReadInt32(frames[2].p_data));
             Assert.True(pipeline.BufferPrimed);
+            Assert.True(pipeline.LastWarmupDuration > TimeSpan.Zero);
         }
         finally
         {
@@ -211,6 +213,7 @@ public class NdiVideoPipelineTests
             Assert.True(indexOfThree >= 0, "Expected frame with marker 3 to be sent");
             Assert.True(indexOfFour > indexOfThree, "Expected frame with marker 4 after marker 3");
             Assert.True(pipeline.BufferPrimed);
+            Assert.True(pipeline.LastWarmupDuration > TimeSpan.Zero);
         }
         finally
         {
