@@ -45,7 +45,9 @@ Supplying `--disable-gpu-vsync` removes that guard. In that mode the compositor 
 Chromium’s internal `WindowlessFrameRate` permit it, so bursty invalidations can land back-to-back. The paced buffer continues
 to adapt to the actual paint timestamps, but without vSync the source cadence can show more jitter because nothing upstream is
 phase-locking Chromium to the display hardware. Use the flag only when you deliberately want Chromium to outrun the monitor (for
-stress testing or high-speed captures) and let the paced buffer smooth the residual jitter.
+stress testing or high-speed captures) and let the paced buffer smooth the residual jitter. When the pacer reaches a
+presentation deadline without a fresh frame it repeats the most recently captured frame so NDI receivers maintain a stable
+cadence.
 
 #### Example Launch
 
