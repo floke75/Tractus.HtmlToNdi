@@ -138,27 +138,37 @@ internal sealed class NdiVideoPipeline : IDisposable
             PromoteBufferToPrimed();
             count = buffer.Count;
         }
-        if (buffer.TryDequeue(out var frame) && frame is not null)
+        if (!buffer.TryDequeue(out var frame))
         {
-            SendBufferedFrame(frame);
+            HandleUnderrun();
+            return;
+        }
+
+        if (frame is null)
+        {
+            HandleUnderrun();
+            return;
+        }
+
+        SendBufferedFrame(frame);
+    }
+
+    private void HandleUnderrun()
+    {
+        Interlocked.Increment(ref underruns);
+
+        warmupStart ??= DateTime.UtcNow;
+
+        if (lastSentFrame is not null)
+        {
+            RepeatLastFrame();
         }
         else
         {
-            Interlocked.Increment(ref underruns);
-
-            warmupStart ??= DateTime.UtcNow;
-
-            if (lastSentFrame is not null)
-            {
-                RepeatLastFrame();
-            }
-            else
-            {
-                EmitTelemetryIfNeeded();
-            }
-
-            BeginRewarm();
+            EmitTelemetryIfNeeded();
         }
+
+        BeginRewarm();
     }
 
     private bool IsBufferPrimed => Volatile.Read(ref bufferPrimedFlag) == 1;
