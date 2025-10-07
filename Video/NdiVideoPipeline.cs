@@ -46,11 +46,8 @@ internal sealed class NdiVideoPipeline : IDisposable
     }
 
     public bool BufferingEnabled => options.EnableBuffering;
-
     public FrameRate FrameRate => configuredFrameRate;
-
     public bool IsBufferPrimed => isBufferPrimed;
-
     public long UnderrunCount => Interlocked.Read(ref underruns);
 
     public void Start()
@@ -105,37 +102,6 @@ internal sealed class NdiVideoPipeline : IDisposable
         EmitTelemetryIfNeeded();
     }
 
-    internal void ProcessPacingTick() // for testing only
-    {
-        if (ringBuffer is null)
-        {
-            return;
-        }
-
-        if (!isBufferPrimed)
-        {
-            if (ringBuffer.Count >= ringBuffer.Capacity)
-            {
-                isBufferPrimed = true;
-            }
-            else
-            {
-                return;
-            }
-        }
-
-        if (ringBuffer.TryDequeue(out var frame))
-        {
-            SendBufferedFrame(frame);
-        }
-        else
-        {
-            Interlocked.Increment(ref underruns);
-            isBufferPrimed = false;
-            RepeatLastFrame();
-        }
-    }
-
     private async Task RunPacedLoopAsync(CancellationToken token)
     {
         var warmupStart = DateTime.UtcNow;
@@ -167,6 +133,7 @@ internal sealed class NdiVideoPipeline : IDisposable
                     else
                     {
                         logger.Debug("Paced pipeline is warming up (backlog: {Count}/{Capacity})", ringBuffer.Count, ringBuffer.Capacity);
+                        RepeatLastFrame();
                         continue;
                     }
                 }
@@ -181,19 +148,13 @@ internal sealed class NdiVideoPipeline : IDisposable
                     else
                     {
                         // This indicates a logic error - semaphore and queue are out of sync.
-                        Interlocked.Increment(ref underruns);
-                        isBufferPrimed = false; // Force re-warm
-                        warmupStart = DateTime.UtcNow;
-                        RepeatLastFrame();
+                        HandleUnderrun(ref warmupStart);
                     }
                 }
                 else
                 {
                     // Underrun: pacer is faster than producer.
-                    Interlocked.Increment(ref underruns);
-                    isBufferPrimed = false;
-                    warmupStart = DateTime.UtcNow;
-                    RepeatLastFrame();
+                    HandleUnderrun(ref warmupStart);
                 }
             }
         }
@@ -201,6 +162,20 @@ internal sealed class NdiVideoPipeline : IDisposable
         {
             timer.Dispose();
         }
+    }
+
+    private void HandleUnderrun(ref DateTime warmupStart)
+    {
+        Interlocked.Increment(ref underruns);
+        isBufferPrimed = false;
+        warmupStart = DateTime.UtcNow;
+
+        ringBuffer?.Clear();
+        while (frameAvailableSignal.Wait(0))
+        {
+        }
+
+        RepeatLastFrame();
     }
 
     private void SendDirect(CapturedFrame frame)
