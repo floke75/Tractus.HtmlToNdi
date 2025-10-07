@@ -1,7 +1,7 @@
 # Paced output buffer behaviour
 
 ## Summary
-This note explains how the video pipeline behaves when the paced output buffer is enabled versus disabled, and why the paced mode currently introduces visible stutter even though it is meant to smooth the stream.
+This note explains how the video pipeline behaves when the paced output buffer is enabled versus disabled, and how the revised "bucket" design warms up before transmission to provide a consistent presentation delay.
 
 ## What drives Chromium renders
 Chromium repaints are driven by `FramePump`. The pump wakes on a `PeriodicTimer` whose interval is derived from the configured frame rate, calls `Invalidate` on the browser host, and relies on CefSharp to raise `Paint` callbacks afterwards. A watchdog issues an extra invalidate if paints stop arriving for more than a second.【F:Video/FramePump.cs†L21-L74】
@@ -14,18 +14,13 @@ When buffering is disabled the pipeline immediately sends each incoming frame. T
 ## Pipeline behaviour with buffering enabled
 With buffering enabled the following additional steps occur:
 
-1. Every `Paint` copies the pixels into a heap-allocated `NdiVideoFrame`, stamps it with `DateTime.UtcNow`, and enqueues it in a `FrameRingBuffer` (dropping the oldest frame if the buffer is full).【F:Video/NdiVideoFrame.cs†L6-L33】【F:Video/FrameRingBuffer.cs†L4-L58】
-2. A background pacing task wakes on its own `PeriodicTimer`, which also uses the configured frame duration. On each tick it dequeues the newest buffered frame (disposing any older ones) and sends it. If the buffer is empty, it re-sends the most recently transmitted frame to hold the cadence.【F:Video/NdiVideoPipeline.cs†L62-L112】【F:Video/FrameRingBuffer.cs†L60-L85】
-3. Telemetry shows the counts of repeated frames, overflow drops, and stale drops so the operator can see how often the paced loop failed to obtain a fresh frame.【F:Video/NdiVideoPipeline.cs†L200-L234】
+1. Every `Paint` copies the pixels into a heap-allocated `NdiVideoFrame`, stamps it with `DateTime.UtcNow`, and enqueues it in a `FrameRingBuffer` (dropping the oldest frame if the buffer is full).【F:Video/NdiVideoFrame.cs†L6-L33】【F:Video/FrameRingBuffer.cs†L4-L77】
+2. The buffer warms up: the pacing task holds transmission until the queue reaches the configured depth. Once primed, each tick consumes the oldest frame in FIFO order so the output is delayed by roughly `BufferDepth / fps` seconds. If the queue depth falls below the threshold for more than one tick the pipeline re-enters warm-up before resuming sends.【F:Video/NdiVideoPipeline.cs†L24-L214】
+3. While primed, the pacing task dequeues one frame per tick. If it unexpectedly runs dry it repeats the last delivered frame, records an underrun, and forces another warm-up cycle before using fresh frames again.【F:Video/NdiVideoPipeline.cs†L126-L214】
+4. Telemetry now reports the live backlog (`buffered`), overflow drops, stale drops, underruns, the number of warm-up cycles, and the most recent warm-up duration so operators can track how the bucket behaves.【F:Video/NdiVideoPipeline.cs†L200-L236】
 
-## Why paced mode currently stutters
-The render pump and the paced output loop both run off independent `PeriodicTimer` instances that are configured with exactly the same interval (the requested frame duration) but have no phase coordination. When the pacing loop wakes before a new `Paint` has been enqueued, `DequeueLatest` returns `null`, so the pipeline repeats the previous frame to maintain cadence. That repeated frame increments the `repeated` counter seen in telemetry. Because the two timers continually drift relative to one another, this situation recurs regularly, producing the pattern of “captured slightly ahead of sent” with dozens of repeats in the supplied log (e.g., 47 repeats after ~1,400 frames).【F:Video/FramePump.cs†L21-L47】【F:Video/NdiVideoPipeline.cs†L62-L112】【F:Video/NdiVideoPipeline.cs†L139-L198】
+## Warm-up latency and underruns
+Because the paced loop waits for the queue to fill, enabling buffering introduces a deliberate latency of roughly `BufferDepth / fps` seconds before the first frame is transmitted (and again after any underrun that forces re-warm). Operators should budget for that delay and only enable the feature when additional latency is acceptable.
 
-In contrast, when buffering is disabled there is only one timing source (Chromium’s paint cadence), so each frame is sent immediately after it is produced and no repeats are generated.
-
-The current design therefore trades the direct path’s minimal latency for a paced loop that repeatedly falls back to `RepeatLastFrame`. Instead of smoothing, this manifests as visible stutter because viewers receive duplicate frames at roughly the same rate that the two timers fall out of phase.
-
-## Implications
-* The paced mode can still absorb short-term spikes if Chromium briefly outruns the sender, but it does not actively smooth cadence when both sides are running at the same nominal rate.
-* Any improvement needs either tighter coordination (e.g., pacing off the capture timestamps, or waiting for a new frame before transmitting) or a decoupled pump cadence so the buffer regularly holds multiple frames when the paced loop fires.
+The buffer still absorbs short-term spikes. When Chromium briefly outruns the sender the backlog grows, but transmission continues smoothly because the queue remains primed. Only when the backlog collapses for multiple ticks does the pipeline fall back to repeating the previous frame, increment the `underruns` counter, and re-enter the warm-up phase before resuming FIFO playback.
 
