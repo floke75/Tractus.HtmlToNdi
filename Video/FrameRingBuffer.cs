@@ -1,3 +1,5 @@
+using System.Diagnostics.CodeAnalysis;
+
 namespace Tractus.HtmlToNdi.Video;
 
 internal sealed class FrameRingBuffer<T>
@@ -51,6 +53,26 @@ internal sealed class FrameRingBuffer<T>
             }
 
             frames.Enqueue(frame);
+        }
+    }
+
+    public bool TryDequeue([NotNullWhen(true)] out T? frame)
+    {
+        lock (frames)
+        {
+            if (frames.Count == 0)
+            {
+                frame = null;
+                return false;
+            }
+
+            frame = frames.Dequeue();
+            if (overflowSinceLastDequeue > 0)
+            {
+                overflowSinceLastDequeue--;
+            }
+
+            return true;
         }
     }
 
