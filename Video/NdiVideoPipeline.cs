@@ -152,13 +152,13 @@ internal sealed class NdiVideoPipeline : IDisposable
 
         if (backlog < targetBufferDepth)
         {
-            HandleUnderrun();
+            HandleUnderrun(buffer);
             return;
         }
 
         if (!buffer.TryDequeue(out var frame) || frame is null)
         {
-            HandleUnderrun();
+            HandleUnderrun(buffer);
             return;
         }
 
@@ -186,11 +186,35 @@ internal sealed class NdiVideoPipeline : IDisposable
         Interlocked.Increment(ref warmupCycles);
     }
 
-    private void HandleUnderrun()
+    private void HandleUnderrun(FrameRingBuffer<NdiVideoFrame> buffer)
     {
         Interlocked.Increment(ref underruns);
+
+        DrainResidualFrames(buffer);
         RepeatLastFrame();
         BeginWarmup();
+    }
+
+    private void DrainResidualFrames(FrameRingBuffer<NdiVideoFrame> buffer)
+    {
+        NdiVideoFrame? latest = null;
+
+        while (buffer.TryDequeue(out var candidate))
+        {
+            if (candidate is null)
+            {
+                continue;
+            }
+
+            latest?.Dispose();
+            latest = candidate;
+        }
+
+        if (latest is not null)
+        {
+            lastSentFrame?.Dispose();
+            lastSentFrame = latest;
+        }
     }
 
     private void BeginWarmup()
