@@ -31,6 +31,13 @@
   </ItemGroup>
 
   <ItemGroup>
+    <Compile Remove="Evaluations\**\*.cs" />
+    <None Remove="Evaluations\**\*" />
+    <Content Remove="Evaluations\**\*" />
+    <EmbeddedResource Remove="Evaluations\**\*" />
+  </ItemGroup>
+
+  <ItemGroup>
     <Content Include="HtmlToNdi.ico">
       <CopyToOutputDirectory>Always</CopyToOutputDirectory>
     </Content>
