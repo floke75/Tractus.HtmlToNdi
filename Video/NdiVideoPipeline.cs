@@ -88,6 +88,13 @@ internal sealed class NdiVideoPipeline : IDisposable
 
     private async Task RunPacedLoopAsync(CancellationToken token)
     {
+        if (!BufferingEnabled || ringBuffer is null)
+        {
+            return;
+        }
+
+        await WarmUpAsync(token);
+
         var timer = new PeriodicTimer(FrameRate.FrameDuration);
         try
         {
@@ -98,17 +105,7 @@ internal sealed class NdiVideoPipeline : IDisposable
                     break;
                 }
 
-                NdiVideoFrame? frame = ringBuffer?.DequeueLatest();
-                if (frame is not null)
-                {
-                    SendBufferedFrame(frame);
-                    continue;
-                }
-
-                if (lastSentFrame is not null)
-                {
-                    RepeatLastFrame();
-                }
+                ProcessPacingTick();
             }
         }
         finally
@@ -159,6 +156,75 @@ internal sealed class NdiVideoPipeline : IDisposable
         sender.Send(ref ndiFrame);
         Interlocked.Increment(ref repeatedFrames);
         EmitTelemetryIfNeeded();
+    }
+
+    internal void ProcessPacingTick()
+    {
+        if (!BufferingEnabled || ringBuffer is null)
+        {
+            return;
+        }
+
+        if (IsBacklogStillFilling())
+        {
+            RepeatLastFrame();
+            return;
+        }
+
+        var frame = ringBuffer.DequeueLatest();
+        if (frame is not null)
+        {
+            SendBufferedFrame(frame);
+            return;
+        }
+
+        RepeatLastFrame();
+    }
+
+    internal void ProcessWarmUpTick()
+    {
+        if (!BufferingEnabled || ringBuffer is null)
+        {
+            return;
+        }
+
+        if (IsBacklogStillFilling())
+        {
+            RepeatLastFrame();
+        }
+    }
+
+    private bool IsBacklogStillFilling()
+    {
+        if (ringBuffer is null || lastSentFrame is null)
+        {
+            return false;
+        }
+
+        var count = ringBuffer.Count;
+        return count > 0 && count < ringBuffer.Capacity;
+    }
+
+    private async Task WarmUpAsync(CancellationToken token)
+    {
+        if (!BufferingEnabled || ringBuffer is null)
+        {
+            return;
+        }
+
+        while (!token.IsCancellationRequested && IsBacklogStillFilling())
+        {
+            ProcessWarmUpTick();
+
+            try
+            {
+                await Task.Delay(FrameRate.FrameDuration, token);
+            }
+            catch (TaskCanceledException)
+            {
+                break;
+            }
+        }
     }
 
     private (int numerator, int denominator) ResolveFrameRate(DateTime timestamp)
