@@ -31,6 +31,22 @@ internal sealed class FrameRingBuffer<T>
         }
     }
 
+    public bool TryDequeue(out T? frame)
+    {
+        lock (frames)
+        {
+            if (frames.Count == 0)
+            {
+                frame = null;
+                return false;
+            }
+
+            frame = frames.Dequeue();
+            overflowSinceLastDequeue = 0;
+            return true;
+        }
+    }
+
     public long DroppedFromOverflow { get; private set; }
 
     public long DroppedAsStale { get; private set; }
@@ -51,34 +67,6 @@ internal sealed class FrameRingBuffer<T>
             }
 
             frames.Enqueue(frame);
-        }
-    }
-
-    public T? DequeueLatest()
-    {
-        lock (frames)
-        {
-            if (frames.Count == 0)
-            {
-                return null;
-            }
-
-            while (frames.Count > 1)
-            {
-                var stale = frames.Dequeue();
-                stale.Dispose();
-                if (overflowSinceLastDequeue > 0)
-                {
-                    overflowSinceLastDequeue--;
-                }
-                else
-                {
-                    DroppedAsStale++;
-                }
-            }
-
-            overflowSinceLastDequeue = 0;
-            return frames.Dequeue();
         }
     }
 

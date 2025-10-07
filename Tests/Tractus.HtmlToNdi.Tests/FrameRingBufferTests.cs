@@ -16,32 +16,7 @@ public class FrameRingBufferTests
     }
 
     [Fact]
-    public void DropsOldestWhenCapacityReached()
-    {
-        var buffer = new FrameRingBuffer<DisposableStub>(2);
-        var first = new DisposableStub();
-        var second = new DisposableStub();
-        var third = new DisposableStub();
-
-        buffer.Enqueue(first, out var dropped1);
-        Assert.Null(dropped1);
-
-        buffer.Enqueue(second, out var dropped2);
-        Assert.Null(dropped2);
-
-        buffer.Enqueue(third, out var dropped3);
-        Assert.Same(first, dropped3);
-        dropped3?.Dispose();
-        Assert.True(first.Disposed);
-        Assert.Equal(1, buffer.DroppedFromOverflow);
-
-        var latest = buffer.DequeueLatest();
-        Assert.Same(third, latest);
-        Assert.Equal(0, buffer.DroppedAsStale);
-    }
-
-    [Fact]
-    public void DequeueLatestDropsStaleFrames()
+    public void TryDequeueReturnsOldestWithoutDisposal()
     {
         var buffer = new FrameRingBuffer<DisposableStub>(3);
         var first = new DisposableStub();
@@ -52,10 +27,26 @@ public class FrameRingBufferTests
         buffer.Enqueue(second, out _);
         buffer.Enqueue(third, out _);
 
-        var latest = buffer.DequeueLatest();
-        Assert.Same(third, latest);
-        Assert.True(first.Disposed);
-        Assert.True(second.Disposed);
-        Assert.Equal(2, buffer.DroppedAsStale);
+        var dequeuedFirst = buffer.TryDequeue(out var oldest);
+        Assert.True(dequeuedFirst);
+        Assert.Same(first, oldest);
+        Assert.False(first.Disposed);
+
+        var dequeuedSecond = buffer.TryDequeue(out var next);
+        Assert.True(dequeuedSecond);
+        Assert.Same(second, next);
+        Assert.False(second.Disposed);
+
+        oldest?.Dispose();
+        next?.Dispose();
+    }
+
+    [Fact]
+    public void TryDequeueReturnsFalseWhenEmpty()
+    {
+        var buffer = new FrameRingBuffer<DisposableStub>(2);
+        var success = buffer.TryDequeue(out var dequeued);
+        Assert.False(success);
+        Assert.Null(dequeued);
     }
 }
