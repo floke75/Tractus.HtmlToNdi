@@ -15,13 +15,16 @@ internal sealed class NdiVideoPipeline : IDisposable
     private readonly CancellationTokenSource cancellation = new();
     private readonly FrameRingBuffer<NdiVideoFrame>? ringBuffer;
     private readonly ILogger logger;
-    private readonly int warmupThreshold;
-    private bool bufferPrimed;
-    private int consecutiveLowBufferTicks;
-    private DateTime warmupStarted;
-    private long underruns;
-    private long warmupCycles;
-    private long lastWarmupDurationTicks;
+
+    // --- Paced buffering state ---
+    private readonly int targetDepth;
+    private readonly double lowWatermark;
+    private readonly int highWatermark;
+    private bool isWarmingUp = true;
+    private double latencyError;
+    private DateTime warmupStart;
+    private long underrunEvents;
+    private int repeatedFramesInCurrentWarmup;
 
     private Task? pacingTask;
     private NdiVideoFrame? lastSentFrame;
@@ -39,54 +42,78 @@ internal sealed class NdiVideoPipeline : IDisposable
 
         if (options.EnableBuffering)
         {
-            warmupThreshold = Math.Max(1, options.BufferDepth);
-            ringBuffer = new FrameRingBuffer<NdiVideoFrame>(warmupThreshold);
-            warmupStarted = DateTime.UtcNow;
+            targetDepth = Math.Max(1, options.BufferDepth);
+            lowWatermark = targetDepth - 0.5;
+            highWatermark = targetDepth + 1;
+            ringBuffer = new FrameRingBuffer<NdiVideoFrame>(highWatermark);
+            warmupStart = DateTime.UtcNow;
         }
     }
 
     private bool TrySendBufferedFrame()
     {
         if (ringBuffer is null)
-        {
             return false;
-        }
 
         var backlog = ringBuffer.Count;
+        latencyError += backlog - targetDepth;
 
-        if (!bufferPrimed)
+        if (isWarmingUp)
         {
-            if (backlog >= warmupThreshold)
+            // Exit warm-up only when we have the full buffer and have paid back any latency debt.
+            if (backlog >= targetDepth && latencyError >= 0)
             {
-                EnterPrimed();
+                isWarmingUp = false;
+                var warmupDuration = DateTime.UtcNow - warmupStart;
+                logger.Information(
+                    "Paced buffer priming complete. Resuming normal pacing. " +
+                    "(duration={DurationMs}ms, repeatedFrames={RepeatedFrames})",
+                    warmupDuration.TotalMilliseconds,
+                    repeatedFramesInCurrentWarmup);
+                repeatedFramesInCurrentWarmup = 0;
             }
             else
             {
+                // Still warming up, so repeat the last frame.
                 return false;
             }
         }
 
-        if (backlog < warmupThreshold)
+        // After this point, we are in the normal pacing state.
+        // Check for underrun condition.
+        if (backlog < lowWatermark)
         {
-            consecutiveLowBufferTicks++;
-            if (consecutiveLowBufferTicks > 1)
+            logger.Warning(
+                "Paced buffer underrun detected (backlog={Backlog}, target={TargetDepth}). Repeating last frame and re-priming.",
+                backlog, targetDepth);
+            isWarmingUp = true;
+            warmupStart = DateTime.UtcNow;
+            Interlocked.Increment(ref underrunEvents);
+            ringBuffer.DrainToLatestAndKeep();
+            return false;
+        }
+
+        // High watermark check: if we are accumulating latency, drop a frame.
+        if (latencyError > 1.0 && ringBuffer.Count > targetDepth)
+        {
+            if (ringBuffer.TryDequeue(out var droppedFrame))
             {
-                EnterWarmup();
-                return false;
+                droppedFrame.Dispose();
+                latencyError--;
+                logger.Verbose("Paced buffer latency integrator triggered frame drop to reduce delay.");
             }
         }
-        else
-        {
-            consecutiveLowBufferTicks = 0;
-        }
 
-        if (ringBuffer.TryDequeue(out var frame) && frame is not null)
+        if (ringBuffer.TryDequeue(out var frame))
         {
             SendBufferedFrame(frame);
             return true;
         }
 
-        EnterWarmup();
+        // Should be rare, but if dequeue fails, enter warm-up.
+        isWarmingUp = true;
+        warmupStart = DateTime.UtcNow;
+        Interlocked.Increment(ref underrunEvents);
         return false;
     }
 
@@ -118,7 +145,7 @@ internal sealed class NdiVideoPipeline : IDisposable
         }
 
         pacingTask = null;
-        bufferPrimed = false;
+        isWarmingUp = true;
     }
 
     public void HandleFrame(CapturedFrame frame)
@@ -206,62 +233,30 @@ internal sealed class NdiVideoPipeline : IDisposable
             return;
         }
 
+        if (isWarmingUp)
+        {
+            repeatedFramesInCurrentWarmup++;
+        }
+
         var ndiFrame = CreateVideoFrame(lastSentFrame, configuredFrameRate.Numerator, configuredFrameRate.Denominator);
         sender.Send(ref ndiFrame);
         Interlocked.Increment(ref repeatedFrames);
         EmitTelemetryIfNeeded();
     }
 
-    private void EnterPrimed()
-    {
-        bufferPrimed = true;
-        consecutiveLowBufferTicks = 0;
-
-        var now = DateTime.UtcNow;
-        var duration = now - warmupStarted;
-        if (duration < TimeSpan.Zero)
-        {
-            duration = TimeSpan.Zero;
-        }
-
-        warmupStarted = now;
-        Interlocked.Increment(ref warmupCycles);
-        Interlocked.Exchange(ref lastWarmupDurationTicks, duration.Ticks);
-    }
-
-    private void EnterWarmup()
-    {
-        if (lastSentFrame is not null)
-        {
-            Interlocked.Increment(ref underruns);
-        }
-
-        bufferPrimed = false;
-        consecutiveLowBufferTicks = 0;
-        warmupStarted = DateTime.UtcNow;
-    }
-
     private void ResetBufferingState()
     {
-        bufferPrimed = false;
-        consecutiveLowBufferTicks = 0;
-        warmupStarted = DateTime.UtcNow;
-        Interlocked.Exchange(ref underruns, 0);
-        Interlocked.Exchange(ref warmupCycles, 0);
-        Interlocked.Exchange(ref lastWarmupDurationTicks, 0);
+        isWarmingUp = true;
+        latencyError = 0;
+        warmupStart = DateTime.UtcNow;
+        repeatedFramesInCurrentWarmup = 0;
+        Interlocked.Exchange(ref underrunEvents, 0);
+
+        ringBuffer?.Clear();
+        lastSentFrame?.Dispose();
+        lastSentFrame = null;
     }
 
-    private double ComputeLastWarmupMilliseconds()
-    {
-        var ticks = Interlocked.Read(ref lastWarmupDurationTicks);
-        return ticks <= 0 ? 0 : ticks / (double)TimeSpan.TicksPerMillisecond;
-    }
-
-    internal bool BufferPrimed => bufferPrimed;
-
-    internal long BufferUnderruns => Interlocked.Read(ref underruns);
-
-    internal TimeSpan LastWarmupDuration => TimeSpan.FromTicks(Interlocked.Read(ref lastWarmupDurationTicks));
 
     private (int numerator, int denominator) ResolveFrameRate(DateTime timestamp)
     {
@@ -326,7 +321,7 @@ internal sealed class NdiVideoPipeline : IDisposable
         lastTelemetry = DateTime.UtcNow;
 
         var bufferStats = BufferingEnabled && ringBuffer is not null
-            ? $", primed={bufferPrimed}, buffered={ringBuffer.Count}, droppedOverflow={ringBuffer.DroppedFromOverflow}, droppedStale={ringBuffer.DroppedAsStale}, underruns={Interlocked.Read(ref underruns)}, warmups={Interlocked.Read(ref warmupCycles)}, lastWarmupMs={ComputeLastWarmupMilliseconds():F1}"
+            ? $", warmingUp={isWarmingUp}, buffered={ringBuffer.Count}, latencyError={latencyError:F2}, underruns={Interlocked.Read(ref underrunEvents)}, droppedOverflow={ringBuffer.DroppedFromOverflow}, droppedStale={ringBuffer.DroppedAsStale}"
             : string.Empty;
 
         logger.Information(

@@ -115,4 +115,29 @@ internal sealed class FrameRingBuffer<T>
             overflowSinceLastDequeue = 0;
         }
     }
+
+    public void DrainToLatestAndKeep()
+    {
+        lock (frames)
+        {
+            if (frames.Count <= 1)
+            {
+                return;
+            }
+
+            while (frames.Count > 1)
+            {
+                var stale = frames.Dequeue();
+                stale.Dispose();
+                if (overflowSinceLastDequeue > 0)
+                {
+                    overflowSinceLastDequeue--;
+                }
+                else
+                {
+                    DroppedAsStale++;
+                }
+            }
+        }
+    }
 }
