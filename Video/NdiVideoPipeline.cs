@@ -216,8 +216,6 @@ internal sealed class NdiVideoPipeline : IDisposable
         EmitTelemetryIfNeeded();
     }
 
-    private void RepeatLastFrame()
-    {
         if (lastSentFrame is null)
         {
             return;
@@ -399,14 +397,6 @@ internal sealed class NdiVideoPipeline : IDisposable
         Interlocked.Exchange(ref lastWarmupRepeatTicks, repeats);
 
         logger.Warning(
-            "NDI video pipeline underrun recovery: durationMs={DurationMs:F1}, repeatTicks={RepeatTicks}, targetDepth={TargetDepth}, latencyError={LatencyError:F2}",
-            duration.TotalMilliseconds,
-            repeats,
-            targetDepth,
-            latencyError);
-    }
-
-    private void RecordWarmupRepeat()
     {
         if (warmup)
         {
