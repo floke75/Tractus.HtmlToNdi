@@ -77,6 +77,11 @@ internal sealed class NdiVideoPipeline : IDisposable
             latencyError += delta;
             integratorUpdated = true;
 
+            if (latencyError < -targetDepth)
+            {
+                latencyError = -targetDepth;
+            }
+
             if (backlog >= targetDepth && latencyError >= 0)
             {
                 ExitWarmup();
@@ -273,7 +278,7 @@ internal sealed class NdiVideoPipeline : IDisposable
         bufferPrimed = false;
         warmupStarted = DateTime.UtcNow;
         ringBuffer.DiscardAllButLatest();
-        latencyError = Math.Min(latencyError, 0);
+        latencyError = Math.Clamp(latencyError, -targetDepth, 0);
         Interlocked.Exchange(ref currentWarmupRepeatTicks, 0);
     }
 
