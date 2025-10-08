@@ -104,6 +104,57 @@ internal sealed class FrameRingBuffer<T>
         }
     }
 
+    public void DropAllButLatest()
+    {
+        lock (frames)
+        {
+            if (frames.Count <= 1)
+            {
+                return;
+            }
+
+            while (frames.Count > 1)
+            {
+                var stale = frames.Dequeue();
+                stale.Dispose();
+                if (overflowSinceLastDequeue > 0)
+                {
+                    overflowSinceLastDequeue--;
+                }
+                else
+                {
+                    DroppedAsStale++;
+                }
+            }
+
+            overflowSinceLastDequeue = 0;
+        }
+    }
+
+    public bool TryDiscardOldestAsStale()
+    {
+        lock (frames)
+        {
+            if (frames.Count == 0)
+            {
+                return false;
+            }
+
+            var stale = frames.Dequeue();
+            stale.Dispose();
+            if (overflowSinceLastDequeue > 0)
+            {
+                overflowSinceLastDequeue--;
+            }
+            else
+            {
+                DroppedAsStale++;
+            }
+
+            return true;
+        }
+    }
+
     public void Clear()
     {
         lock (frames)

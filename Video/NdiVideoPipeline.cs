@@ -15,13 +15,21 @@ internal sealed class NdiVideoPipeline : IDisposable
     private readonly CancellationTokenSource cancellation = new();
     private readonly FrameRingBuffer<NdiVideoFrame>? ringBuffer;
     private readonly ILogger logger;
-    private readonly int warmupThreshold;
+    private readonly int targetDepth;
+    private readonly double lowWatermark;
+    private readonly double highWatermark;
     private bool bufferPrimed;
-    private int consecutiveLowBufferTicks;
+    private bool warmup = true;
+    private double latencyError;
     private DateTime warmupStarted;
     private long underruns;
     private long warmupCycles;
     private long lastWarmupDurationTicks;
+    private long lastWarmupRepeatTicks;
+    private long warmupRepeatTicks;
+    private long lowWatermarkCrossings;
+    private long highWatermarkCrossings;
+    private long integratorDrops;
 
     private Task? pacingTask;
     private NdiVideoFrame? lastSentFrame;
@@ -37,10 +45,13 @@ internal sealed class NdiVideoPipeline : IDisposable
         this.options = options ?? throw new ArgumentNullException(nameof(options));
         this.logger = logger;
 
+        targetDepth = Math.Max(1, options.BufferDepth);
+        lowWatermark = targetDepth - 0.5d;
+        highWatermark = targetDepth + 1d;
+
         if (options.EnableBuffering)
         {
-            warmupThreshold = Math.Max(1, options.BufferDepth);
-            ringBuffer = new FrameRingBuffer<NdiVideoFrame>(warmupThreshold);
+            ringBuffer = new FrameRingBuffer<NdiVideoFrame>(targetDepth + 1);
             warmupStarted = DateTime.UtcNow;
         }
     }
@@ -53,40 +64,43 @@ internal sealed class NdiVideoPipeline : IDisposable
         }
 
         var backlog = ringBuffer.Count;
+        latencyError += backlog - targetDepth;
 
-        if (!bufferPrimed)
+        if (warmup)
         {
-            if (backlog >= warmupThreshold)
+            if (backlog >= targetDepth && latencyError >= 0)
             {
-                EnterPrimed();
+                ExitWarmup();
             }
             else
             {
+                RecordWarmupRepeat();
                 return false;
             }
         }
 
-        if (backlog < warmupThreshold)
+        if (backlog <= lowWatermark)
         {
-            consecutiveLowBufferTicks++;
-            if (consecutiveLowBufferTicks > 1)
-            {
-                EnterWarmup();
-                return false;
-            }
+            Interlocked.Increment(ref lowWatermarkCrossings);
+            EnterWarmup();
+            RecordWarmupRepeat();
+            return false;
         }
-        else
+
+        if (backlog > highWatermark)
         {
-            consecutiveLowBufferTicks = 0;
+            Interlocked.Increment(ref highWatermarkCrossings);
         }
 
         if (ringBuffer.TryDequeue(out var frame) && frame is not null)
         {
             SendBufferedFrame(frame);
+            TrimForLatency();
             return true;
         }
 
         EnterWarmup();
+        RecordWarmupRepeat();
         return false;
     }
 
@@ -119,6 +133,7 @@ internal sealed class NdiVideoPipeline : IDisposable
 
         pacingTask = null;
         bufferPrimed = false;
+        warmup = true;
     }
 
     public void HandleFrame(CapturedFrame frame)
@@ -212,49 +227,60 @@ internal sealed class NdiVideoPipeline : IDisposable
         EmitTelemetryIfNeeded();
     }
 
-    private void EnterPrimed()
-    {
-        bufferPrimed = true;
-        consecutiveLowBufferTicks = 0;
-
-        var now = DateTime.UtcNow;
-        var duration = now - warmupStarted;
-        if (duration < TimeSpan.Zero)
-        {
-            duration = TimeSpan.Zero;
-        }
-
-        warmupStarted = now;
-        Interlocked.Increment(ref warmupCycles);
-        Interlocked.Exchange(ref lastWarmupDurationTicks, duration.Ticks);
-    }
-
     private void EnterWarmup()
     {
+        if (!BufferingEnabled || ringBuffer is null)
+        {
+            return;
+        }
+
+        if (warmup)
+        {
+            ringBuffer.DropAllButLatest();
+            latencyError = Math.Min(latencyError, 0);
+            return;
+        }
+
+        warmup = true;
+        bufferPrimed = false;
+        warmupStarted = DateTime.UtcNow;
+        Interlocked.Exchange(ref warmupRepeatTicks, 0);
+        Interlocked.Increment(ref warmupCycles);
+
         if (lastSentFrame is not null)
         {
             Interlocked.Increment(ref underruns);
         }
 
-        bufferPrimed = false;
-        consecutiveLowBufferTicks = 0;
-        warmupStarted = DateTime.UtcNow;
+        ringBuffer.DropAllButLatest();
+        latencyError = Math.Min(latencyError, 0);
     }
 
     private void ResetBufferingState()
     {
         bufferPrimed = false;
-        consecutiveLowBufferTicks = 0;
+        warmup = true;
         warmupStarted = DateTime.UtcNow;
+        latencyError = 0;
         Interlocked.Exchange(ref underruns, 0);
         Interlocked.Exchange(ref warmupCycles, 0);
         Interlocked.Exchange(ref lastWarmupDurationTicks, 0);
+        Interlocked.Exchange(ref warmupRepeatTicks, 0);
+        Interlocked.Exchange(ref lastWarmupRepeatTicks, 0);
+        Interlocked.Exchange(ref lowWatermarkCrossings, 0);
+        Interlocked.Exchange(ref highWatermarkCrossings, 0);
+        Interlocked.Exchange(ref integratorDrops, 0);
     }
 
     private double ComputeLastWarmupMilliseconds()
     {
         var ticks = Interlocked.Read(ref lastWarmupDurationTicks);
         return ticks <= 0 ? 0 : ticks / (double)TimeSpan.TicksPerMillisecond;
+    }
+
+    private long ComputeLastWarmupRepeats()
+    {
+        return Interlocked.Read(ref lastWarmupRepeatTicks);
     }
 
     internal bool BufferPrimed => bufferPrimed;
@@ -326,7 +352,7 @@ internal sealed class NdiVideoPipeline : IDisposable
         lastTelemetry = DateTime.UtcNow;
 
         var bufferStats = BufferingEnabled && ringBuffer is not null
-            ? $", primed={bufferPrimed}, buffered={ringBuffer.Count}, droppedOverflow={ringBuffer.DroppedFromOverflow}, droppedStale={ringBuffer.DroppedAsStale}, underruns={Interlocked.Read(ref underruns)}, warmups={Interlocked.Read(ref warmupCycles)}, lastWarmupMs={ComputeLastWarmupMilliseconds():F1}"
+            ? $", primed={bufferPrimed}, buffered={ringBuffer.Count}, droppedOverflow={ringBuffer.DroppedFromOverflow}, droppedStale={ringBuffer.DroppedAsStale}, underruns={Interlocked.Read(ref underruns)}, warmups={Interlocked.Read(ref warmupCycles)}, lastWarmupMs={ComputeLastWarmupMilliseconds():F1}, lastWarmupRepeats={ComputeLastWarmupRepeats()}, latencyError={Volatile.Read(ref latencyError):F2}, lowWaterHits={Interlocked.Read(ref lowWatermarkCrossings)}, highWaterHits={Interlocked.Read(ref highWatermarkCrossings)}, integratorDrops={Interlocked.Read(ref integratorDrops)}"
             : string.Empty;
 
         logger.Information(
@@ -344,5 +370,57 @@ internal sealed class NdiVideoPipeline : IDisposable
         ringBuffer?.Clear();
         lastSentFrame?.Dispose();
         cancellation.Dispose();
+    }
+
+    private void ExitWarmup()
+    {
+        if (!warmup)
+        {
+            return;
+        }
+
+        warmup = false;
+        bufferPrimed = true;
+
+        var now = DateTime.UtcNow;
+        var duration = now - warmupStarted;
+        if (duration < TimeSpan.Zero)
+        {
+            duration = TimeSpan.Zero;
+        }
+
+        Interlocked.Exchange(ref lastWarmupDurationTicks, duration.Ticks);
+
+        var repeats = Interlocked.Exchange(ref warmupRepeatTicks, 0);
+        Interlocked.Exchange(ref lastWarmupRepeatTicks, repeats);
+
+        logger.Warning(
+            "NDI video pipeline underrun recovery: durationMs={DurationMs:F1}, repeatTicks={RepeatTicks}, targetDepth={TargetDepth}, latencyError={LatencyError:F2}",
+            duration.TotalMilliseconds,
+            repeats,
+            targetDepth,
+            latencyError);
+    }
+
+    private void RecordWarmupRepeat()
+    {
+        if (warmup)
+        {
+            Interlocked.Increment(ref warmupRepeatTicks);
+        }
+    }
+
+    private void TrimForLatency()
+    {
+        if (ringBuffer is null)
+        {
+            return;
+        }
+
+        while (latencyError > 1d && ringBuffer.TryDiscardOldestAsStale())
+        {
+            latencyError -= 1d;
+            Interlocked.Increment(ref integratorDrops);
+        }
     }
 }
