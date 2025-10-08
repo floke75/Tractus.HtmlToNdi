@@ -216,6 +216,8 @@ internal sealed class NdiVideoPipeline : IDisposable
         EmitTelemetryIfNeeded();
     }
 
+    private void RepeatLastFrame()
+    {
         if (lastSentFrame is null)
         {
             return;
@@ -397,6 +399,13 @@ internal sealed class NdiVideoPipeline : IDisposable
         Interlocked.Exchange(ref lastWarmupRepeatTicks, repeats);
 
         logger.Warning(
+            "Exiting paced warm-up after {WarmupMs:F1} ms ({WarmupTicks} ticks); repeats={Repeats}",
+            duration.TotalMilliseconds,
+            duration.Ticks,
+            repeats);
+    }
+
+    private void RecordWarmupRepeat()
     {
         if (warmup)
         {
