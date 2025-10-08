@@ -24,6 +24,7 @@ internal sealed class NdiVideoPipeline : IDisposable
     private double latencyError;
     private DateTime warmupStart;
     private long underrunEvents;
+    private long lastWarmupDurationTicks;
     private int repeatedFramesInCurrentWarmup;
     private int consecutiveLowBacklogTicks;
 
@@ -83,6 +84,11 @@ internal sealed class NdiVideoPipeline : IDisposable
             {
                 isWarmingUp = false;
                 var warmupDuration = DateTime.UtcNow - warmupStart;
+                if (warmupDuration < TimeSpan.Zero)
+                {
+                    warmupDuration = TimeSpan.Zero;
+                }
+                Interlocked.Exchange(ref lastWarmupDurationTicks, warmupDuration.Ticks);
                 logger.Information(
                     "Paced buffer priming complete. Resuming normal pacing. " +
                     "(duration={DurationMs}ms, repeatedFrames={RepeatedFrames})",
@@ -164,6 +170,10 @@ internal sealed class NdiVideoPipeline : IDisposable
             return !isWarmingUp;
         }
     }
+
+    internal long BufferUnderruns => Interlocked.Read(ref underrunEvents);
+
+    internal TimeSpan LastWarmupDuration => TimeSpan.FromTicks(Interlocked.Read(ref lastWarmupDurationTicks));
 
     public void Start()
     {
@@ -296,6 +306,7 @@ internal sealed class NdiVideoPipeline : IDisposable
         repeatedFramesInCurrentWarmup = 0;
         consecutiveLowBacklogTicks = 0;
         Interlocked.Exchange(ref underrunEvents, 0);
+        Interlocked.Exchange(ref lastWarmupDurationTicks, 0);
 
         ringBuffer?.Clear();
         lastSentFrame?.Dispose();
