@@ -181,6 +181,8 @@ internal sealed class NdiVideoPipeline : IDisposable
 
     public FrameRate FrameRate => configuredFrameRate;
 
+    internal bool BufferPrimed => !isWarmingUp;
+
     public void Start()
     {
         if (!BufferingEnabled || pacingTask != null)
