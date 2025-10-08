@@ -66,6 +66,7 @@ internal sealed class NdiVideoPipeline : IDisposable
         var backlog = ringBuffer.Count;
         latencyError += backlog - targetDepth;
         ClampLatencyErrorFloor();
+        ClampLatencyErrorFloor();
 
         if (warmup)
         {
@@ -215,6 +216,8 @@ internal sealed class NdiVideoPipeline : IDisposable
         EmitTelemetryIfNeeded();
     }
 
+            ClampLatencyErrorFloor();
+        ClampLatencyErrorFloor();
     private void RepeatLastFrame()
     {
         if (lastSentFrame is null)
@@ -398,6 +401,14 @@ internal sealed class NdiVideoPipeline : IDisposable
         Interlocked.Exchange(ref lastWarmupRepeatTicks, repeats);
 
         logger.Warning(
+
+    private void ClampLatencyErrorFloor()
+    {
+        if (latencyError < -targetDepth)
+        {
+            latencyError = -targetDepth;
+        }
+    }
             "NDI video pipeline underrun recovery: durationMs={DurationMs:F1}, repeatTicks={RepeatTicks}, targetDepth={TargetDepth}, latencyError={LatencyError:F2}",
             duration.TotalMilliseconds,
             repeats,
