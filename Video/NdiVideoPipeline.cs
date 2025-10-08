@@ -306,6 +306,7 @@ internal sealed class NdiVideoPipeline : IDisposable
         warmup = true;
         warmupRepeatTicks = 0;
         warmupStarted = DateTime.UtcNow;
+        latencyError = Math.Max(latencyError, -targetDepth);
 
         if (lowWatermarkTriggered)
         {
