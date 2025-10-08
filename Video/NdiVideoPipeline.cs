@@ -158,6 +158,10 @@ internal sealed class NdiVideoPipeline : IDisposable
 
         var backlog = ringBuffer.Count;
         latencyError += backlog - targetDepth;
+        if (latencyError < -targetDepth)
+        {
+            latencyError = -targetDepth;
+        }
 
         if (lastSentFrame is not null)
         {
