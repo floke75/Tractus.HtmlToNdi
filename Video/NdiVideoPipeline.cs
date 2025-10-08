@@ -25,6 +25,7 @@ internal sealed class NdiVideoPipeline : IDisposable
     private DateTime warmupStart;
     private long underrunEvents;
     private int repeatedFramesInCurrentWarmup;
+    private int consecutiveLowBacklogTicks;
 
     private Task? pacingTask;
     private NdiVideoFrame? lastSentFrame;
@@ -71,6 +72,7 @@ internal sealed class NdiVideoPipeline : IDisposable
                     warmupDuration.TotalMilliseconds,
                     repeatedFramesInCurrentWarmup);
                 repeatedFramesInCurrentWarmup = 0;
+                consecutiveLowBacklogTicks = 0;
             }
             else
             {
@@ -83,15 +85,25 @@ internal sealed class NdiVideoPipeline : IDisposable
         // Check for underrun condition.
         if (backlog < lowWatermark)
         {
-            logger.Warning(
-                "Paced buffer underrun detected (backlog={Backlog}, target={TargetDepth}). Repeating last frame and re-priming.",
-                backlog, targetDepth);
-            isWarmingUp = true;
-            warmupStart = DateTime.UtcNow;
-            latencyError = 0;
-            Interlocked.Increment(ref underrunEvents);
-            ringBuffer.DrainToLatestAndKeep();
-            return false;
+            consecutiveLowBacklogTicks++;
+
+            if (consecutiveLowBacklogTicks >= 2)
+            {
+                logger.Warning(
+                    "Paced buffer underrun detected (backlog={Backlog}, target={TargetDepth}, streak={Streak}). Repeating last frame and re-priming.",
+                    backlog, targetDepth, consecutiveLowBacklogTicks);
+                isWarmingUp = true;
+                warmupStart = DateTime.UtcNow;
+                latencyError = 0;
+                consecutiveLowBacklogTicks = 0;
+                Interlocked.Increment(ref underrunEvents);
+                ringBuffer.DrainToLatestAndKeep();
+                return false;
+            }
+        }
+        else
+        {
+            consecutiveLowBacklogTicks = 0;
         }
 
         // High watermark check: if we are accumulating latency, drop a frame.
@@ -114,6 +126,7 @@ internal sealed class NdiVideoPipeline : IDisposable
         // Should be rare, but if dequeue fails, enter warm-up.
         isWarmingUp = true;
         warmupStart = DateTime.UtcNow;
+        consecutiveLowBacklogTicks = 0;
         Interlocked.Increment(ref underrunEvents);
         return false;
     }
@@ -251,6 +264,7 @@ internal sealed class NdiVideoPipeline : IDisposable
         latencyError = 0;
         warmupStart = DateTime.UtcNow;
         repeatedFramesInCurrentWarmup = 0;
+        consecutiveLowBacklogTicks = 0;
         Interlocked.Exchange(ref underrunEvents, 0);
 
         ringBuffer?.Clear();
