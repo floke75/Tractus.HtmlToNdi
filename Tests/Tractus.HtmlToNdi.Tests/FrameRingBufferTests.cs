@@ -90,4 +90,29 @@ public class FrameRingBufferTests
         Assert.False(success);
         Assert.Null(dequeued);
     }
+
+    [Fact]
+    public void DiscardAllButLatestDropsAllOlderEntries()
+    {
+        var buffer = new FrameRingBuffer<DisposableStub>(4);
+        var first = new DisposableStub();
+        var second = new DisposableStub();
+        var third = new DisposableStub();
+
+        buffer.Enqueue(first, out _);
+        buffer.Enqueue(second, out _);
+        buffer.Enqueue(third, out _);
+
+        var discarded = buffer.DiscardAllButLatest();
+
+        Assert.Equal(2, discarded);
+        Assert.True(first.Disposed);
+        Assert.True(second.Disposed);
+        Assert.False(third.Disposed);
+        Assert.Equal(2, buffer.DroppedAsStale);
+        Assert.Equal(1, buffer.Count);
+
+        var latest = buffer.DequeueLatest();
+        Assert.Same(third, latest);
+    }
 }
