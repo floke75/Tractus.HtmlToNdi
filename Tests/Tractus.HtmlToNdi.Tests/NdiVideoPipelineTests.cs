@@ -1,6 +1,7 @@
 using System.Linq;
 using System.Runtime.InteropServices;
 using System.Threading;
+using System.Threading.Tasks;
 using Serilog;
 using Serilog.Core;
 using Tractus.HtmlToNdi.Video;
@@ -195,7 +196,7 @@ public class NdiVideoPipelineTests
         pipeline.Start();
 
         var frameSize = 4 * 2 * 2;
-        var buffers = new IntPtr[4];
+        var buffers = new IntPtr[5];
         try
         {
             for (var i = 0; i < 2; i++)
@@ -219,9 +220,86 @@ public class NdiVideoPipelineTests
                 pipeline.HandleFrame(new CapturedFrame(buffers[i], 2, 2, 8));
             }
 
-            var rearmed = SpinWait.SpinUntil(() => pipeline.BufferPrimed && sender.Frames.Any(f => f.Payload[0] == 0x63), TimeSpan.FromMilliseconds(800));
+            var rearmed = SpinWait.SpinUntil(
+                () => pipeline.BufferPrimed && sender.Frames.Any(f => f.Payload[0] >= 0x64),
+                TimeSpan.FromMilliseconds(1500));
             Assert.True(rearmed);
             Assert.True(pipeline.LastWarmupDuration > TimeSpan.Zero);
+            Assert.True(pipeline.LastWarmupRepeats > 0);
+        }
+        finally
+        {
+            pipeline.Dispose();
+            foreach (var ptr in buffers)
+            {
+                if (ptr != IntPtr.Zero)
+                {
+                    Marshal.FreeHGlobal(ptr);
+                }
+            }
+        }
+    }
+
+    [Fact]
+    public async Task BufferedModeRequiresFullDepthBeforeResuming()
+    {
+        var sender = new CollectingSender();
+        var options = new NdiVideoPipelineOptions
+        {
+            EnableBuffering = true,
+            BufferDepth = 3,
+            TelemetryInterval = TimeSpan.FromDays(1)
+        };
+
+        var pipeline = new NdiVideoPipeline(sender, new FrameRate(30, 1), options, CreateNullLogger());
+        pipeline.Start();
+
+        var frameSize = 4 * 2 * 2;
+        var buffers = new IntPtr[8];
+        try
+        {
+            for (var i = 0; i < 3; i++)
+            {
+                buffers[i] = Marshal.AllocHGlobal(frameSize);
+                FillBuffer(buffers[i], frameSize, (byte)(0x20 + i));
+                pipeline.HandleFrame(new CapturedFrame(buffers[i], 2, 2, 8));
+            }
+
+            var primed = SpinWait.SpinUntil(() => pipeline.BufferPrimed && sender.Frames.Count >= 3, TimeSpan.FromMilliseconds(800));
+            Assert.True(primed);
+
+            var underrun = SpinWait.SpinUntil(() => !pipeline.BufferPrimed && pipeline.BufferUnderruns >= 1, TimeSpan.FromMilliseconds(800));
+            Assert.True(underrun);
+
+            var baselineCount = sender.Frames.Count;
+
+            for (var i = 3; i < 5; i++)
+            {
+                buffers[i] = Marshal.AllocHGlobal(frameSize);
+                FillBuffer(buffers[i], frameSize, (byte)(0x80 + i));
+                pipeline.HandleFrame(new CapturedFrame(buffers[i], 2, 2, 8));
+            }
+
+            await Task.Delay(250);
+            Assert.False(pipeline.BufferPrimed);
+            Assert.Empty(sender.Frames.Skip(baselineCount).Where(f => f.Payload[0] >= 0x80));
+
+            for (var i = 5; i < buffers.Length; i++)
+            {
+                buffers[i] = Marshal.AllocHGlobal(frameSize);
+                FillBuffer(buffers[i], frameSize, (byte)(0x80 + i));
+                pipeline.HandleFrame(new CapturedFrame(buffers[i], 2, 2, 8));
+            }
+
+            var resumed = SpinWait.SpinUntil(
+                () => pipeline.BufferPrimed && sender.Frames.Skip(baselineCount).Any(f => f.Payload[0] >= 0x80),
+                TimeSpan.FromMilliseconds(2000));
+            Assert.True(resumed);
+
+            var freshFrames = sender.Frames.Where(f => f.Payload[0] >= 0x80).Select(f => f.Payload[0]).Distinct().ToArray();
+            Assert.Contains((byte)0x83, freshFrames);
+            Assert.Contains((byte)0x84, freshFrames);
+            Assert.Contains((byte)0x85, freshFrames);
         }
         finally
         {
