@@ -59,6 +59,23 @@ internal sealed class NdiVideoPipeline : IDisposable
         var backlog = ringBuffer.Count;
         latencyError += backlog - targetDepth;
 
+        if (BufferingEnabled)
+        {
+            // Prevent the integrator from accumulating unbounded negative debt while we wait for the
+            // first frames. Once frames exist and the buffer fills, reset the integrator so warm-up
+            // can finish without an extended recovery period.
+            var minimumIntegrator = -targetDepth;
+            if (latencyError < minimumIntegrator)
+            {
+                latencyError = minimumIntegrator;
+            }
+
+            if (isWarmingUp && backlog >= targetDepth && latencyError < 0)
+            {
+                latencyError = 0;
+            }
+        }
+
         if (isWarmingUp)
         {
             // Exit warm-up only when we have the full buffer and have paid back any latency debt.
@@ -134,6 +151,19 @@ internal sealed class NdiVideoPipeline : IDisposable
     public bool BufferingEnabled => options.EnableBuffering;
 
     public FrameRate FrameRate => configuredFrameRate;
+
+    internal bool BufferPrimed
+    {
+        get
+        {
+            if (!BufferingEnabled)
+            {
+                return true;
+            }
+
+            return !isWarmingUp;
+        }
+    }
 
     public void Start()
     {
