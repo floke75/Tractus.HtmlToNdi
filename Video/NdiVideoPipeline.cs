@@ -65,6 +65,7 @@ internal sealed class NdiVideoPipeline : IDisposable
 
         var backlog = ringBuffer.Count;
         latencyError += backlog - targetDepth;
+        ClampLatencyErrorFloor();
 
         if (warmup)
         {
@@ -238,6 +239,7 @@ internal sealed class NdiVideoPipeline : IDisposable
         {
             ringBuffer.DropAllButLatest();
             latencyError = Math.Min(latencyError, 0);
+            ClampLatencyErrorFloor();
             return;
         }
 
@@ -254,6 +256,7 @@ internal sealed class NdiVideoPipeline : IDisposable
 
         ringBuffer.DropAllButLatest();
         latencyError = Math.Min(latencyError, 0);
+        ClampLatencyErrorFloor();
     }
 
     private void ResetBufferingState()
@@ -421,6 +424,14 @@ internal sealed class NdiVideoPipeline : IDisposable
         {
             latencyError -= 1d;
             Interlocked.Increment(ref integratorDrops);
+        }
+    }
+
+    private void ClampLatencyErrorFloor()
+    {
+        if (latencyError < -targetDepth)
+        {
+            latencyError = -targetDepth;
         }
     }
 }
