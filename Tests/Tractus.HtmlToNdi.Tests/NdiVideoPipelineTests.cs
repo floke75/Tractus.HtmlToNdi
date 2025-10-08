@@ -195,7 +195,7 @@ public class NdiVideoPipelineTests
         pipeline.Start();
 
         var frameSize = 4 * 2 * 2;
-        var buffers = new IntPtr[4];
+        var buffers = new IntPtr[8];
         try
         {
             for (var i = 0; i < 2; i++)
@@ -219,9 +219,19 @@ public class NdiVideoPipelineTests
                 pipeline.HandleFrame(new CapturedFrame(buffers[i], 2, 2, 8));
             }
 
-            var rearmed = SpinWait.SpinUntil(() => pipeline.BufferPrimed && sender.Frames.Any(f => f.Payload[0] == 0x63), TimeSpan.FromMilliseconds(800));
+            var rearmed = SpinWait.SpinUntil(() => pipeline.BufferPrimed && sender.Frames.Any(f => f.Payload[0] == 0x67), TimeSpan.FromMilliseconds(1500));
             Assert.True(rearmed);
             Assert.True(pipeline.LastWarmupDuration > TimeSpan.Zero);
+            Assert.True(pipeline.LastWarmupRepeatTicks > 0);
+
+            var frames = sender.Frames;
+            var firstNewIndex = frames.ToList().FindIndex(f => f.Payload[0] >= 0x62);
+            Assert.InRange(firstNewIndex, 1, int.MaxValue);
+            Assert.All(frames.Take(firstNewIndex), f => Assert.Equal(0x41, f.Payload[0]));
+
+            var newPayloads = frames.Skip(firstNewIndex).Select(f => f.Payload[0]).Distinct().ToArray();
+            Assert.Contains((byte)0x62, newPayloads);
+            Assert.Contains((byte)0x67, newPayloads);
         }
         finally
         {
