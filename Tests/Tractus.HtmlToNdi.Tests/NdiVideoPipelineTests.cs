@@ -181,47 +181,123 @@ public class NdiVideoPipelineTests
     }
 
     [Fact]
-    public async Task BufferedModeRewarmsAfterUnderrun()
+    public async Task BufferedMode_WithLatencyExpansion_PreservesBufferOnUnderrun()
     {
         var sender = new CollectingSender();
         var options = new NdiVideoPipelineOptions
         {
             EnableBuffering = true,
-            BufferDepth = 2,
+            BufferDepth = 3,
+            EnableLatencyExpansion = true,
             TelemetryInterval = TimeSpan.FromDays(1)
         };
 
-        var pipeline = new NdiVideoPipeline(sender, new FrameRate(30, 1), options, CreateNullLogger());
+        var frameRate = new FrameRate(10, 1);
+        var pipeline = new NdiVideoPipeline(sender, frameRate, options, CreateNullLogger());
         pipeline.Start();
 
         var frameSize = 4 * 2 * 2;
-        var buffers = new IntPtr[4];
+        var buffers = new List<IntPtr>();
+
         try
         {
+            for (var i = 0; i < 3; i++)
+            {
+                var ptr = Marshal.AllocHGlobal(frameSize);
+                buffers.Add(ptr);
+                FillBuffer(ptr, frameSize, (byte)(0x10 + i));
+                pipeline.HandleFrame(new CapturedFrame(ptr, 2, 2, 8));
+            }
+
+            var primed = SpinWait.SpinUntil(() => sender.Frames.Count >= 1, TimeSpan.FromMilliseconds(500));
+            Assert.True(primed, "Pipeline should have sent the first frame after priming.");
+            Assert.Equal(0x10, sender.Frames[0].Payload[0]);
+
+            var sentSecond = SpinWait.SpinUntil(() => sender.Frames.Count >= 2, TimeSpan.FromMilliseconds(500));
+            Assert.True(sentSecond, "Pipeline should have sent the second frame during latency expansion.");
+            Assert.Equal(0x11, sender.Frames[1].Payload[0]);
+
+            var sentThird = SpinWait.SpinUntil(() => sender.Frames.Count >= 3, TimeSpan.FromMilliseconds(500));
+            Assert.True(sentThird, "Pipeline should have sent the third frame, emptying the buffer.");
+            Assert.Equal(0x12, sender.Frames[2].Payload[0]);
+
+            var sentRepeat = SpinWait.SpinUntil(() => sender.Frames.Count >= 4, TimeSpan.FromMilliseconds(500));
+            Assert.True(sentRepeat, "Pipeline should have sent a repeated frame after the buffer was exhausted.");
+
+            var frames = sender.Frames;
+            Assert.Equal(frames[2].Frame.p_data, frames[3].Frame.p_data);
+            Assert.Equal(0x12, frames[3].Payload[0]);
+        }
+        finally
+        {
+            pipeline.Dispose();
+            foreach (var ptr in buffers)
+            {
+                if (ptr != IntPtr.Zero)
+                {
+                    Marshal.FreeHGlobal(ptr);
+                }
+            }
+        }
+    }
+
+    [Fact]
+    public async Task BufferedMode_WithoutLatencyExpansion_DrainsAndRepeatsOnUnderrun()
+    {
+        var sender = new CollectingSender();
+        var options = new NdiVideoPipelineOptions
+        {
+            EnableBuffering = true,
+            BufferDepth = 3,
+            EnableLatencyExpansion = false,
+            TelemetryInterval = TimeSpan.FromDays(1)
+        };
+
+        var frameRate = new FrameRate(10, 1);
+        var pipeline = new NdiVideoPipeline(sender, frameRate, options, CreateNullLogger());
+        pipeline.Start();
+
+        var frameSize = 4 * 2 * 2;
+        var buffers = new List<IntPtr>();
+
+        try
+        {
+            for (var i = 0; i < 3; i++)
+            {
+                var ptr = Marshal.AllocHGlobal(frameSize);
+                buffers.Add(ptr);
+                FillBuffer(ptr, frameSize, (byte)(0x20 + i));
+                pipeline.HandleFrame(new CapturedFrame(ptr, 2, 2, 8));
+            }
+
+            var primed = SpinWait.SpinUntil(() => sender.Frames.Count >= 2, TimeSpan.FromMilliseconds(500));
+            Assert.True(primed, "Pipeline should have sent the first two frames.");
+
+            var sentRepeat = SpinWait.SpinUntil(() => sender.Frames.Count >= 3, TimeSpan.FromMilliseconds(500));
+            Assert.True(sentRepeat, "Pipeline should have started repeating frames.");
+
+            Assert.Equal(0x20, sender.Frames[0].Payload[0]);
+            Assert.Equal(0x21, sender.Frames[1].Payload[0]);
+            Assert.Equal(0x21, sender.Frames[2].Payload[0]);
+
+            var recoveryFramePtr = Marshal.AllocHGlobal(frameSize);
+            buffers.Add(recoveryFramePtr);
+            FillBuffer(recoveryFramePtr, frameSize, 0x99);
+            pipeline.HandleFrame(new CapturedFrame(recoveryFramePtr, 2, 2, 8));
+
             for (var i = 0; i < 2; i++)
             {
-                buffers[i] = Marshal.AllocHGlobal(frameSize);
-                FillBuffer(buffers[i], frameSize, (byte)(0x40 + i));
-                pipeline.HandleFrame(new CapturedFrame(buffers[i], 2, 2, 8));
+                var ptr = Marshal.AllocHGlobal(frameSize);
+                buffers.Add(ptr);
+                FillBuffer(ptr, frameSize, (byte)(0x30 + i));
+                pipeline.HandleFrame(new CapturedFrame(ptr, 2, 2, 8));
             }
 
-            var primed = SpinWait.SpinUntil(() => pipeline.BufferPrimed && sender.Frames.Count >= 2, TimeSpan.FromMilliseconds(500));
-            Assert.True(primed);
+            var recovered = SpinWait.SpinUntil(() => sender.Frames.Any(f => f.Payload[0] == 0x99), TimeSpan.FromMilliseconds(1000));
+            Assert.True(recovered, "Pipeline should have sent the recovery frame (0x99) after re-priming.");
 
-            await Task.Delay(250);
-            Assert.True(pipeline.BufferUnderruns >= 1);
-            Assert.False(pipeline.BufferPrimed);
-
-            for (var i = 2; i < buffers.Length; i++)
-            {
-                buffers[i] = Marshal.AllocHGlobal(frameSize);
-                FillBuffer(buffers[i], frameSize, (byte)(0x60 + i));
-                pipeline.HandleFrame(new CapturedFrame(buffers[i], 2, 2, 8));
-            }
-
-            var rearmed = SpinWait.SpinUntil(() => pipeline.BufferPrimed && sender.Frames.Any(f => f.Payload[0] == 0x63), TimeSpan.FromMilliseconds(800));
-            Assert.True(rearmed);
-            Assert.True(pipeline.LastWarmupDuration > TimeSpan.Zero);
+            var sentFrames = sender.Frames;
+            Assert.DoesNotContain(sentFrames, f => f.Payload[0] == 0x22);
         }
         finally
         {

@@ -143,6 +143,7 @@ public class Program
             EnableBuffering = enableBuffering,
             BufferDepth = effectiveDepth,
             TelemetryInterval = parameters.TelemetryInterval,
+            EnableLatencyExpansion = parameters.EnableLatencyExpansion,
         };
 
         Log.Information("Ensuring NDI native runtime is available...");
@@ -763,6 +764,7 @@ public class Program
         "--enable-output-buffer",
         "--disable-gpu-vsync",
         "--disable-frame-rate-limit",
+        "--allow-latency-expansion",
     };
 }
 

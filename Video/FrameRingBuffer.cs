@@ -138,6 +138,8 @@ internal sealed class FrameRingBuffer<T>
                     DroppedAsStale++;
                 }
             }
+
+            overflowSinceLastDequeue = 0;
         }
     }
 }

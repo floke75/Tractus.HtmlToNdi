@@ -30,10 +30,11 @@ Parameter|Description
 `--windowless-frame-rate=60`|Overrides CEF's internal repaint cadence. Defaults to the nearest integer of `--fps`.
 `--disable-gpu-vsync`|Disables Chromium's GPU vsync throttling.
 `--disable-frame-rate-limit`|Disables Chromium's frame rate limiter.
+`--allow-latency-expansion`|When the paced buffer is enabled, this allows the buffer to drain gracefully during an underrun instead of immediately repeating frames. This results in smoother motion at the cost of a temporary increase in latency.
 `--launcher`|Forces the launcher window to appear even when other parameters are supplied.
 `--no-launcher`|Skips the launcher and honours the supplied command-line arguments only.
 
-When the paced buffer is enabled the pipeline repeats the most recently transmitted frame while warming up or recovering from an underrun so receivers continue to see a stable cadence. See [`Docs/paced-output-buffer.md`](Docs/paced-output-buffer.md) for a deeper walkthrough of the priming and telemetry behaviour.
+When the paced buffer is enabled the pipeline repeats the most recently transmitted frame while warming up or recovering from an underrun so receivers continue to see a stable cadence. By default, the pacer drains its buffer and repeats the last frame on underrun to keep latency fixed. With `--allow-latency-expansion`, it will instead play out the remaining buffered frames, which creates smoother motion during recovery at the cost of temporarily increased latency. See [`Docs/paced-buffer-improvement-plan.md`](Docs/paced-buffer-improvement-plan.md) for a deeper walkthrough of the buffering behaviour.
 
 #### Example Launch
 

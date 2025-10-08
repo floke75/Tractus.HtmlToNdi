@@ -48,7 +48,7 @@ can merge their strengths.
 ## Proposed algorithm
 
 The following design keeps latency fixed while smoothing cadence with a small
-hysteresis window and an error integrator that avoids repeated warm-up toggles:
+hysteresis window and an error integrator that avoids repeated warm-up toggles. It also includes an optional "latency expansion" mode for smoother recovery.
 
 1. **State tracking**
    - `targetDepth` – configured backlog, expressed in frames.
@@ -60,51 +60,49 @@ hysteresis window and an error integrator that avoids repeated warm-up toggles:
      underrun.
    - `latencyError` accumulator – integrates `(queueCount - targetDepth)` each
      tick to smooth decisions about repeats and drops.
+   - `enableLatencyExpansion` flag - determines the recovery strategy on underrun.
+   - `isLatencyExpansionActive` flag - true when the pacer is in the latency expansion sub-state.
 
 2. **Normal pacing**
    - When `warmup` is false and the queue count is above `lowWatermark`, dequeue
      the oldest frame, send it, and update `latencyError` by adding the depth
      delta for this tick. A positive `latencyError` larger than `1` indicates
-     that the pacer has been too far ahead; drop one queued frame (without
-     sending it) and subtract `1` from the accumulator to resynchronise the
+     that the pacer has been too far ahead; drop queued frames (without
+     sending them) until the error is corrected to resynchronise the
      latency without bursting output.
-   - If the queue count falls to or below `lowWatermark`, switch to warm-up.
+   - If the queue count falls to or below `lowWatermark`, trigger an underrun.
 
 3. **Warm-up / underrun handling**
    - On entry, increment the underrun counter once and record the timestamp.
-   - Immediately drain the queue down to a single latest frame (discarding
-     older captures) so recovery starts fresh.
-   - Continue emitting the last transmitted frame every tick. While repeating,
-     feed the negative depth delta into `latencyError` so the integrator
-     captures how long the pacer has been stalled.
+   - The recovery strategy depends on the `EnableLatencyExpansion` setting:
+     - **Default (Strict Latency):** Immediately drain the queue down to a single latest frame, discarding older captures so recovery starts fresh. Reset the `latencyError` integrator to zero to ensure rapid recovery. Continue emitting the last transmitted frame every tick until the buffer is re-primed.
+     - **Latency Expansion Mode:** If the buffer contains frames, preserve them. Enter a "latency expansion" state where the pacer continues to send the remaining buffered frames. This provides smoother motion during recovery at the cost of a temporary increase in latency. If the buffer is empty, fall back to repeating the last transmitted frame.
    - Exit warm-up only after the queue reaches `targetDepth` **and** the
      integrator is non-negative; this ensures we have both the required backlog
      and enough accumulated slack to resume without an instant re-trigger.
 
 4. **Telemetry**
    - Log underrun entries with the warm-up duration and the number of repeated
-     ticks (derived from `latencyError`).
-   - Expose the high- and low-watermark crossings so operators can tune the
-     depth for their workload.
+     or expansion-mode frames.
+   - Expose warm-up cycle counts, latency error, and latency expansion ticks.
+   - Ensure `FrameRingBuffer` correctly resets its internal counters after a drain operation to keep stale drop counts accurate.
 
 This hybrid uses PR47’s decisive queue clearing, PR43/PR44’s cadence-preserving
 repeats, and PR41’s insistence on regaining the full backlog before resuming
 fresh frames. The small hysteresis and integrator suppress the chatter seen in
-PR41 while ensuring the latency bucket never collapses below the chosen depth.
+PR41 while ensuring the latency bucket never collapses below the chosen depth. The optional latency expansion mode provides a new trade-off for users who prioritize smooth motion over fixed latency during recovery.
 
 ## Implementation notes
 
-- The current `FrameRingBuffer` already returns the newest frame and disposes
-  older entries on `DequeueLatest`, so exposing a helper that discards down to
-  one frame is trivial.
-- The pacer loop can maintain the `latencyError` as a `double` to capture
+- The `FrameRingBuffer` has been updated with a `DrainToLatestAndKeep` method that correctly resets its internal telemetry counters.
+- The pacer loop maintains the `latencyError` as a `double` to capture
   fractional drift between producer and consumer cadence. Because the error is
   additive, it can also drive adaptive logging that estimates the effective
   latency in milliseconds for dashboards.
+- The high-watermark check has been improved to a `while` loop to correct latency more decisively.
 - Tests should simulate producer jitter bursts (dropouts, speed-ups, and long
   over-production spurts) to verify that the output cadence remains constant
-  while latency never dips below `targetDepth` and never grows beyond one frame
-  above `highWatermark`.
+  and that both recovery modes (strict and latency expansion) behave as expected.
 - When buffering is disabled the existing zero-copy path remains untouched, as
   required by the prior evaluation.【F:Docs/paced-buffer-pr-evaluation.md†L65-L83】
 
@@ -114,4 +112,10 @@ Yes—there is room to build a buffering implementation that achieves both stabl
 latency and smooth pacing. By combining rigorous warm-up gating, aggressive
 queue hygiene, and a gentle hysteresis/integrator controller, the pacer can
 produce the broadcast-grade, judder-free output required for live tickers and
-lower thirds without letting the effective delay drift unpredictably.
+lower thirds.
+
+With the addition of a configurable **latency expansion mode**, operators can choose their preferred trade-off during network instability:
+- **Strict Latency (Default):** Guarantees a fixed, predictable delay by draining the buffer on underrun, which is ideal for synchronized multi-source productions.
+- **Smooth Recovery:** Prioritizes fluid motion by playing out the remaining buffer, which is better for single-source graphics where a temporary latency increase is acceptable.
+
+This dual-mode approach provides the flexibility needed for a wider range of broadcast scenarios.
