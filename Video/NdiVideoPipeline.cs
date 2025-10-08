@@ -299,7 +299,7 @@ internal sealed class NdiVideoPipeline : IDisposable
             return;
         }
 
-        latencyError += backlog - targetDepth;
+        latencyError = Math.Max(latencyError + backlog - targetDepth, -targetDepth);
         Interlocked.Increment(ref warmupRepeatTicks);
     }
 
