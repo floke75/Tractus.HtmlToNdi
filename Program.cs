@@ -143,6 +143,7 @@ public class Program
             EnableBuffering = enableBuffering,
             BufferDepth = effectiveDepth,
             TelemetryInterval = parameters.TelemetryInterval,
+            AllowLatencyExpansion = parameters.AllowLatencyExpansion,
         };
 
         Log.Information("Ensuring NDI native runtime is available...");

@@ -76,6 +76,31 @@ internal sealed class FrameRingBuffer<T>
         }
     }
 
+    public bool TryDequeueAsStale([NotNullWhen(true)] out T? frame)
+    {
+        lock (frames)
+        {
+            if (frames.Count == 0)
+            {
+                frame = null;
+                return false;
+            }
+
+            frame = frames.Dequeue();
+
+            if (overflowSinceLastDequeue > 0)
+            {
+                overflowSinceLastDequeue--;
+            }
+            else
+            {
+                DroppedAsStale++;
+            }
+
+            return true;
+        }
+    }
+
     public T? DequeueLatest()
     {
         lock (frames)
@@ -101,6 +126,35 @@ internal sealed class FrameRingBuffer<T>
 
             overflowSinceLastDequeue = 0;
             return frames.Dequeue();
+        }
+    }
+
+    public void TrimToSingleLatest()
+    {
+        lock (frames)
+        {
+            if (frames.Count <= 1)
+            {
+                overflowSinceLastDequeue = 0;
+                return;
+            }
+
+            while (frames.Count > 1)
+            {
+                var stale = frames.Dequeue();
+                stale.Dispose();
+
+                if (overflowSinceLastDequeue > 0)
+                {
+                    overflowSinceLastDequeue--;
+                }
+                else
+                {
+                    DroppedAsStale++;
+                }
+            }
+
+            overflowSinceLastDequeue = 0;
         }
     }
 

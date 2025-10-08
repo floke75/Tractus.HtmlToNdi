@@ -20,7 +20,8 @@ public sealed class LaunchParameters
         TimeSpan telemetryInterval,
         int? windowlessFrameRateOverride,
         bool disableGpuVsync,
-        bool disableFrameRateLimit)
+        bool disableFrameRateLimit,
+        bool allowLatencyExpansion)
     {
         NdiName = ndiName;
         Port = port;
@@ -34,6 +35,7 @@ public sealed class LaunchParameters
         WindowlessFrameRateOverride = windowlessFrameRateOverride;
         DisableGpuVsync = disableGpuVsync;
         DisableFrameRateLimit = disableFrameRateLimit;
+        AllowLatencyExpansion = allowLatencyExpansion;
     }
 
     public string NdiName { get; }
@@ -59,6 +61,8 @@ public sealed class LaunchParameters
     public bool DisableGpuVsync { get; }
 
     public bool DisableFrameRateLimit { get; }
+
+    public bool AllowLatencyExpansion { get; }
 
     public static bool TryFromArgs(string[] args, out LaunchParameters? parameters)
     {
@@ -186,7 +190,8 @@ public sealed class LaunchParameters
             telemetryInterval,
             windowlessFrameRateOverride,
             HasFlag("--disable-gpu-vsync"),
-            HasFlag("--disable-frame-rate-limit"));
+            HasFlag("--disable-frame-rate-limit"),
+            HasFlag("--allow-latency-expansion"));
 
         return true;
     }
@@ -263,6 +268,7 @@ public sealed class LaunchParameters
             TimeSpan.FromSeconds(settings.TelemetryIntervalSeconds),
             windowlessFrameRateOverride,
             settings.DisableGpuVsync,
-            settings.DisableFrameRateLimit);
+            settings.DisableFrameRateLimit,
+            settings.AllowLatencyExpansion);
     }
 }

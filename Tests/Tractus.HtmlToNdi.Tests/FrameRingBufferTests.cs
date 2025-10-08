@@ -1,3 +1,4 @@
+using System.Linq;
 using Tractus.HtmlToNdi.Video;
 using Xunit;
 
@@ -89,5 +90,35 @@ public class FrameRingBufferTests
 
         Assert.False(success);
         Assert.Null(dequeued);
+    }
+
+    [Fact]
+    public void TrimToSingleLatestResetsOverflowCounter()
+    {
+        var buffer = new FrameRingBuffer<DisposableStub>(3);
+        var frames = Enumerable.Range(0, 4).Select(_ => new DisposableStub()).ToArray();
+
+        for (var i = 0; i < 3; i++)
+        {
+            buffer.Enqueue(frames[i], out _);
+        }
+
+        buffer.Enqueue(frames[3], out var overflowed);
+        overflowed?.Dispose();
+
+        var droppedBeforeTrim = buffer.DroppedAsStale;
+
+        buffer.TrimToSingleLatest();
+
+        var droppedAfterTrim = buffer.DroppedAsStale;
+        Assert.True(droppedAfterTrim >= droppedBeforeTrim);
+
+        var success = buffer.TryDequeueAsStale(out var stale);
+        Assert.True(success);
+        Assert.NotNull(stale);
+        stale?.Dispose();
+
+        Assert.Equal(droppedAfterTrim + 1, buffer.DroppedAsStale);
+        Assert.Equal(0, buffer.Count);
     }
 }
