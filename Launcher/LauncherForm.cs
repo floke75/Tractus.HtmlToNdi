@@ -14,6 +14,7 @@ public sealed class LauncherForm : Form
     private readonly TextBox _frameRateTextBox;
     private readonly CheckBox _enableBufferingCheckBox;
     private readonly NumericUpDown _bufferDepthNumericUpDown;
+    private readonly CheckBox _allowLatencyExpansionCheckBox;
     private readonly NumericUpDown _telemetryNumericUpDown;
     private readonly TextBox _windowlessFrameRateTextBox;
     private readonly CheckBox _disableGpuVsyncCheckBox;
@@ -107,6 +108,14 @@ public sealed class LauncherForm : Form
         };
         AddRow(table, "Buffer Depth (frames)", _bufferDepthNumericUpDown);
 
+        _allowLatencyExpansionCheckBox = new CheckBox
+        {
+            Text = "Play queued frames during recovery (variable latency)",
+            Dock = DockStyle.Fill,
+            AutoSize = true,
+        };
+        AddRow(table, "Latency Expansion", _allowLatencyExpansionCheckBox);
+
         _telemetryNumericUpDown = new NumericUpDown
         {
             Minimum = 1,
@@ -172,7 +181,11 @@ public sealed class LauncherForm : Form
         CancelButton = cancelButton;
 
         _enableBufferingCheckBox.CheckedChanged += (_, _) =>
-            _bufferDepthNumericUpDown.Enabled = _enableBufferingCheckBox.Checked;
+        {
+            var enabled = _enableBufferingCheckBox.Checked;
+            _bufferDepthNumericUpDown.Enabled = enabled;
+            _allowLatencyExpansionCheckBox.Enabled = enabled;
+        };
 
         ApplySettings(initialSettings);
     }
@@ -191,6 +204,8 @@ public sealed class LauncherForm : Form
             (int)_bufferDepthNumericUpDown.Minimum,
             (int)_bufferDepthNumericUpDown.Maximum);
         _bufferDepthNumericUpDown.Enabled = settings.EnableBuffering;
+        _allowLatencyExpansionCheckBox.Checked = settings.AllowLatencyExpansion;
+        _allowLatencyExpansionCheckBox.Enabled = settings.EnableBuffering;
         var telemetryValue = (decimal)Math.Clamp(settings.TelemetryIntervalSeconds, (double)_telemetryNumericUpDown.Minimum, (double)_telemetryNumericUpDown.Maximum);
         _telemetryNumericUpDown.Value = telemetryValue;
         _windowlessFrameRateTextBox.Text = settings.WindowlessFrameRateOverride ?? string.Empty;
@@ -237,7 +252,8 @@ public sealed class LauncherForm : Form
                 ? null
                 : _windowlessFrameRateTextBox.Text.Trim(),
             DisableGpuVsync = _disableGpuVsyncCheckBox.Checked,
-            DisableFrameRateLimit = _disableFrameRateLimitCheckBox.Checked
+            DisableFrameRateLimit = _disableFrameRateLimitCheckBox.Checked,
+            AllowLatencyExpansion = _allowLatencyExpansionCheckBox.Checked
         };
 
         try

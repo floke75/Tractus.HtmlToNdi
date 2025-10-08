@@ -29,4 +29,7 @@ public class LauncherSettings
 
     public bool DisableFrameRateLimit { get; set; }
         = false;
+
+    public bool AllowLatencyExpansion { get; set; }
+        = false;
 }
