@@ -1,3 +1,4 @@
+using System.Linq;
 using Tractus.HtmlToNdi.Video;
 using Xunit;
 
@@ -89,5 +90,45 @@ public class FrameRingBufferTests
 
         Assert.False(success);
         Assert.Null(dequeued);
+    }
+
+    [Fact]
+    public void DropAllButLatestKeepsNewestFrame()
+    {
+        var buffer = new FrameRingBuffer<DisposableStub>(4);
+        var frames = Enumerable.Range(0, 3).Select(_ => new DisposableStub()).ToArray();
+
+        foreach (var frame in frames)
+        {
+            buffer.Enqueue(frame, out _);
+        }
+
+        buffer.DropAllButLatest();
+
+        Assert.Equal(1, buffer.Count);
+        Assert.True(frames[0].Disposed);
+        Assert.True(frames[1].Disposed);
+        Assert.False(frames[2].Disposed);
+        Assert.Equal(2, buffer.DroppedAsStale);
+    }
+
+    [Fact]
+    public void TryDiscardOldestAsStaleDisposesFrame()
+    {
+        var buffer = new FrameRingBuffer<DisposableStub>(3);
+        var frames = Enumerable.Range(0, 2).Select(_ => new DisposableStub()).ToArray();
+
+        foreach (var frame in frames)
+        {
+            buffer.Enqueue(frame, out _);
+        }
+
+        var discarded = buffer.TryDiscardOldestAsStale();
+
+        Assert.True(discarded);
+        Assert.True(frames[0].Disposed);
+        Assert.False(frames[1].Disposed);
+        Assert.Equal(1, buffer.DroppedAsStale);
+        Assert.Equal(1, buffer.Count);
     }
 }
