@@ -46,7 +46,7 @@ internal sealed class NdiVideoPipeline : IDisposable
             lowWatermark = targetDepth - 0.5;
             highWatermark = targetDepth + 1;
             ringBuffer = new FrameRingBuffer<NdiVideoFrame>(highWatermark);
-            warmupStart = DateTime.UtcNow;
+            EnterWarmup(resetRepeatCount: true);
         }
     }
 
@@ -57,6 +57,11 @@ internal sealed class NdiVideoPipeline : IDisposable
 
         var backlog = ringBuffer.Count;
         latencyError += backlog - targetDepth;
+
+        if (isWarmingUp && latencyError < 0)
+        {
+            latencyError = 0;
+        }
 
         if (isWarmingUp)
         {
@@ -86,8 +91,7 @@ internal sealed class NdiVideoPipeline : IDisposable
             logger.Warning(
                 "Paced buffer underrun detected (backlog={Backlog}, target={TargetDepth}). Repeating last frame and re-priming.",
                 backlog, targetDepth);
-            isWarmingUp = true;
-            warmupStart = DateTime.UtcNow;
+            EnterWarmup(resetRepeatCount: true);
             Interlocked.Increment(ref underrunEvents);
             ringBuffer.DrainToLatestAndKeep();
             return false;
@@ -111,8 +115,7 @@ internal sealed class NdiVideoPipeline : IDisposable
         }
 
         // Should be rare, but if dequeue fails, enter warm-up.
-        isWarmingUp = true;
-        warmupStart = DateTime.UtcNow;
+        EnterWarmup(resetRepeatCount: true);
         Interlocked.Increment(ref underrunEvents);
         return false;
     }
@@ -145,7 +148,7 @@ internal sealed class NdiVideoPipeline : IDisposable
         }
 
         pacingTask = null;
-        isWarmingUp = true;
+        EnterWarmup(resetRepeatCount: true);
     }
 
     public void HandleFrame(CapturedFrame frame)
@@ -246,15 +249,24 @@ internal sealed class NdiVideoPipeline : IDisposable
 
     private void ResetBufferingState()
     {
-        isWarmingUp = true;
-        latencyError = 0;
-        warmupStart = DateTime.UtcNow;
-        repeatedFramesInCurrentWarmup = 0;
+        EnterWarmup(resetRepeatCount: true);
         Interlocked.Exchange(ref underrunEvents, 0);
 
         ringBuffer?.Clear();
         lastSentFrame?.Dispose();
         lastSentFrame = null;
+    }
+
+    private void EnterWarmup(bool resetRepeatCount)
+    {
+        if (resetRepeatCount)
+        {
+            repeatedFramesInCurrentWarmup = 0;
+        }
+
+        isWarmingUp = true;
+        latencyError = 0;
+        warmupStart = DateTime.UtcNow;
     }
 
 
