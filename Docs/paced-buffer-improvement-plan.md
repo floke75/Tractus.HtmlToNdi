@@ -108,6 +108,18 @@ PR41 while ensuring the latency bucket never collapses below the chosen depth.
 - When buffering is disabled the existing zero-copy path remains untouched, as
   required by the prior evaluation.【F:Docs/paced-buffer-pr-evaluation.md†L65-L83】
 
+### Optional latency expansion mode
+
+Some operators prefer to keep motion smooth even if it means carrying a little
+extra latency during recovery. The paced buffer now exposes an opt-in
+`AllowLatencyExpansion` flag (surfaced on the command line as
+`--allow-latency-expansion`) that keeps any queued frames playing while the
+pipeline rebuilds its backlog. When this mode is enabled the pacer still
+records an underrun, but it pauses warm-up trimming and only falls back to
+repeating frames once the queue is empty.【F:Video/NdiVideoPipeline.cs†L163-L224】【F:Video/NdiVideoPipeline.cs†L320-L357】
+Telemetry reports how many expansion sessions, ticks, and frames were served so
+engineers can monitor the extra latency they are incurring.【F:Video/NdiVideoPipeline.cs†L504-L509】
+
 ## Conclusion
 
 Yes—there is room to build a buffering implementation that achieves both stable
