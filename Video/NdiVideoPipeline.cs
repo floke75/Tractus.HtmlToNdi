@@ -255,7 +255,7 @@ internal sealed class NdiVideoPipeline : IDisposable
         warmupStarted = DateTime.UtcNow;
         ringBuffer.TrimToSingleLatest();
         Interlocked.Exchange(ref warmupRepeatTicks, 0);
-        latencyError = Math.Min(latencyError, 0);
+        latencyError = Math.Max(latencyError, -targetDepth);
     }
 
     private void ResetBufferingState()
