@@ -1,4 +1,6 @@
+using System.Collections.Generic;
 using System.Linq;
+using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Threading;
 using Serilog;
@@ -222,6 +224,181 @@ public class NdiVideoPipelineTests
             var rearmed = SpinWait.SpinUntil(() => pipeline.BufferPrimed && sender.Frames.Any(f => f.Payload[0] == 0x63), TimeSpan.FromMilliseconds(800));
             Assert.True(rearmed);
             Assert.True(pipeline.LastWarmupDuration > TimeSpan.Zero);
+        }
+        finally
+        {
+            pipeline.Dispose();
+            foreach (var ptr in buffers)
+            {
+                if (ptr != IntPtr.Zero)
+                {
+                    Marshal.FreeHGlobal(ptr);
+                }
+            }
+        }
+    }
+
+    [Fact]
+    public async Task LatencyExpansionPlaysQueuedFramesBeforeRepeats()
+    {
+        var sender = new CollectingSender();
+        var options = new NdiVideoPipelineOptions
+        {
+            EnableBuffering = true,
+            BufferDepth = 3,
+            TelemetryInterval = TimeSpan.FromDays(1),
+            AllowLatencyExpansion = true
+        };
+
+        var pipeline = new NdiVideoPipeline(sender, new FrameRate(30, 1), options, CreateNullLogger());
+        pipeline.Start();
+
+        var frameSize = 4 * 2 * 2;
+        var buffers = new IntPtr[5];
+        try
+        {
+            for (var i = 0; i < buffers.Length; i++)
+            {
+                buffers[i] = Marshal.AllocHGlobal(frameSize);
+                FillBuffer(buffers[i], frameSize, (byte)(0x80 + i));
+                pipeline.HandleFrame(new CapturedFrame(buffers[i], 2, 2, 8));
+            }
+
+            var sentAll = SpinWait.SpinUntil(() => sender.Frames.Count >= buffers.Length, TimeSpan.FromMilliseconds(1200));
+            Assert.True(sentAll);
+            Assert.True(pipeline.BufferUnderruns >= 1);
+            Assert.True(pipeline.LatencyExpansionSessions >= 1);
+
+            var uniqueCount = sender.Frames.Take(buffers.Length).Select(f => f.Payload[0]).Distinct().Count();
+            Assert.Equal(buffers.Length, uniqueCount);
+
+            var repeated = SpinWait.SpinUntil(
+                () => sender.Frames.Count > buffers.Length &&
+                      sender.Frames[^1].Payload[0] == sender.Frames[^2].Payload[0],
+                TimeSpan.FromMilliseconds(800));
+            Assert.True(repeated);
+        }
+        finally
+        {
+            pipeline.Dispose();
+            foreach (var ptr in buffers)
+            {
+                if (ptr != IntPtr.Zero)
+                {
+                    Marshal.FreeHGlobal(ptr);
+                }
+            }
+        }
+    }
+
+    [Fact]
+    public async Task LatencyExpansionExitsAfterBacklogRecovers()
+    {
+        var sender = new CollectingSender();
+        var options = new NdiVideoPipelineOptions
+        {
+            EnableBuffering = true,
+            BufferDepth = 3,
+            TelemetryInterval = TimeSpan.FromDays(1),
+            AllowLatencyExpansion = true
+        };
+
+        var pipeline = new NdiVideoPipeline(sender, new FrameRate(30, 1), options, CreateNullLogger());
+        pipeline.Start();
+
+        var frameSize = 4 * 2 * 2;
+        var buffers = new List<IntPtr>();
+        try
+        {
+            for (var i = 0; i < 4; i++)
+            {
+                var ptr = Marshal.AllocHGlobal(frameSize);
+                buffers.Add(ptr);
+                FillBuffer(ptr, frameSize, (byte)(0x90 + i));
+                pipeline.HandleFrame(new CapturedFrame(ptr, 2, 2, 8));
+            }
+
+            var primed = SpinWait.SpinUntil(() => pipeline.BufferPrimed, TimeSpan.FromMilliseconds(600));
+            Assert.True(primed);
+
+            await Task.Delay(300);
+
+            var expansionStarted = SpinWait.SpinUntil(() => pipeline.LatencyExpansionActive, TimeSpan.FromMilliseconds(800));
+            Assert.True(expansionStarted);
+
+            for (var i = 0; i < 4; i++)
+            {
+                var ptr = Marshal.AllocHGlobal(frameSize);
+                buffers.Add(ptr);
+                FillBuffer(ptr, frameSize, (byte)(0xA0 + i));
+                pipeline.HandleFrame(new CapturedFrame(ptr, 2, 2, 8));
+            }
+
+            var exited = SpinWait.SpinUntil(() => pipeline.BufferPrimed && !pipeline.LatencyExpansionActive, TimeSpan.FromMilliseconds(1200));
+            Assert.True(exited);
+            Assert.True(pipeline.LatencyExpansionSessions >= 1);
+            Assert.True(pipeline.LatencyExpansionFramesServed > 0);
+        }
+        finally
+        {
+            pipeline.Dispose();
+            foreach (var ptr in buffers)
+            {
+                if (ptr != IntPtr.Zero)
+                {
+                    Marshal.FreeHGlobal(ptr);
+                }
+            }
+        }
+    }
+
+    [Fact]
+    public async Task BufferedModeDropsFramesWhenAhead()
+    {
+        var sender = new CollectingSender();
+        var options = new NdiVideoPipelineOptions
+        {
+            EnableBuffering = true,
+            BufferDepth = 3,
+            TelemetryInterval = TimeSpan.FromDays(1)
+        };
+
+        var pipeline = new NdiVideoPipeline(sender, new FrameRate(30, 1), options, CreateNullLogger());
+        pipeline.Start();
+
+        var frameSize = 4 * 2 * 2;
+        var buffers = new List<IntPtr>();
+        try
+        {
+            for (var i = 0; i < 6; i++)
+            {
+                var ptr = Marshal.AllocHGlobal(frameSize);
+                buffers.Add(ptr);
+                FillBuffer(ptr, frameSize, (byte)(0xB0 + i));
+                pipeline.HandleFrame(new CapturedFrame(ptr, 2, 2, 8));
+            }
+
+            var primed = SpinWait.SpinUntil(() => pipeline.BufferPrimed, TimeSpan.FromMilliseconds(600));
+            Assert.True(primed);
+
+            for (var i = 0; i < 12; i++)
+            {
+                var ptr = Marshal.AllocHGlobal(frameSize);
+                buffers.Add(ptr);
+                FillBuffer(ptr, frameSize, (byte)(0xC0 + i));
+                pipeline.HandleFrame(new CapturedFrame(ptr, 2, 2, 8));
+            }
+
+            await Task.Delay(600);
+
+            Assert.True(pipeline.BufferPrimed);
+
+            var latencyResyncDropsField = typeof(NdiVideoPipeline)
+                .GetField("latencyResyncDrops", BindingFlags.Instance | BindingFlags.NonPublic);
+            Assert.NotNull(latencyResyncDropsField);
+
+            var drops = (long)(latencyResyncDropsField!.GetValue(pipeline) ?? 0L);
+            Assert.True(drops > 0, "Expected latency resync drops after oversupply");
         }
         finally
         {
