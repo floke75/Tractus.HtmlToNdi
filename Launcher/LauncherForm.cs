@@ -18,6 +18,7 @@ public sealed class LauncherForm : Form
     private readonly TextBox _windowlessFrameRateTextBox;
     private readonly CheckBox _disableGpuVsyncCheckBox;
     private readonly CheckBox _disableFrameRateLimitCheckBox;
+    private readonly CheckBox _allowLatencyExpansionCheckBox;
 
     public LaunchParameters? SelectedParameters { get; private set; }
 
@@ -107,6 +108,14 @@ public sealed class LauncherForm : Form
         };
         AddRow(table, "Buffer Depth (frames)", _bufferDepthNumericUpDown);
 
+        _allowLatencyExpansionCheckBox = new CheckBox
+        {
+            Text = "Allow latency expansion during underruns",
+            Dock = DockStyle.Fill,
+            AutoSize = true,
+        };
+        AddRow(table, "Latency Expansion", _allowLatencyExpansionCheckBox);
+
         _telemetryNumericUpDown = new NumericUpDown
         {
             Minimum = 1,
@@ -172,7 +181,11 @@ public sealed class LauncherForm : Form
         CancelButton = cancelButton;
 
         _enableBufferingCheckBox.CheckedChanged += (_, _) =>
-            _bufferDepthNumericUpDown.Enabled = _enableBufferingCheckBox.Checked;
+        {
+            var enabled = _enableBufferingCheckBox.Checked;
+            _bufferDepthNumericUpDown.Enabled = enabled;
+            _allowLatencyExpansionCheckBox.Enabled = enabled;
+        };
 
         ApplySettings(initialSettings);
     }
@@ -191,6 +204,8 @@ public sealed class LauncherForm : Form
             (int)_bufferDepthNumericUpDown.Minimum,
             (int)_bufferDepthNumericUpDown.Maximum);
         _bufferDepthNumericUpDown.Enabled = settings.EnableBuffering;
+        _allowLatencyExpansionCheckBox.Checked = settings.AllowLatencyExpansion;
+        _allowLatencyExpansionCheckBox.Enabled = settings.EnableBuffering;
         var telemetryValue = (decimal)Math.Clamp(settings.TelemetryIntervalSeconds, (double)_telemetryNumericUpDown.Minimum, (double)_telemetryNumericUpDown.Maximum);
         _telemetryNumericUpDown.Value = telemetryValue;
         _windowlessFrameRateTextBox.Text = settings.WindowlessFrameRateOverride ?? string.Empty;
@@ -232,6 +247,7 @@ public sealed class LauncherForm : Form
             FrameRate = frameRateText,
             EnableBuffering = _enableBufferingCheckBox.Checked,
             BufferDepth = (int)_bufferDepthNumericUpDown.Value,
+            AllowLatencyExpansion = _allowLatencyExpansionCheckBox.Checked,
             TelemetryIntervalSeconds = (double)_telemetryNumericUpDown.Value,
             WindowlessFrameRateOverride = string.IsNullOrWhiteSpace(_windowlessFrameRateTextBox.Text)
                 ? null

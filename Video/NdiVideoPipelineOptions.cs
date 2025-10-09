@@ -7,4 +7,6 @@ internal sealed record NdiVideoPipelineOptions
     public int BufferDepth { get; init; } = 3;
 
     public TimeSpan TelemetryInterval { get; init; } = TimeSpan.FromSeconds(10);
+
+    public bool EnableLatencyExpansion { get; init; }
 }
