@@ -172,8 +172,13 @@ internal sealed class NdiVideoPipeline : IDisposable
 
             if (latencyExpansionActive && allowLatencyExpansion && backlog > 0)
             {
-                if (backlog >= targetDepth && latencyError >= 0)
+                if (backlog >= targetDepth)
                 {
+                    if (latencyError < 0)
+                    {
+                        latencyError = 0;
+                    }
+
                     ExitWarmup();
                     backlog = ringBuffer.Count;
                     delta = backlog - targetDepth;
@@ -184,8 +189,13 @@ internal sealed class NdiVideoPipeline : IDisposable
                     Interlocked.Increment(ref latencyExpansionTicks);
                 }
             }
-            else if (backlog >= targetDepth && latencyError >= 0)
+            else if (backlog >= targetDepth)
             {
+                if (latencyError < 0)
+                {
+                    latencyError = 0;
+                }
+
                 ExitWarmup();
                 backlog = ringBuffer.Count;
                 delta = backlog - targetDepth;
