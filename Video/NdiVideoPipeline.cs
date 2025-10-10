@@ -125,7 +125,8 @@ internal sealed class NdiVideoPipeline : IDisposable
 
     private async Task RunPacedLoopAsync(CancellationToken token)
     {
-        var timer = new PeriodicTimer(FrameRate.FrameDuration);
+        var interval = FrameRate.FrameDuration;
+        var timer = new PeriodicTimer(interval);
         try
         {
             while (await timer.WaitForNextTickAsync(token))
