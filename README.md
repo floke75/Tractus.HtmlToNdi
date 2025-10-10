@@ -8,6 +8,13 @@ A simple wrapper around [CEFSharp](https://github.com/cefsharp/CefSharp) and [ND
 
 - Install the NDI Runtime (NDI® 6 or later). The app automatically scans common locations such as `C:\Program Files\NDI\NDI 6 Runtime\v6` and `...\NDI 6 SDK\Bin\x64`, and it honours the `NDILIB_REDIST_FOLDER` environment variable. If the runtime is not installed, copy `Processing.NDI.Lib.x64.dll` next to `Tractus.HtmlToNdi.exe` before launching.
 
+## Building from source
+
+See [`Docs/building.md`](Docs/building.md) for detailed instructions. The
+project targets **.NET 8.0 (windows)** and requires the Windows Desktop
+reference packs, so make sure the .NET SDK you install includes the "Windows
+desktop" workload before compiling.
+
 ## Usage
 
 Launching the executable without command-line parameters now opens a simple launcher window. The launcher loads the most recent settings, lets you tweak NDI, HTTP and rendering options, and starts the application when you press **Launch**. Settings are written to `launcher-settings.json` beside the executable and reused next time you open the tool.
