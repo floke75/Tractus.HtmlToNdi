@@ -4,6 +4,9 @@ using Serilog;
 
 namespace Tractus.HtmlToNdi.Launcher;
 
+/// <summary>
+/// Manages loading and saving of launcher settings.
+/// </summary>
 public static class LauncherSettingsStore
 {
     private const string SettingsFileName = "launcher-settings.json";
@@ -15,6 +18,10 @@ public static class LauncherSettingsStore
         ReadCommentHandling = JsonCommentHandling.Skip,
     };
 
+    /// <summary>
+    /// Loads the launcher settings from the settings file.
+    /// </summary>
+    /// <returns>The loaded launcher settings, or default settings if loading fails.</returns>
     public static LauncherSettings Load()
     {
         try
@@ -36,6 +43,11 @@ public static class LauncherSettingsStore
         }
     }
 
+    /// <summary>
+    /// Saves the launcher settings to the settings file.
+    /// </summary>
+    /// <param name="settings">The settings to save.</param>
+    /// <exception cref="ArgumentNullException">Thrown if <paramref name="settings"/> is null.</exception>
     public static void Save(LauncherSettings settings)
     {
         if (settings is null)

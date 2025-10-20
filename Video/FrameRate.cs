@@ -2,6 +2,9 @@ using System.Globalization;
 
 namespace Tractus.HtmlToNdi.Video;
 
+/// <summary>
+/// Represents a frame rate as a rational number.
+/// </summary>
 public readonly struct FrameRate
 {
     private static readonly (double fps, int numerator, int denominator)[] KnownRates =
@@ -18,6 +21,12 @@ public readonly struct FrameRate
         (120.0, 120, 1)
     };
 
+    /// <summary>
+    /// Initializes a new instance of the <see cref="FrameRate"/> struct.
+    /// </summary>
+    /// <param name="numerator">The numerator of the frame rate.</param>
+    /// <param name="denominator">The denominator of the frame rate.</param>
+    /// <exception cref="ArgumentOutOfRangeException">Thrown if the numerator or denominator is not positive.</exception>
     public FrameRate(int numerator, int denominator)
     {
         if (denominator <= 0)
@@ -34,14 +43,32 @@ public readonly struct FrameRate
         Denominator = denominator;
     }
 
+    /// <summary>
+    /// Gets the numerator of the frame rate.
+    /// </summary>
     public int Numerator { get; }
 
+    /// <summary>
+    /// Gets the denominator of the frame rate.
+    /// </summary>
     public int Denominator { get; }
 
+    /// <summary>
+    /// Gets the frame rate as a double-precision floating-point number.
+    /// </summary>
     public double Value => Numerator / (double)Denominator;
 
+    /// <summary>
+    /// Gets the duration of a single frame.
+    /// </summary>
     public TimeSpan FrameDuration => TimeSpan.FromSeconds(1.0 / Value);
 
+    /// <summary>
+    /// Parses a frame rate from a string.
+    /// </summary>
+    /// <param name="text">The string to parse.</param>
+    /// <returns>A new <see cref="FrameRate"/> instance.</returns>
+    /// <exception cref="FormatException">Thrown if the string cannot be parsed.</exception>
     public static FrameRate Parse(string? text)
     {
         if (string.IsNullOrWhiteSpace(text))
@@ -64,6 +91,12 @@ public readonly struct FrameRate
         throw new FormatException($"Unable to parse frame rate from '{text}'.");
     }
 
+    /// <summary>
+    /// Creates a <see cref="FrameRate"/> from a double-precision floating-point number.
+    /// </summary>
+    /// <param name="fps">The frame rate as a double.</param>
+    /// <returns>A new <see cref="FrameRate"/> instance.</returns>
+    /// <exception cref="ArgumentOutOfRangeException">Thrown if the frame rate is not positive.</exception>
     public static FrameRate FromDouble(double fps)
     {
         if (fps <= 0)
@@ -158,5 +191,9 @@ public readonly struct FrameRate
         return (numerator, denominator);
     }
 
+    /// <summary>
+    /// Returns a string representation of the frame rate.
+    /// </summary>
+    /// <returns>A string in the format "numerator/denominator".</returns>
     public override string ToString() => $"{Numerator}/{Denominator}";
 }

@@ -51,7 +51,12 @@ When the paced buffer is enabled the pipeline repeats the most recently transmit
 
 Route|Method|Description|Example
 ----|----|----|---
-`/seturl`|`POST`|Sets the URL for this instance.|```{"url": "https://www.google.ca"}```
+`/seturl`|`POST`|Sets the URL for this instance.|`{"url": "https://www.google.ca"}`
+`/scroll/{increment}`|`GET`|Scrolls the page vertically.|`/scroll/-100` (scrolls up)
+`/click/{x}/{y}`|`GET`|Simulates a left mouse click at the specified coordinates.|`/click/100/200`
+`/keystroke`|`POST`|Sends a sequence of keystrokes.|`{"toSend": "Hello, world!"}`
+`/type/{toType}`|`GET`|A convenience endpoint for sending keystrokes via a GET request.|`/type/Hello%2C%20world%21`
+`/refresh`|`GET`|Refreshes the current page.|`/refresh`
 
 ## Known Limitations
 

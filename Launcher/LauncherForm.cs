@@ -4,6 +4,9 @@ using System.Windows.Forms;
 
 namespace Tractus.HtmlToNdi.Launcher;
 
+/// <summary>
+/// Represents the main form for the launcher application.
+/// </summary>
 public sealed class LauncherForm : Form
 {
     private readonly TextBox _ndiNameTextBox;
@@ -20,10 +23,21 @@ public sealed class LauncherForm : Form
     private readonly CheckBox _disableGpuVsyncCheckBox;
     private readonly CheckBox _disableFrameRateLimitCheckBox;
 
+    /// <summary>
+    /// Gets the selected launch parameters.
+    /// </summary>
     public LaunchParameters? SelectedParameters { get; private set; }
 
+    /// <summary>
+    /// Gets the current launcher settings.
+    /// </summary>
     public LauncherSettings? CurrentSettings { get; private set; }
 
+    /// <summary>
+    /// Initializes a new instance of the <see cref="LauncherForm"/> class.
+    /// </summary>
+    /// <param name="initialSettings">The initial settings to populate the form with.</param>
+    /// <exception cref="ArgumentNullException">Thrown if <paramref name="initialSettings"/> is null.</exception>
     public LauncherForm(LauncherSettings initialSettings)
     {
         if (initialSettings is null)

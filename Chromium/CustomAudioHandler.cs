@@ -7,9 +7,15 @@ using System.Runtime.InteropServices;
 
 namespace Tractus.HtmlToNdi.Chromium;
 
-
+/// <summary>
+/// Handles audio events from a CefSharp browser instance,
+/// converting and sending the audio data to an NDI stream.
+/// </summary>
 public class CustomAudioHandler : IAudioHandler
 {
+    /// <summary>
+    /// A mapping from CefSharp's ChannelLayout enum to the number of channels.
+    /// </summary>
     public static readonly Dictionary<ChannelLayout, int> ChannelLayoutToChannelCount = new Dictionary<ChannelLayout, int>
     {
         { ChannelLayout.LayoutNone, 0 },
@@ -51,6 +57,9 @@ public class CustomAudioHandler : IAudioHandler
     private int audioBufferLengthInBytes;
     private int channelCount;
 
+    /// <summary>
+    /// Releases the unmanaged resources used by the audio handler.
+    /// </summary>
     public void Dispose()
     {
         if (this.audioBufferPtr != nint.Zero)
@@ -60,6 +69,13 @@ public class CustomAudioHandler : IAudioHandler
         }
     }
 
+    /// <summary>
+    /// Called to retrieve the audio parameters.
+    /// </summary>
+    /// <param name="chromiumWebBrowser">The Chromium web browser instance.</param>
+    /// <param name="browser">The browser instance.</param>
+    /// <param name="parameters">The audio parameters.</param>
+    /// <returns>True if the audio parameters were retrieved successfully; otherwise, false.</returns>
     public bool GetAudioParameters(IWebBrowser chromiumWebBrowser, IBrowser browser, ref AudioParameters parameters)
     {
         //Console.WriteLine($"GetAudioParameters - Current thread: {Thread.CurrentThread.ManagedThreadId}");
@@ -91,10 +107,24 @@ public class CustomAudioHandler : IAudioHandler
         return true;
     }
 
+    /// <summary>
+    /// Called when an audio stream error occurs.
+    /// </summary>
+    /// <param name="chromiumWebBrowser">The Chromium web browser instance.</param>
+    /// <param name="browser">The browser instance.</param>
+    /// <param name="errorMessage">The error message.</param>
     public void OnAudioStreamError(IWebBrowser chromiumWebBrowser, IBrowser browser, string errorMessage)
     {
     }
 
+    /// <summary>
+    /// Called when an audio stream packet is received.
+    /// </summary>
+    /// <param name="chromiumWebBrowser">The Chromium web browser instance.</param>
+    /// <param name="browser">The browser instance.</param>
+    /// <param name="data">A pointer to the audio data.</param>
+    /// <param name="noOfFrames">The number of frames in the packet.</param>
+    /// <param name="pts">The presentation timestamp.</param>
     public unsafe void OnAudioStreamPacket(IWebBrowser chromiumWebBrowser, IBrowser browser, nint data, int noOfFrames, long pts)
     {
         //Console.WriteLine($"OnAudioStreamPacket - Current thread: {Thread.CurrentThread.ManagedThreadId}");
@@ -135,11 +165,23 @@ public class CustomAudioHandler : IAudioHandler
         NDIlib.send_send_audio_v2(Program.NdiSenderPtr, ref audioFrame);
     }
 
+    /// <summary>
+    /// Called when the audio stream is started.
+    /// </summary>
+    /// <param name="chromiumWebBrowser">The Chromium web browser instance.</param>
+    /// <param name="browser">The browser instance.</param>
+    /// <param name="parameters">The audio parameters.</param>
+    /// <param name="channels">The number of channels.</param>
     public void OnAudioStreamStarted(IWebBrowser chromiumWebBrowser, IBrowser browser, AudioParameters parameters, int channels)
     {
         this.AudioParameters = parameters;
     }
 
+    /// <summary>
+    /// Called when the audio stream is stopped.
+    /// </summary>
+    /// <param name="chromiumWebBrowser">The Chromium web browser instance.</param>
+    /// <param name="browser">The browser instance.</param>
     public void OnAudioStreamStopped(IWebBrowser chromiumWebBrowser, IBrowser browser)
     {
     }

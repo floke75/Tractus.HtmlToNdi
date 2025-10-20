@@ -4,12 +4,25 @@ using System.Reflection;
 using System.Runtime.InteropServices;
 
 namespace Tractus.HtmlToNdi;
+
+/// <summary>
+/// Provides application-level management functions, such as logging and data directory access.
+/// </summary>
 public static class AppManagement
 {
+    /// <summary>
+    /// Gets or sets a value indicating whether this is the first run of the application.
+    /// </summary>
     public static bool IsFirstRun { get; set; }
 
+    /// <summary>
+    /// Gets or sets the logging level switch.
+    /// </summary>
     public static LoggingLevelSwitch LoggingLevel { get; set; } = new LoggingLevelSwitch();
 
+    /// <summary>
+    /// Gets the application's data directory.
+    /// </summary>
     public static string DataDirectory
     {
         get
@@ -18,6 +31,10 @@ public static class AppManagement
         }
     }
 
+    /// <summary>
+    /// Deletes a file from the data directory.
+    /// </summary>
+    /// <param name="fileName">The name of the file to delete.</param>
     public static void DeleteFileFromDataDirectory(string fileName)
     {
         var path = Path.Combine(DataDirectory, fileName);
@@ -25,11 +42,21 @@ public static class AppManagement
         File.Delete(path);
     }
 
+    /// <summary>
+    /// Checks if a file exists in the data directory.
+    /// </summary>
+    /// <param name="fileName">The name of the file to check.</param>
+    /// <returns>True if the file exists; otherwise, false.</returns>
     public static bool FileExistsInDataDirectory(string fileName)
     {
         return File.Exists(Path.Combine(DataDirectory, fileName));
     }
 
+    /// <summary>
+    /// Reads all lines from a file in the data directory.
+    /// </summary>
+    /// <param name="fileName">The name of the file to read.</param>
+    /// <returns>An array of strings containing all lines of the file.</returns>
     public static string[] ReadFileFromDataDirectory(string fileName)
     {
         var path = Path.Combine(DataDirectory, fileName);
@@ -37,6 +64,11 @@ public static class AppManagement
         return File.ReadAllLines(path);
     }
 
+    /// <summary>
+    /// Reads all text from a file in the data directory.
+    /// </summary>
+    /// <param name="fileName">The name of the file to read.</param>
+    /// <returns>A string containing all text of the file.</returns>
     public static string ReadTextFromDataDirectory(string fileName)
     {
         var path = Path.Combine(DataDirectory, fileName);
@@ -44,6 +76,11 @@ public static class AppManagement
         return File.ReadAllText(path);
     }
 
+    /// <summary>
+    /// Writes all lines to a file in the data directory.
+    /// </summary>
+    /// <param name="fileName">The name of the file to write to.</param>
+    /// <param name="lines">The lines to write to the file.</param>
     public static void WriteFileToDataDirectory(string fileName, string[] lines)
     {
         var path = Path.Combine(DataDirectory, fileName);
@@ -51,6 +88,11 @@ public static class AppManagement
         File.WriteAllLines(path, lines);
     }
 
+    /// <summary>
+    /// Writes all text to a file in the data directory.
+    /// </summary>
+    /// <param name="fileName">The name of the file to write to.</param>
+    /// <param name="content">The content to write to the file.</param>
     public static void WriteFileToDataDirectory(string fileName, string content)
     {
         var path = Path.Combine(DataDirectory, fileName);
@@ -58,10 +100,19 @@ public static class AppManagement
         File.WriteAllText(path, content);
     }
 
+    /// <summary>
+    /// Gets the name of the application.
+    /// </summary>
     public static string AppName => Assembly.GetEntryAssembly()?.GetName()?.Name ?? "App Name Not Set";
 
+    /// <summary>
+    /// Gets the version of the application.
+    /// </summary>
     public static string Version => Assembly.GetExecutingAssembly()?.GetName()?.Version?.ToString() ?? "0.0.0.0";
 
+    /// <summary>
+    /// Gets the instance name of the application.
+    /// </summary>
     public static string InstanceName
     {
         get
@@ -91,6 +142,10 @@ public static class AppManagement
     }
 
 
+    /// <summary>
+    /// Initializes the application management services.
+    /// </summary>
+    /// <param name="args">The command-line arguments.</param>
     public static void Initialize(string[] args)
     {
         if (!Directory.Exists(AppManagement.DataDirectory))

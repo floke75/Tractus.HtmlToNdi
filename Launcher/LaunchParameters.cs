@@ -6,6 +6,9 @@ using Tractus.HtmlToNdi.Video;
 
 namespace Tractus.HtmlToNdi.Launcher;
 
+/// <summary>
+/// Represents the parameters used to launch the application.
+/// </summary>
 public sealed class LaunchParameters
 {
     private LaunchParameters(
@@ -38,32 +41,77 @@ public sealed class LaunchParameters
         AllowLatencyExpansion = allowLatencyExpansion;
     }
 
+    /// <summary>
+    /// Gets the NDI source name.
+    /// </summary>
     public string NdiName { get; }
 
+    /// <summary>
+    /// Gets the HTTP server port.
+    /// </summary>
     public int Port { get; }
 
+    /// <summary>
+    /// Gets the startup URL.
+    /// </summary>
     public string StartUrl { get; }
 
+    /// <summary>
+    /// Gets the width of the browser.
+    /// </summary>
     public int Width { get; }
 
+    /// <summary>
+    /// Gets the height of the browser.
+    /// </summary>
     public int Height { get; }
 
+    /// <summary>
+    /// Gets the target NDI frame rate.
+    /// </summary>
     public FrameRate FrameRate { get; }
 
+    /// <summary>
+    /// Gets a value indicating whether the paced output buffer is enabled.
+    /// </summary>
     public bool EnableBuffering { get; }
 
+    /// <summary>
+    /// Gets the capacity of the paced output buffer.
+    /// </summary>
     public int BufferDepth { get; }
 
+    /// <summary>
+    /// Gets the interval between video pipeline telemetry log entries.
+    /// </summary>
     public TimeSpan TelemetryInterval { get; }
 
+    /// <summary>
+    /// Gets an optional override for Chromium's internal repaint cadence.
+    /// </summary>
     public int? WindowlessFrameRateOverride { get; }
 
+    /// <summary>
+    /// Gets a value indicating whether to disable Chromium's GPU vsync throttling.
+    /// </summary>
     public bool DisableGpuVsync { get; }
 
+    /// <summary>
+    /// Gets a value indicating whether to disable Chromium's frame rate limiter.
+    /// </summary>
     public bool DisableFrameRateLimit { get; }
 
+    /// <summary>
+    /// Gets a value indicating whether the paced buffer should keep playing any queued frames during recovery.
+    /// </summary>
     public bool AllowLatencyExpansion { get; }
 
+    /// <summary>
+    /// Attempts to create a <see cref="LaunchParameters"/> instance from command-line arguments.
+    /// </summary>
+    /// <param name="args">The command-line arguments.</param>
+    /// <param name="parameters">The resulting launch parameters, if parsing is successful.</param>
+    /// <returns>True if the parameters were parsed successfully; otherwise, false.</returns>
     public static bool TryFromArgs(string[] args, out LaunchParameters? parameters)
     {
         parameters = null;
@@ -196,6 +244,13 @@ public sealed class LaunchParameters
         return true;
     }
 
+    /// <summary>
+    /// Creates a <see cref="LaunchParameters"/> instance from a <see cref="LauncherSettings"/> object.
+    /// </summary>
+    /// <param name="settings">The launcher settings.</param>
+    /// <returns>A new <see cref="LaunchParameters"/> instance.</returns>
+    /// <exception cref="ArgumentNullException">Thrown if <paramref name="settings"/> is null.</exception>
+    /// <exception cref="FormatException">Thrown if any of the settings are invalid.</exception>
     public static LaunchParameters FromSettings(LauncherSettings settings)
     {
         if (settings is null)

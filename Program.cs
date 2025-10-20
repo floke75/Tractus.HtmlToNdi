@@ -23,8 +23,15 @@ using Tractus.HtmlToNdi.Models;
 using Tractus.HtmlToNdi.Video;
 
 namespace Tractus.HtmlToNdi;
+
+/// <summary>
+/// The main program class.
+/// </summary>
 public class Program
 {
+    /// <summary>
+    /// A pointer to the NDI sender instance.
+    /// </summary>
     public static nint NdiSenderPtr;
     internal static CefWrapper browserWrapper;
 
@@ -35,6 +42,10 @@ public class Program
     private static readonly Stopwatch StartupStopwatch = Stopwatch.StartNew();
     private static nint NdiNativeLibraryHandle;
 
+    /// <summary>
+    /// The main entry point for the application.
+    /// </summary>
+    /// <param name="args">The command-line arguments.</param>
     [STAThread]
     public static void Main(string[] args)
     {
