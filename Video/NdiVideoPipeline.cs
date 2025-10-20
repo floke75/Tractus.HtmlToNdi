@@ -6,6 +6,9 @@ using System.Threading;
 
 namespace Tractus.HtmlToNdi.Video;
 
+/// <summary>
+/// Manages the video pipeline, including buffering and sending frames to NDI.
+/// </summary>
 internal sealed class NdiVideoPipeline : IDisposable
 {
     private readonly INdiVideoSender sender;
@@ -46,6 +49,13 @@ internal sealed class NdiVideoPipeline : IDisposable
     private long repeatedFrames;
     private DateTime lastTelemetry = DateTime.UtcNow;
 
+    /// <summary>
+    /// Initializes a new instance of the <see cref="NdiVideoPipeline"/> class.
+    /// </summary>
+    /// <param name="sender">The NDI video sender.</param>
+    /// <param name="frameRate">The configured frame rate.</param>
+    /// <param name="options">The pipeline options.</param>
+    /// <param name="logger">The logger instance.</param>
     public NdiVideoPipeline(INdiVideoSender sender, FrameRate frameRate, NdiVideoPipelineOptions options, ILogger logger)
     {
         this.sender = sender ?? throw new ArgumentNullException(nameof(sender));
@@ -70,10 +80,19 @@ internal sealed class NdiVideoPipeline : IDisposable
         }
     }
 
+    /// <summary>
+    /// Gets a value indicating whether buffering is enabled.
+    /// </summary>
     public bool BufferingEnabled => options.EnableBuffering;
 
+    /// <summary>
+    /// Gets the configured frame rate.
+    /// </summary>
     public FrameRate FrameRate => configuredFrameRate;
 
+    /// <summary>
+    /// Starts the video pipeline.
+    /// </summary>
     public void Start()
     {
         if (!BufferingEnabled || pacingTask != null)
@@ -85,6 +104,9 @@ internal sealed class NdiVideoPipeline : IDisposable
         pacingTask = Task.Run(async () => await RunPacedLoopAsync(cancellation.Token));
     }
 
+    /// <summary>
+    /// Stops the video pipeline.
+    /// </summary>
     public void Stop()
     {
         cancellation.Cancel();
@@ -102,6 +124,10 @@ internal sealed class NdiVideoPipeline : IDisposable
         isWarmingUp = true;
     }
 
+    /// <summary>
+    /// Handles a captured video frame.
+    /// </summary>
+    /// <param name="frame">The captured video frame.</param>
     public void HandleFrame(CapturedFrame frame)
     {
         Interlocked.Increment(ref capturedFrames);
@@ -548,6 +574,9 @@ internal sealed class NdiVideoPipeline : IDisposable
             caller);
     }
 
+    /// <summary>
+    /// Releases the resources used by the video pipeline.
+    /// </summary>
     public void Dispose()
     {
         Stop();

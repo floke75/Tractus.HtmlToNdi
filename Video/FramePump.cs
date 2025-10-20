@@ -4,6 +4,9 @@ using Serilog;
 
 namespace Tractus.HtmlToNdi.Video;
 
+/// <summary>
+/// Periodically invalidates the Chromium browser to trigger paint events.
+/// </summary>
 internal sealed class FramePump : IDisposable
 {
     private readonly ChromiumWebBrowser browser;
@@ -15,6 +18,13 @@ internal sealed class FramePump : IDisposable
     private Task? watchdogTask;
     private DateTime lastPaint = DateTime.UtcNow;
 
+    /// <summary>
+    /// Initializes a new instance of the <see cref="FramePump"/> class.
+    /// </summary>
+    /// <param name="browser">The Chromium browser instance.</param>
+    /// <param name="interval">The interval at which to invalidate the browser.</param>
+    /// <param name="watchdogInterval">The interval for the watchdog timer.</param>
+    /// <param name="logger">The logger instance.</param>
     public FramePump(ChromiumWebBrowser browser, TimeSpan interval, TimeSpan? watchdogInterval, ILogger logger)
     {
         this.browser = browser ?? throw new ArgumentNullException(nameof(browser));
@@ -23,6 +33,9 @@ internal sealed class FramePump : IDisposable
         this.logger = logger;
     }
 
+    /// <summary>
+    /// Starts the frame pump.
+    /// </summary>
     public void Start()
     {
         if (pumpTask is not null)
@@ -34,6 +47,9 @@ internal sealed class FramePump : IDisposable
         watchdogTask = Task.Run(async () => await RunWatchdogAsync(cancellation.Token));
     }
 
+    /// <summary>
+    /// Notifies the frame pump that a paint event has occurred.
+    /// </summary>
     public void NotifyPaint() => lastPaint = DateTime.UtcNow;
 
     private async Task RunPumpAsync(CancellationToken token)
@@ -97,6 +113,9 @@ internal sealed class FramePump : IDisposable
         }
     }
 
+    /// <summary>
+    /// Releases the resources used by the frame pump.
+    /// </summary>
     public void Dispose()
     {
         cancellation.Cancel();
