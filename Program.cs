@@ -771,6 +771,7 @@ public class Program
         "--fps",
         "--buffer-depth",
         "--telemetry-interval",
+        "--allow-latency-expansion",
         "--windowless-frame-rate",
         "--enable-output-buffer",
         "--disable-gpu-vsync",
