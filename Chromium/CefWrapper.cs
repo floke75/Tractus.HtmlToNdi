@@ -144,10 +144,16 @@ internal class CefWrapper : IDisposable
     /// Loads a new URL in the browser.
     /// </summary>
     /// <param name="url">The URL to load.</param>
-    public void SetUrl(string url)
+    public void SetUrl(string? url)
     {
         if (this.browser is null)
         {
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(url))
+        {
+            this.logger.Warning("Ignoring request to load an empty URL");
             return;
         }
 
@@ -190,8 +196,20 @@ internal class CefWrapper : IDisposable
     /// Sends a series of keystrokes to the browser.
     /// </summary>
     /// <param name="model">The model containing the keystrokes to send.</param>
-    public void SendKeystrokes(Models.SendKeystrokeModel model)
+    public void SendKeystrokes(Models.SendKeystrokeModel? model)
     {
+        if (model is null)
+        {
+            this.logger.Warning("Ignoring keystroke request because the payload was null");
+            return;
+        }
+
+        if (string.IsNullOrEmpty(model.ToSend))
+        {
+            this.logger.Warning("Ignoring keystroke request because the payload was empty");
+            return;
+        }
+
         var host = this.browser?.GetBrowser()?.GetHost();
 
         if (host is null)
@@ -199,7 +217,7 @@ internal class CefWrapper : IDisposable
             return;
         }
 
-        foreach(var c in model.ToSend)
+        foreach (var c in model.ToSend)
         {
             host.SendKeyEvent(new KeyEvent()
             {
