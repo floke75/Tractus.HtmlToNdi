@@ -1,6 +1,31 @@
-@Tractus.HtmlToNdi_HostAddress = http://localhost:5263
+@Tractus.HtmlToNdi_HostAddress = http://localhost:9999
 
-GET {{Tractus.HtmlToNdi_HostAddress}}/weatherforecast/
-Accept: application/json
+### Load a new page in the browser
+POST {{Tractus.HtmlToNdi_HostAddress}}/seturl
+Content-Type: application/json
 
-###
+{
+  "url": "https://testpattern.tractusevents.com/"
+}
+
+### Scroll the page by a positive increment (scrolls down)
+GET {{Tractus.HtmlToNdi_HostAddress}}/scroll/120
+
+### Click at the specified pixel coordinates
+GET {{Tractus.HtmlToNdi_HostAddress}}/click/960/540
+
+### Send keystrokes as JSON payload
+POST {{Tractus.HtmlToNdi_HostAddress}}/keystroke
+Content-Type: application/json
+
+{
+  "toSend": "Hello from HTTP file"
+}
+
+### Send keystrokes using the convenience route
+GET {{Tractus.HtmlToNdi_HostAddress}}/type/Hello%20from%20HTTP%20file
+
+### Reload the current page
+GET {{Tractus.HtmlToNdi_HostAddress}}/refresh
+
+### Keep this file in sync with routes defined in Program.cs
