@@ -9,7 +9,7 @@ namespace Tractus.HtmlToNdi.Chromium;
 public sealed class SingleThreadSynchronizationContext : SynchronizationContext
 {
     private readonly BlockingCollection<KeyValuePair<SendOrPostCallback, object>> queue =
-        [];
+        new BlockingCollection<KeyValuePair<SendOrPostCallback, object>>();
 
     /// <summary>
     /// Dispatches an asynchronous message to the synchronization context.
