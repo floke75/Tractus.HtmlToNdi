@@ -4,6 +4,10 @@ A simple wrapper around [CEFSharp](https://github.com/cefsharp/CefSharp) and [ND
 
 [Grab the latest ZIP file](https://github.com/tractusevents/Tractus.HtmlToNdi/releases) from the releases page.
 
+## Purpose
+
+This Windows-only utility renders a Chromium page off-screen and publishes its video and audio over the NDI protocol. It also provides a minimal HTTP control API for interaction, allowing you to change the URL, scroll, click, and type keystrokes.
+
 ## Prerequisites
 
 - Install the NDI Runtime (NDI® 6 or later). The app automatically scans common locations such as `C:\Program Files\NDI\NDI 6 Runtime\v6` and `...\NDI 6 SDK\Bin\x64`, and it honours the `NDILIB_REDIST_FOLDER` environment variable. If the runtime is not installed, copy `Processing.NDI.Lib.x64.dll` next to `Tractus.HtmlToNdi.exe` before launching.
@@ -49,21 +53,25 @@ When the paced buffer is enabled the pipeline repeats the most recently transmit
 
 ## API Routes
 
-Route|Method|Description|Example
-----|----|----|---
-`/seturl`|`POST`|Sets the URL for this instance.|`{"url": "https://www.google.ca"}`
-`/scroll/{increment}`|`GET`|Scrolls the page vertically.|`/scroll/-100` (scrolls up)
-`/click/{x}/{y}`|`GET`|Simulates a left mouse click at the specified coordinates.|`/click/100/200`
-`/keystroke`|`POST`|Sends a sequence of keystrokes.|`{"toSend": "Hello, world!"}`
-`/type/{toType}`|`GET`|A convenience endpoint for sending keystrokes via a GET request.|`/type/Hello%2C%20world%21`
-`/refresh`|`GET`|Refreshes the current page.|`/refresh`
+The application exposes a minimal HTTP API for controlling the browser instance.
+
+| Route | Method | Payload | Effect |
+| --- | --- | --- | --- |
+| `/seturl` | POST | JSON `{ "url": "https://..." }` | Navigates the browser to the specified URL. |
+| `/scroll/{increment}` | GET | Path `increment` (integer) | Scrolls the page vertically. Positive values scroll down, negative values scroll up. |
+| `/click/{x}/{y}` | GET | Path `x`, `y` (integer pixels) | Simulates a left mouse click at the specified coordinates. |
+| `/keystroke` | POST | JSON `{ "toSend": "..." }` | Sends a sequence of keystrokes to the browser. |
+| `/type/{toType}` | GET | Path string | A convenience endpoint for sending keystrokes via a GET request. |
+| `/refresh` | GET | none | Refreshes the current page. |
 
 ## Known Limitations
 
-- Frames are sent to NDI in RGBA format. Some machines may experience a slight performance penalty.
-- H.264 and any other non-free codecs are not available for video playback since this uses Chromium. Sites like YouTube likely won't work.
-- Audio data received from the browser is passed to NDI directly.
-- NDI frame rate defaults to 60 fps but can be overridden with `--fps`. Chromium's internal repaint cadence can be adjusted with `--windowless-frame-rate`.
+- **Single Instance:** The application is designed to run a single browser instance.
+- **No Authentication:** The HTTP API has no authentication. It should not be exposed to untrusted networks.
+- **Input Fidelity:** Keystroke simulation only sends `KeyDown` events, without `KeyUp` or modifier keys. Mouse clicks are limited to the left button.
+- **Codec Support:** The underlying Chromium build does not include proprietary codecs, so sites that rely on H.264 or other licensed codecs may not play video correctly.
+- **Audio Layout:** The audio is sent to NDI in a pseudo-planar format, which may not be compatible with all NDI receivers.
+- **Resource Cleanup:** NDI and CefSharp resources are not explicitly shut down; the application relies on the operating system to clean them up on process exit.
 
 ## More Tools
 

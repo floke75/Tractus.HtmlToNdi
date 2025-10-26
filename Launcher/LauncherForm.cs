@@ -5,7 +5,7 @@ using System.Windows.Forms;
 namespace Tractus.HtmlToNdi.Launcher;
 
 /// <summary>
-/// Represents the main form for the launcher application.
+/// The main form for the application launcher.
 /// </summary>
 public sealed class LauncherForm : Form
 {
@@ -204,6 +204,10 @@ public sealed class LauncherForm : Form
         ApplySettings(initialSettings);
     }
 
+    /// <summary>
+    /// Applies the specified settings to the form controls.
+    /// </summary>
+    /// <param name="settings">The settings to apply.</param>
     private void ApplySettings(LauncherSettings settings)
     {
         _ndiNameTextBox.Text = settings.NdiName;
@@ -227,6 +231,9 @@ public sealed class LauncherForm : Form
         _disableFrameRateLimitCheckBox.Checked = settings.DisableFrameRateLimit;
     }
 
+    /// <summary>
+    /// Handles the launch button click event, validating the form data and creating the launch parameters.
+    /// </summary>
     private void OnLaunch()
     {
         var ndiName = _ndiNameTextBox.Text.Trim();
@@ -283,6 +290,12 @@ public sealed class LauncherForm : Form
         }
     }
 
+    /// <summary>
+    /// Adds a new row with a label and a control to the specified table layout panel.
+    /// </summary>
+    /// <param name="table">The table layout panel to add the row to.</param>
+    /// <param name="labelText">The text for the label.</param>
+    /// <param name="control">The control to add to the row.</param>
     private static void AddRow(TableLayoutPanel table, string labelText, Control control)
     {
         table.RowStyles.Add(new RowStyle(SizeType.AutoSize));

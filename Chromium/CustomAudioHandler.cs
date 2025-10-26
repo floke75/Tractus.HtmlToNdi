@@ -8,10 +8,10 @@ using System.Runtime.InteropServices;
 namespace Tractus.HtmlToNdi.Chromium;
 
 /// <summary>
-/// Handles audio events from a CefSharp browser instance,
-/// converting and sending the audio data to an NDI stream.
+/// An <see cref="IAudioHandler"/> implementation that captures audio from Chromium
+/// and sends it to an NDI stream.
 /// </summary>
-public class CustomAudioHandler : IAudioHandler
+public class CustomAudioHandler : IAudioHandler, IDisposable
 {
     /// <summary>
     /// A mapping from CefSharp's ChannelLayout enum to the number of channels.
@@ -52,9 +52,24 @@ public class CustomAudioHandler : IAudioHandler
         { ChannelLayout.Layout5_1_4DownMix, 6 },
     };
 
+    /// <summary>
+    /// Gets or sets the audio parameters received from the browser.
+    /// </summary>
     private AudioParameters AudioParameters { get; set; }
+
+    /// <summary>
+    /// A pointer to the unmanaged memory buffer for audio data.
+    /// </summary>
     private nint audioBufferPtr;
+
+    /// <summary>
+    /// The length of the audio buffer in bytes.
+    /// </summary>
     private int audioBufferLengthInBytes;
+
+    /// <summary>
+    /// The number of audio channels.
+    /// </summary>
     private int channelCount;
 
     /// <summary>
