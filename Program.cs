@@ -33,13 +33,40 @@ public class Program
     /// A pointer to the NDI sender instance.
     /// </summary>
     public static nint NdiSenderPtr;
+
+    /// <summary>
+    /// The CefWrapper instance that manages the browser.
+    /// </summary>
     internal static CefWrapper browserWrapper;
 
+    /// <summary>
+    /// A lock object for thread-safe NDI library configuration.
+    /// </summary>
     private static readonly object NdiLibraryLock = new();
+
+    /// <summary>
+    /// A flag indicating whether the NDI library has been configured.
+    /// </summary>
     private static bool NdiLibraryConfigured;
+
+    /// <summary>
+    /// An array of candidate paths for the NDI library.
+    /// </summary>
     private static string[] NdiLibraryCandidates = Array.Empty<string>();
+
+    /// <summary>
+    /// An array of directories to search for the NDI library.
+    /// </summary>
     private static string[] NdiSearchDirectories = Array.Empty<string>();
+
+    /// <summary>
+    /// A stopwatch for measuring application startup time.
+    /// </summary>
     private static readonly Stopwatch StartupStopwatch = Stopwatch.StartNew();
+
+    /// <summary>
+    /// A handle to the native NDI library.
+    /// </summary>
     private static nint NdiNativeLibraryHandle;
 
     /// <summary>
@@ -136,6 +163,12 @@ public class Program
         }
     }
 
+    /// <summary>
+    /// Runs the main application logic.
+    /// </summary>
+    /// <param name="parameters">The launch parameters.</param>
+    /// <param name="args">The command-line arguments.</param>
+    /// <param name="launchCachePath">The path to the cache directory.</param>
     private static void RunApplication(LaunchParameters parameters, string[] args, string launchCachePath)
     {
         Log.Information("RunApplication starting with {@Parameters} (cache={CachePath})", parameters, launchCachePath);
@@ -398,6 +431,10 @@ public class Program
         Log.Information("RunApplication completed after {Elapsed}ms", StartupStopwatch.ElapsedMilliseconds);
     }
 
+    /// <summary>
+    /// Ensures that the native NDI library is loaded.
+    /// </summary>
+    /// <exception cref="DllNotFoundException">Thrown if the NDI library cannot be found.</exception>
     private static void EnsureNdiNativeLibraryLoaded()
     {
         if (!OperatingSystem.IsWindows())
@@ -530,6 +567,10 @@ public class Program
     [DllImport("kernel32", SetLastError = true, CharSet = CharSet.Unicode)]
     private static extern bool SetDllDirectory(string lpPathName);
 
+    /// <summary>
+    /// Prepends a directory to the PATH environment variable if it's not already there.
+    /// </summary>
+    /// <param name="directory">The directory to prepend.</param>
     private static void TryPrependToPath(string directory)
     {
         var current = Environment.GetEnvironmentVariable("PATH") ?? string.Empty;
@@ -544,6 +585,10 @@ public class Program
         }
     }
 
+    /// <summary>
+    /// Builds a list of directories to probe for the NDI native library.
+    /// </summary>
+    /// <returns>An array of directory paths.</returns>
     private static string[] BuildNdiProbeDirectories()
     {
         var directories = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -631,6 +676,11 @@ public class Program
         return directories.ToArray();
     }
 
+    /// <summary>
+    /// Builds a list of candidate NDI library files from a list of directories.
+    /// </summary>
+    /// <param name="directories">The directories to search.</param>
+    /// <returns>An array of file paths.</returns>
     private static string[] BuildNdiCandidateFiles(string[] directories)
     {
         var archSuffix = Environment.Is64BitProcess ? "x64" : "x86";
@@ -698,6 +748,10 @@ public class Program
         return result.ToArray();
     }
 
+    /// <summary>
+    /// Creates a detailed error message for when the NDI library cannot be found.
+    /// </summary>
+    /// <returns>A string containing the error message.</returns>
     private static string CreateNdiFailureMessage()
     {
         var builder = new StringBuilder();
@@ -723,10 +777,20 @@ public class Program
         return builder.ToString();
     }
 
+    /// <summary>
+    /// Removes launcher-specific flags from the command-line arguments.
+    /// </summary>
+    /// <param name="args">The command-line arguments.</param>
+    /// <returns>An array of strings with the launcher flags removed.</returns>
     private static string[] RemoveLauncherFlags(string[] args)
         => args.Where(a => !string.Equals(a, "--launcher", StringComparison.OrdinalIgnoreCase)
             && !string.Equals(a, "--no-launcher", StringComparison.OrdinalIgnoreCase)).ToArray();
 
+    /// <summary>
+    /// Determines whether the launcher UI should be used based on the command-line arguments.
+    /// </summary>
+    /// <param name="args">The command-line arguments.</param>
+    /// <returns>True if the launcher should be used; otherwise, false.</returns>
     private static bool ShouldUseLauncher(string[] args)
     {
         if (args.Any(a => string.Equals(a, "--launcher", StringComparison.OrdinalIgnoreCase)))
@@ -761,6 +825,9 @@ public class Program
         return true;
     }
 
+    /// <summary>
+    /// A set of configuration switches that indicate that the application is being configured from the command line.
+    /// </summary>
     private static readonly HashSet<string> ConfigurationSwitches = new(StringComparer.Ordinal)
     {
         "--ndiname",

@@ -10,7 +10,14 @@ namespace Tractus.HtmlToNdi.Chromium;
 /// </summary>
 internal class CefWrapper : IDisposable
 {
+    /// <summary>
+    /// A flag to indicate whether the object has been disposed.
+    /// </summary>
     private bool disposedValue;
+
+    /// <summary>
+    /// The underlying ChromiumWebBrowser instance.
+    /// </summary>
     private ChromiumWebBrowser? browser;
 
     /// <summary>
@@ -28,10 +35,29 @@ internal class CefWrapper : IDisposable
     /// </summary>
     public string? Url { get; private set; }
 
+    /// <summary>
+    /// The video pipeline that receives captured frames.
+    /// </summary>
     private readonly NdiVideoPipeline videoPipeline;
+
+    /// <summary>
+    /// The target frame rate for the video output.
+    /// </summary>
     private readonly FrameRate frameRate;
+
+    /// <summary>
+    /// An optional override for Chromium's windowless frame rate.
+    /// </summary>
     private readonly int? windowlessFrameRateOverride;
+
+    /// <summary>
+    /// The frame pump responsible for triggering browser repaints.
+    /// </summary>
     private FramePump? framePump;
+
+    /// <summary>
+    /// The logger instance for recording application events.
+    /// </summary>
     private readonly ILogger logger;
 
     /// <summary>
@@ -87,6 +113,12 @@ internal class CefWrapper : IDisposable
         this.videoPipeline.Start();
     }
 
+    /// <summary>
+    /// Handles the Paint event from the Chromium browser, capturing the frame
+    /// and sending it to the video pipeline.
+    /// </summary>
+    /// <param name="sender">The event sender.</param>
+    /// <param name="e">The event arguments containing paint data.</param>
     private void OnBrowserPaint(object? sender, OnPaintEventArgs e)
     {
         if (Program.NdiSenderPtr == nint.Zero)
@@ -107,6 +139,12 @@ internal class CefWrapper : IDisposable
         this.videoPipeline.HandleFrame(capturedFrame);
     }
 
+    /// <summary>
+    /// Disposes the managed and unmanaged resources used by the CefWrapper.
+    /// </summary>
+    /// <param name="disposing">
+    /// A flag indicating whether the method is being called from IDisposable.Dispose.
+    /// </param>
     protected virtual void Dispose(bool disposing)
     {
         if (!this.disposedValue)
@@ -124,8 +162,6 @@ internal class CefWrapper : IDisposable
                 this.videoPipeline.Dispose();
             }
 
-            // TODO: free unmanaged resources (unmanaged objects) and override finalizer
-            // TODO: set large fields to null
             this.disposedValue = true;
         }
     }
