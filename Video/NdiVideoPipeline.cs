@@ -532,9 +532,10 @@ internal sealed class NdiVideoPipeline : IDisposable
             if (preserving)
             {
                 logger.Information(
-                    "NDI pacer entering latency expansion: buffered={Buffered}, latencyError={LatencyError:F2}",
+                    "NDI pacer entering latency expansion: buffered={Buffered}, latencyError={LatencyError:F2}, preservingBufferedFrames={Preserving}",
                     backlog,
-                    latencyError);
+                    latencyError,
+                    preserving);
             }
             else
             {
