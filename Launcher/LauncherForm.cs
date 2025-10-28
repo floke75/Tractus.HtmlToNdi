@@ -22,6 +22,8 @@ public sealed class LauncherForm : Form
     private readonly TextBox _windowlessFrameRateTextBox;
     private readonly CheckBox _disableGpuVsyncCheckBox;
     private readonly CheckBox _disableFrameRateLimitCheckBox;
+    private readonly CheckBox _alignWithCaptureTimestampsCheckBox;
+    private readonly CheckBox _enableCadenceTelemetryCheckBox;
 
     /// <summary>
     /// Gets the selected launch parameters.
@@ -140,6 +142,22 @@ public sealed class LauncherForm : Form
         };
         AddRow(table, "Telemetry Interval (s)", _telemetryNumericUpDown);
 
+        _alignWithCaptureTimestampsCheckBox = new CheckBox
+        {
+            Text = "Align paced output to capture timestamps",
+            Dock = DockStyle.Fill,
+            AutoSize = true,
+        };
+        AddRow(table, "Capture Alignment", _alignWithCaptureTimestampsCheckBox);
+
+        _enableCadenceTelemetryCheckBox = new CheckBox
+        {
+            Text = "Log capture/output cadence metrics",
+            Dock = DockStyle.Fill,
+            AutoSize = true,
+        };
+        AddRow(table, "Cadence Telemetry", _enableCadenceTelemetryCheckBox);
+
         _windowlessFrameRateTextBox = new TextBox { Dock = DockStyle.Fill };
         AddRow(table, "Windowless Frame Rate", _windowlessFrameRateTextBox);
 
@@ -222,6 +240,8 @@ public sealed class LauncherForm : Form
         _allowLatencyExpansionCheckBox.Enabled = settings.EnableBuffering;
         var telemetryValue = (decimal)Math.Clamp(settings.TelemetryIntervalSeconds, (double)_telemetryNumericUpDown.Minimum, (double)_telemetryNumericUpDown.Maximum);
         _telemetryNumericUpDown.Value = telemetryValue;
+        _alignWithCaptureTimestampsCheckBox.Checked = settings.AlignWithCaptureTimestamps;
+        _enableCadenceTelemetryCheckBox.Checked = settings.EnableCadenceTelemetry;
         _windowlessFrameRateTextBox.Text = settings.WindowlessFrameRateOverride ?? string.Empty;
         _disableGpuVsyncCheckBox.Checked = settings.DisableGpuVsync;
         _disableFrameRateLimitCheckBox.Checked = settings.DisableFrameRateLimit;
@@ -262,6 +282,8 @@ public sealed class LauncherForm : Form
             EnableBuffering = _enableBufferingCheckBox.Checked,
             BufferDepth = (int)_bufferDepthNumericUpDown.Value,
             TelemetryIntervalSeconds = (double)_telemetryNumericUpDown.Value,
+            AlignWithCaptureTimestamps = _alignWithCaptureTimestampsCheckBox.Checked,
+            EnableCadenceTelemetry = _enableCadenceTelemetryCheckBox.Checked,
             WindowlessFrameRateOverride = string.IsNullOrWhiteSpace(_windowlessFrameRateTextBox.Text)
                 ? null
                 : _windowlessFrameRateTextBox.Text.Trim(),

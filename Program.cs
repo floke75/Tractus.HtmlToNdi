@@ -155,6 +155,8 @@ public class Program
             BufferDepth = effectiveDepth,
             TelemetryInterval = parameters.TelemetryInterval,
             AllowLatencyExpansion = parameters.AllowLatencyExpansion,
+            AlignWithCaptureTimestamps = parameters.AlignWithCaptureTimestamps,
+            EnableCadenceTelemetry = parameters.EnableCadenceTelemetry,
         };
 
         Log.Information("Ensuring NDI native runtime is available...");

@@ -54,8 +54,8 @@ hysteresis window and an error integrator that avoids repeated warm-up toggles:
    - `targetDepth` – configured backlog, expressed in frames.
    - `highWatermark = targetDepth + 1` – upper limit that triggers frame drops
      when the producer outruns the pacer for prolonged periods.
-   - `lowWatermark = targetDepth - 0.5` – lower tolerance that keeps the pacer
-     out of warm-up until the backlog is genuinely shallow.
+  - `lowWatermark = targetDepth - 1.5` – lower tolerance that keeps the pacer
+    out of warm-up until the backlog is genuinely shallow.
    - `warmup` flag – true until the queue reaches `targetDepth` and after any
      underrun.
    - `latencyError` accumulator – integrates `(queueCount - targetDepth)` each
@@ -101,6 +101,26 @@ PR41 while ensuring the latency bucket never collapses below the chosen depth.
   fractional drift between producer and consumer cadence. Because the error is
   additive, it can also drive adaptive logging that estimates the effective
   latency in milliseconds for dashboards.
+- In addition to the integrator the pacing loop now recalculates each deadline
+  from a monotonic sequence anchored to the most recent warm-up boundary and
+  then stretches or shortens that deadline by up to half a frame based on the
+  current backlog (plus a fraction of the accumulated latency error). This
+  keeps capture and output clocks aligned without letting the backlog drain or
+  spike uncontrollably.【F:Video/NdiVideoPipeline.cs†L108-L229】
+- Capture and output stages share a high-resolution timestamp tracker so the
+  pacer can measure drift between producer and consumer cadences. The loop feeds
+  that drift back into the deadline adjustment while telemetry now reports RMS
+  and peak jitter plus per-stage drift against the configured cadence to help
+  operators spot capture/output mismatches.【F:Video/NdiVideoPipeline.cs†L38-L54】【F:Video/NdiVideoPipeline.cs†L187-L205】【F:Video/NdiVideoPipeline.cs†L620-L873】
+- Operators can disable timestamp alignment or cadence telemetry when chasing
+  legacy behaviour or quieter logs. The launcher exposes dedicated checkboxes
+  while the CLI honours `--disable-capture-alignment` /
+  `--disable-cadence-telemetry` (with matching `--align-with-capture-timestamps`
+  and `--enable-cadence-telemetry` overrides). Both options default to enabled
+  so existing deployments keep the improved pacing unless operators opt out.【F:Launcher/LauncherForm.cs†L28-L123】【F:Launcher/LaunchParameters.cs†L146-L204】【F:README.md†L28-L44】
+- The pacer waits for each deadline using a coarse `Task.Delay` followed by a
+  sub-millisecond spin so OS timer jitter cannot erode the queue depth, yet the
+  loop still honours cancellation instantly when the pipeline shuts down.【F:Video/NdiVideoPipeline.cs†L217-L254】
 - Tests should simulate producer jitter bursts (dropouts, speed-ups, and long
   over-production spurts) to verify that the output cadence remains constant
   while latency never dips below `targetDepth` and never grows beyond one frame

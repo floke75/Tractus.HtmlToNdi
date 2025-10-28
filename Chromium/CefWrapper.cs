@@ -1,6 +1,7 @@
 using CefSharp;
 using CefSharp.OffScreen;
 using Serilog;
+using System.Diagnostics;
 using Tractus.HtmlToNdi.Video;
 
 namespace Tractus.HtmlToNdi.Chromium;
@@ -103,7 +104,13 @@ internal class CefWrapper : IDisposable
 
         this.framePump?.NotifyPaint();
 
-        var capturedFrame = new CapturedFrame(e.BufferHandle, e.Width, e.Height, e.Width * 4);
+        var capturedFrame = new CapturedFrame(
+            e.BufferHandle,
+            e.Width,
+            e.Height,
+            e.Width * 4,
+            Stopwatch.GetTimestamp(),
+            DateTime.UtcNow);
         this.videoPipeline.HandleFrame(capturedFrame);
     }
 

@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Linq;
 using System.Reflection;
 using System.Runtime.InteropServices;
@@ -50,6 +51,11 @@ public class NdiVideoPipelineTests
 
     private static ILogger CreateNullLogger() => new LoggerConfiguration().WriteTo.Sink(new NullSink()).CreateLogger();
 
+    private static CapturedFrame CreateCapturedFrame(IntPtr buffer, int width, int height, int stride)
+    {
+        return new CapturedFrame(buffer, width, height, stride, Stopwatch.GetTimestamp(), DateTime.UtcNow);
+    }
+
     [Fact]
     public void DirectModeSendsImmediately()
     {
@@ -66,7 +72,7 @@ public class NdiVideoPipelineTests
         var buffer = Marshal.AllocHGlobal(size);
         try
         {
-            var frame = new CapturedFrame(buffer, 2, 2, 8);
+            var frame = CreateCapturedFrame(buffer, 2, 2, 8);
             pipeline.HandleFrame(frame);
         }
         finally
@@ -106,7 +112,7 @@ public class NdiVideoPipelineTests
             {
                 buffers[i] = Marshal.AllocHGlobal(frameSize);
                 FillBuffer(buffers[i], frameSize, (byte)(0x10 + i));
-                pipeline.HandleFrame(new CapturedFrame(buffers[i], 2, 2, 8));
+                pipeline.HandleFrame(CreateCapturedFrame(buffers[i], 2, 2, 8));
             }
 
             var warmed = SpinWait.SpinUntil(() => sender.Frames.Count >= buffers.Length, TimeSpan.FromMilliseconds(600));
@@ -154,8 +160,8 @@ public class NdiVideoPipelineTests
             FillBuffer(buffers[0], frameSize, 0x20);
             FillBuffer(buffers[1], frameSize, 0x30);
 
-            pipeline.HandleFrame(new CapturedFrame(buffers[0], 2, 2, 8));
-            pipeline.HandleFrame(new CapturedFrame(buffers[1], 2, 2, 8));
+            pipeline.HandleFrame(CreateCapturedFrame(buffers[0], 2, 2, 8));
+            pipeline.HandleFrame(CreateCapturedFrame(buffers[1], 2, 2, 8));
 
             var primed = SpinWait.SpinUntil(() => sender.Frames.Count >= 2, TimeSpan.FromMilliseconds(500));
             Assert.True(primed);
@@ -204,7 +210,7 @@ public class NdiVideoPipelineTests
             {
                 buffers[i] = Marshal.AllocHGlobal(frameSize);
                 FillBuffer(buffers[i], frameSize, (byte)(0x40 + i));
-                pipeline.HandleFrame(new CapturedFrame(buffers[i], 2, 2, 8));
+                pipeline.HandleFrame(CreateCapturedFrame(buffers[i], 2, 2, 8));
             }
 
             var primed = SpinWait.SpinUntil(() => pipeline.BufferPrimed && sender.Frames.Count >= 2, TimeSpan.FromMilliseconds(500));
@@ -218,7 +224,7 @@ public class NdiVideoPipelineTests
             {
                 buffers[i] = Marshal.AllocHGlobal(frameSize);
                 FillBuffer(buffers[i], frameSize, (byte)(0x60 + i));
-                pipeline.HandleFrame(new CapturedFrame(buffers[i], 2, 2, 8));
+                pipeline.HandleFrame(CreateCapturedFrame(buffers[i], 2, 2, 8));
             }
 
             var rearmed = SpinWait.SpinUntil(() => pipeline.BufferPrimed && sender.Frames.Any(f => f.Payload[0] == 0x63), TimeSpan.FromMilliseconds(800));
@@ -261,7 +267,7 @@ public class NdiVideoPipelineTests
             {
                 buffers[i] = Marshal.AllocHGlobal(frameSize);
                 FillBuffer(buffers[i], frameSize, (byte)(0x80 + i));
-                pipeline.HandleFrame(new CapturedFrame(buffers[i], 2, 2, 8));
+                pipeline.HandleFrame(CreateCapturedFrame(buffers[i], 2, 2, 8));
             }
 
             var sentAll = SpinWait.SpinUntil(() => sender.Frames.Count >= buffers.Length, TimeSpan.FromMilliseconds(1200));
@@ -315,7 +321,7 @@ public class NdiVideoPipelineTests
                 var ptr = Marshal.AllocHGlobal(frameSize);
                 buffers.Add(ptr);
                 FillBuffer(ptr, frameSize, (byte)(0x90 + i));
-                pipeline.HandleFrame(new CapturedFrame(ptr, 2, 2, 8));
+                pipeline.HandleFrame(CreateCapturedFrame(ptr, 2, 2, 8));
             }
 
             var primed = SpinWait.SpinUntil(() => pipeline.BufferPrimed, TimeSpan.FromMilliseconds(600));
@@ -331,7 +337,7 @@ public class NdiVideoPipelineTests
                 var ptr = Marshal.AllocHGlobal(frameSize);
                 buffers.Add(ptr);
                 FillBuffer(ptr, frameSize, (byte)(0xA0 + i));
-                pipeline.HandleFrame(new CapturedFrame(ptr, 2, 2, 8));
+                pipeline.HandleFrame(CreateCapturedFrame(ptr, 2, 2, 8));
             }
 
             var exited = SpinWait.SpinUntil(() => pipeline.BufferPrimed && !pipeline.LatencyExpansionActive, TimeSpan.FromMilliseconds(1200));
@@ -375,7 +381,7 @@ public class NdiVideoPipelineTests
                 var ptr = Marshal.AllocHGlobal(frameSize);
                 buffers.Add(ptr);
                 FillBuffer(ptr, frameSize, (byte)(0xB0 + i));
-                pipeline.HandleFrame(new CapturedFrame(ptr, 2, 2, 8));
+                pipeline.HandleFrame(CreateCapturedFrame(ptr, 2, 2, 8));
             }
 
             var primed = SpinWait.SpinUntil(() => pipeline.BufferPrimed, TimeSpan.FromMilliseconds(600));
@@ -386,7 +392,7 @@ public class NdiVideoPipelineTests
                 var ptr = Marshal.AllocHGlobal(frameSize);
                 buffers.Add(ptr);
                 FillBuffer(ptr, frameSize, (byte)(0xC0 + i));
-                pipeline.HandleFrame(new CapturedFrame(ptr, 2, 2, 8));
+                pipeline.HandleFrame(CreateCapturedFrame(ptr, 2, 2, 8));
             }
 
             await Task.Delay(600);
