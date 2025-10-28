@@ -74,4 +74,14 @@ public class LauncherSettings
     /// </summary>
     public bool AllowLatencyExpansion { get; set; }
         = false;
+
+    /// <summary>
+    /// Gets or sets a value indicating whether the paced sender should align deadlines to capture timestamps.
+    /// </summary>
+    public bool AlignWithCaptureTimestamps { get; set; } = true;
+
+    /// <summary>
+    /// Gets or sets a value indicating whether to include capture/output cadence metrics in telemetry logs.
+    /// </summary>
+    public bool EnableCadenceTelemetry { get; set; } = true;
 }

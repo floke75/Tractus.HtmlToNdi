@@ -24,7 +24,9 @@ public sealed class LaunchParameters
         int? windowlessFrameRateOverride,
         bool disableGpuVsync,
         bool disableFrameRateLimit,
-        bool allowLatencyExpansion)
+        bool allowLatencyExpansion,
+        bool alignWithCaptureTimestamps,
+        bool enableCadenceTelemetry)
     {
         NdiName = ndiName;
         Port = port;
@@ -39,6 +41,8 @@ public sealed class LaunchParameters
         DisableGpuVsync = disableGpuVsync;
         DisableFrameRateLimit = disableFrameRateLimit;
         AllowLatencyExpansion = allowLatencyExpansion;
+        AlignWithCaptureTimestamps = alignWithCaptureTimestamps;
+        EnableCadenceTelemetry = enableCadenceTelemetry;
     }
 
     /// <summary>
@@ -105,6 +109,16 @@ public sealed class LaunchParameters
     /// Gets a value indicating whether the paced buffer should keep playing any queued frames during recovery.
     /// </summary>
     public bool AllowLatencyExpansion { get; }
+
+    /// <summary>
+    /// Gets a value indicating whether paced output should align deadlines using capture timestamps.
+    /// </summary>
+    public bool AlignWithCaptureTimestamps { get; }
+
+    /// <summary>
+    /// Gets a value indicating whether telemetry should include capture/output cadence metrics.
+    /// </summary>
+    public bool EnableCadenceTelemetry { get; }
 
     /// <summary>
     /// Attempts to create a <see cref="LaunchParameters"/> instance from command-line arguments.
@@ -211,6 +225,18 @@ public sealed class LaunchParameters
 
         var enableBuffering = HasFlag("--enable-output-buffer") || bufferDepth > 0;
 
+        var alignWithCaptureTimestamps = !HasFlag("--disable-capture-alignment");
+        if (!alignWithCaptureTimestamps && HasFlag("--align-with-capture-timestamps"))
+        {
+            alignWithCaptureTimestamps = true;
+        }
+
+        var enableCadenceTelemetry = !HasFlag("--disable-cadence-telemetry");
+        if (!enableCadenceTelemetry && HasFlag("--enable-cadence-telemetry"))
+        {
+            enableCadenceTelemetry = true;
+        }
+
         int? windowlessFrameRateOverride = null;
         var windowlessRateArg = GetArgValue("--windowless-frame-rate");
         if (windowlessRateArg is not null)
@@ -239,7 +265,9 @@ public sealed class LaunchParameters
             windowlessFrameRateOverride,
             HasFlag("--disable-gpu-vsync"),
             HasFlag("--disable-frame-rate-limit"),
-            HasFlag("--allow-latency-expansion"));
+            HasFlag("--allow-latency-expansion"),
+            alignWithCaptureTimestamps,
+            enableCadenceTelemetry);
 
         return true;
     }
@@ -324,6 +352,8 @@ public sealed class LaunchParameters
             windowlessFrameRateOverride,
             settings.DisableGpuVsync,
             settings.DisableFrameRateLimit,
-            settings.AllowLatencyExpansion);
+            settings.AllowLatencyExpansion,
+            settings.AlignWithCaptureTimestamps,
+            settings.EnableCadenceTelemetry);
     }
 }

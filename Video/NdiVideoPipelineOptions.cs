@@ -24,4 +24,14 @@ internal sealed record NdiVideoPipelineOptions
     /// Gets or sets a value indicating whether latency expansion is allowed.
     /// </summary>
     public bool AllowLatencyExpansion { get; init; }
+
+    /// <summary>
+    /// Gets or sets a value indicating whether paced output should align to capture timestamps.
+    /// </summary>
+    public bool AlignWithCaptureTimestamps { get; init; } = true;
+
+    /// <summary>
+    /// Gets or sets a value indicating whether capture/output cadence metrics are logged with telemetry.
+    /// </summary>
+    public bool EnableCadenceTelemetry { get; init; } = true;
 }
