@@ -64,7 +64,7 @@ internal sealed class NdiVideoPipeline : IDisposable
         this.logger = logger;
 
         targetDepth = Math.Max(1, options.BufferDepth);
-        lowWatermark = Math.Max(0, targetDepth - 0.5);
+        lowWatermark = Math.Max(0, targetDepth - 1.5);
         highWatermark = targetDepth + 1;
         allowLatencyExpansion = options.AllowLatencyExpansion && options.EnableBuffering;
 
@@ -381,16 +381,27 @@ internal sealed class NdiVideoPipeline : IDisposable
             return;
         }
 
-        var preserving = preserveBufferedFrames && allowLatencyExpansion && ringBuffer.Count > 0;
+        var backlog = ringBuffer.Count;
+        var preserving = preserveBufferedFrames && allowLatencyExpansion && backlog > 0;
 
         if (!isWarmingUp && hasPrimedOnce && lastSentFrame is not null)
         {
-            Interlocked.Increment(ref underruns);
-            logger.Warning(
-                "NDI pacer underrun detected: buffered={Buffered}, latencyError={LatencyError:F2}, preservingBufferedFrames={Preserving}",
-                ringBuffer.Count,
-                latencyError,
-                preserving);
+            if (preserving)
+            {
+                logger.Information(
+                    "NDI pacer entering latency expansion: buffered={Buffered}, latencyError={LatencyError:F2}",
+                    backlog,
+                    latencyError);
+            }
+            else
+            {
+                Interlocked.Increment(ref underruns);
+                logger.Warning(
+                    "NDI pacer underrun detected: buffered={Buffered}, latencyError={LatencyError:F2}, preservingBufferedFrames={Preserving}",
+                    backlog,
+                    latencyError,
+                    preserving);
+            }
         }
 
         bufferPrimed = false;

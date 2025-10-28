@@ -54,8 +54,8 @@ hysteresis window and an error integrator that avoids repeated warm-up toggles:
    - `targetDepth` – configured backlog, expressed in frames.
    - `highWatermark = targetDepth + 1` – upper limit that triggers frame drops
      when the producer outruns the pacer for prolonged periods.
-   - `lowWatermark = targetDepth - 0.5` – lower tolerance that keeps the pacer
-     out of warm-up until the backlog is genuinely shallow.
+  - `lowWatermark = targetDepth - 1.5` – lower tolerance that keeps the pacer
+    out of warm-up until the backlog is genuinely shallow.
    - `warmup` flag – true until the queue reaches `targetDepth` and after any
      underrun.
    - `latencyError` accumulator – integrates `(queueCount - targetDepth)` each
