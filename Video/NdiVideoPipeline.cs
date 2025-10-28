@@ -527,6 +527,8 @@ internal sealed class NdiVideoPipeline : IDisposable
 
         if (!isWarmingUp && hasPrimedOnce && lastSentFrame is not null)
         {
+            Interlocked.Increment(ref underruns);
+
             if (preserving)
             {
                 logger.Information(
@@ -536,7 +538,6 @@ internal sealed class NdiVideoPipeline : IDisposable
             }
             else
             {
-                Interlocked.Increment(ref underruns);
                 logger.Warning(
                     "NDI pacer underrun detected: buffered={Buffered}, latencyError={LatencyError:F2}, preservingBufferedFrames={Preserving}",
                     backlog,
