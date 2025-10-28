@@ -12,12 +12,14 @@ internal readonly struct CapturedFrame
     /// <param name="width">The width of the frame.</param>
     /// <param name="height">The height of the frame.</param>
     /// <param name="stride">The stride of the frame.</param>
-    public CapturedFrame(IntPtr buffer, int width, int height, int stride)
+    public CapturedFrame(IntPtr buffer, int width, int height, int stride, long monotonicTimestamp, DateTime timestampUtc)
     {
         Buffer = buffer;
         Width = width;
         Height = height;
         Stride = stride;
+        MonotonicTimestamp = monotonicTimestamp;
+        TimestampUtc = timestampUtc;
     }
 
     /// <summary>
@@ -39,6 +41,16 @@ internal readonly struct CapturedFrame
     /// Gets the stride of the frame.
     /// </summary>
     public int Stride { get; }
+
+    /// <summary>
+    /// Gets the high-resolution capture timestamp expressed in <see cref="System.Diagnostics.Stopwatch"/> ticks.
+    /// </summary>
+    public long MonotonicTimestamp { get; }
+
+    /// <summary>
+    /// Gets the UTC timestamp for metadata consumers.
+    /// </summary>
+    public DateTime TimestampUtc { get; }
 
     /// <summary>
     /// Gets the size of the frame in bytes.

@@ -106,7 +106,12 @@ PR41 while ensuring the latency bucket never collapses below the chosen depth.
   then stretches or shortens that deadline by up to half a frame based on the
   current backlog (plus a fraction of the accumulated latency error). This
   keeps capture and output clocks aligned without letting the backlog drain or
-  spike uncontrollably.【F:Video/NdiVideoPipeline.cs†L108-L215】
+  spike uncontrollably.【F:Video/NdiVideoPipeline.cs†L108-L229】
+- Capture and output stages share a high-resolution timestamp tracker so the
+  pacer can measure drift between producer and consumer cadences. The loop feeds
+  that drift back into the deadline adjustment while telemetry now reports RMS
+  and peak jitter plus per-stage drift against the configured cadence to help
+  operators spot capture/output mismatches.【F:Video/NdiVideoPipeline.cs†L38-L54】【F:Video/NdiVideoPipeline.cs†L187-L205】【F:Video/NdiVideoPipeline.cs†L620-L873】
 - The pacer waits for each deadline using a coarse `Task.Delay` followed by a
   sub-millisecond spin so OS timer jitter cannot erode the queue depth, yet the
   loop still honours cancellation instantly when the pipeline shuts down.【F:Video/NdiVideoPipeline.cs†L217-L254】

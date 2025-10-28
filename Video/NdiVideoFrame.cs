@@ -48,6 +48,11 @@ internal sealed class NdiVideoFrame : IDisposable
     public DateTime Timestamp { get; set; }
 
     /// <summary>
+    /// Gets or sets the high-resolution capture timestamp expressed in <see cref="System.Diagnostics.Stopwatch"/> ticks.
+    /// </summary>
+    public long MonotonicTimestamp { get; set; }
+
+    /// <summary>
     /// Creates a new <see cref="NdiVideoFrame"/> by copying data from a <see cref="CapturedFrame"/>.
     /// </summary>
     /// <param name="frame">The captured frame to copy from.</param>
@@ -63,7 +68,8 @@ internal sealed class NdiVideoFrame : IDisposable
 
         return new NdiVideoFrame(frame.Width, frame.Height, frame.Stride, buffer)
         {
-            Timestamp = DateTime.UtcNow
+            Timestamp = frame.TimestampUtc,
+            MonotonicTimestamp = frame.MonotonicTimestamp,
         };
     }
 

@@ -20,6 +20,7 @@ internal sealed class NdiVideoPipeline : IDisposable
     private readonly FrameRingBuffer<NdiVideoFrame>? ringBuffer;
     private readonly ILogger logger;
     private static readonly TimeSpan BusyWaitThreshold = TimeSpan.FromMilliseconds(1);
+    private static readonly double StopwatchTicksToTimeSpanTicks = TimeSpan.TicksPerSecond / (double)Stopwatch.Frequency;
 
     private readonly int targetDepth;
     private readonly double lowWatermark;
@@ -55,6 +56,9 @@ internal sealed class NdiVideoPipeline : IDisposable
     private long sentFrames;
     private long repeatedFrames;
     private DateTime lastTelemetry = DateTime.UtcNow;
+    private readonly CadenceTracker captureCadenceTracker;
+    private readonly CadenceTracker outputCadenceTracker;
+    private double cadenceAlignmentDeltaFrames;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="NdiVideoPipeline"/> class.
@@ -76,6 +80,8 @@ internal sealed class NdiVideoPipeline : IDisposable
         allowLatencyExpansion = options.AllowLatencyExpansion && options.EnableBuffering;
         frameInterval = frameRate.FrameDuration;
         maxPacingAdjustmentTicks = Math.Max(1, frameInterval.Ticks / 2);
+        captureCadenceTracker = new CadenceTracker(frameInterval);
+        outputCadenceTracker = new CadenceTracker(frameInterval);
 
         if (options.EnableBuffering)
         {
@@ -141,6 +147,7 @@ internal sealed class NdiVideoPipeline : IDisposable
     public void HandleFrame(CapturedFrame frame)
     {
         Interlocked.Increment(ref capturedFrames);
+        captureCadenceTracker.Record(frame.MonotonicTimestamp);
 
         if (!BufferingEnabled)
         {
@@ -218,6 +225,8 @@ internal sealed class NdiVideoPipeline : IDisposable
         var integral = Math.Clamp(Volatile.Read(ref latencyError) / Math.Max(1d, targetDepth), -2d, 2d);
         var normalized = Math.Clamp(offset / (double)targetDepth, -1.5d, 1.5d);
         var adjustmentFactor = normalized + (integral * 0.2d);
+        var cadenceAdjustment = CalculateCadenceAlignmentOffset();
+        adjustmentFactor += cadenceAdjustment;
         if (Math.Abs(adjustmentFactor) < 1e-6)
         {
             return baseline;
@@ -225,6 +234,21 @@ internal sealed class NdiVideoPipeline : IDisposable
 
         var adjustmentTicks = (long)Math.Clamp(adjustmentFactor * frameInterval.Ticks, -maxPacingAdjustmentTicks, maxPacingAdjustmentTicks);
         return baseline + TimeSpan.FromTicks(adjustmentTicks);
+    }
+
+    private double CalculateCadenceAlignmentOffset()
+    {
+        var captureDrift = captureCadenceTracker.GetDriftFrames();
+        var outputDrift = outputCadenceTracker.GetDriftFrames();
+        var delta = captureDrift - outputDrift;
+        Interlocked.Exchange(ref cadenceAlignmentDeltaFrames, delta);
+
+        if (double.IsNaN(delta) || Math.Abs(delta) < 0.01d)
+        {
+            return 0d;
+        }
+
+        return Math.Clamp(delta * 0.15d, -0.75d, 0.75d);
     }
 
     private static async Task WaitUntilAsync(Stopwatch clock, TimeSpan deadline, CancellationToken token)
@@ -422,12 +446,13 @@ internal sealed class NdiVideoPipeline : IDisposable
             return;
         }
 
-        var now = DateTime.UtcNow;
-        var (numerator, denominator) = ResolveFrameRate(now);
+        var timestamp = frame.TimestampUtc != default ? frame.TimestampUtc : DateTime.UtcNow;
+        var (numerator, denominator) = ResolveFrameRate(timestamp);
 
         var ndiFrame = CreateVideoFrame(frame, numerator, denominator);
         sender.Send(ref ndiFrame);
         Interlocked.Increment(ref sentFrames);
+        outputCadenceTracker.Record(Stopwatch.GetTimestamp());
         EmitTelemetryIfNeeded();
     }
 
@@ -439,6 +464,7 @@ internal sealed class NdiVideoPipeline : IDisposable
         sender.Send(ref ndiFrame);
 
         Interlocked.Increment(ref sentFrames);
+        outputCadenceTracker.Record(Stopwatch.GetTimestamp());
 
         lastSentFrame?.Dispose();
         lastSentFrame = frame;
@@ -461,6 +487,7 @@ internal sealed class NdiVideoPipeline : IDisposable
         var ndiFrame = CreateVideoFrame(lastSentFrame, configuredFrameRate.Numerator, configuredFrameRate.Denominator);
         sender.Send(ref ndiFrame);
         Interlocked.Increment(ref repeatedFrames);
+        outputCadenceTracker.Record(Stopwatch.GetTimestamp());
         EmitTelemetryIfNeeded();
     }
 
@@ -513,6 +540,8 @@ internal sealed class NdiVideoPipeline : IDisposable
         var clampCeiling = latencyExpansionActive ? targetDepth : 0;
         latencyError = Math.Clamp(latencyError, -targetDepth, clampCeiling);
         pacingResetRequested = true;
+        outputCadenceTracker.Reset();
+        Interlocked.Exchange(ref cadenceAlignmentDeltaFrames, 0d);
     }
 
     private void ExitWarmup()
@@ -554,6 +583,8 @@ internal sealed class NdiVideoPipeline : IDisposable
 
     private void ResetBufferingState()
     {
+        captureCadenceTracker.Reset();
+        outputCadenceTracker.Reset();
         bufferPrimed = false;
         isWarmingUp = true;
         hasPrimedOnce = false;
@@ -619,6 +650,170 @@ internal sealed class NdiVideoPipeline : IDisposable
         }
     }
 
+    private sealed class CadenceTracker
+    {
+        private readonly double targetIntervalTicks;
+        private readonly object gate = new();
+        private long originTimestamp;
+        private bool hasOrigin;
+        private long lastTimestamp;
+        private double lastRelativeTicks;
+        private long intervalSamples;
+        private double sumSquaredIntervalErrorTicks;
+        private double maxIntervalErrorTicks;
+        private double minIntervalErrorTicks;
+
+        public CadenceTracker(TimeSpan targetInterval)
+        {
+            targetIntervalTicks = Math.Max(1, targetInterval.Ticks);
+            Reset();
+        }
+
+        public void Reset()
+        {
+            lock (gate)
+            {
+                hasOrigin = false;
+                originTimestamp = 0;
+                lastTimestamp = 0;
+                lastRelativeTicks = 0;
+                intervalSamples = 0;
+                sumSquaredIntervalErrorTicks = 0;
+                maxIntervalErrorTicks = 0;
+                minIntervalErrorTicks = 0;
+            }
+        }
+
+        public void Record(long timestamp)
+        {
+            lock (gate)
+            {
+                if (!hasOrigin)
+                {
+                    originTimestamp = timestamp;
+                    lastTimestamp = timestamp;
+                    lastRelativeTicks = 0;
+                    intervalSamples = 0;
+                    sumSquaredIntervalErrorTicks = 0;
+                    maxIntervalErrorTicks = 0;
+                    minIntervalErrorTicks = 0;
+                    hasOrigin = true;
+                    return;
+                }
+
+                var relativeTicks = (timestamp - originTimestamp) * StopwatchTicksToTimeSpanTicks;
+                var intervalTicks = (timestamp - lastTimestamp) * StopwatchTicksToTimeSpanTicks;
+                var intervalError = intervalTicks - targetIntervalTicks;
+
+                if (intervalSamples == 0)
+                {
+                    maxIntervalErrorTicks = intervalError;
+                    minIntervalErrorTicks = intervalError;
+                }
+                else
+                {
+                    if (intervalError > maxIntervalErrorTicks)
+                    {
+                        maxIntervalErrorTicks = intervalError;
+                    }
+
+                    if (intervalError < minIntervalErrorTicks)
+                    {
+                        minIntervalErrorTicks = intervalError;
+                    }
+                }
+
+                intervalSamples++;
+                sumSquaredIntervalErrorTicks += intervalError * intervalError;
+                lastTimestamp = timestamp;
+                lastRelativeTicks = relativeTicks;
+            }
+        }
+
+        public double GetDriftFrames()
+        {
+            lock (gate)
+            {
+                if (!hasOrigin || intervalSamples == 0 || targetIntervalTicks == 0)
+                {
+                    return 0;
+                }
+
+                var expectedTicks = intervalSamples * targetIntervalTicks;
+                var driftTicks = lastRelativeTicks - expectedTicks;
+                if (double.IsNaN(driftTicks))
+                {
+                    return 0;
+                }
+
+                return driftTicks / targetIntervalTicks;
+            }
+        }
+
+        public CadenceSnapshot GetSnapshot()
+        {
+            lock (gate)
+            {
+                if (!hasOrigin)
+                {
+                    return CadenceSnapshot.Empty;
+                }
+
+                if (intervalSamples == 0)
+                {
+                    return new CadenceSnapshot(0, 0, 0, 0, 0, targetIntervalTicks);
+                }
+
+                var expectedTicks = intervalSamples * targetIntervalTicks;
+                var driftTicks = lastRelativeTicks - expectedTicks;
+                var rms = Math.Sqrt(sumSquaredIntervalErrorTicks / intervalSamples);
+                if (double.IsNaN(rms))
+                {
+                    rms = 0;
+                }
+
+                return new CadenceSnapshot(intervalSamples, rms, maxIntervalErrorTicks, minIntervalErrorTicks, driftTicks, targetIntervalTicks);
+            }
+        }
+    }
+
+    private readonly struct CadenceSnapshot
+    {
+        public static CadenceSnapshot Empty { get; } = new CadenceSnapshot(0, 0, 0, 0, 0, 1);
+
+        public CadenceSnapshot(long intervalSamples, double rmsTicks, double maxTicks, double minTicks, double driftTicks, double targetIntervalTicks)
+        {
+            IntervalSamples = intervalSamples;
+            IntervalRmsTicks = rmsTicks;
+            MaxIntervalErrorTicks = maxTicks;
+            MinIntervalErrorTicks = minTicks;
+            DriftTicks = driftTicks;
+            TargetIntervalTicks = targetIntervalTicks;
+        }
+
+        public long IntervalSamples { get; }
+
+        public double IntervalRmsTicks { get; }
+
+        public double MaxIntervalErrorTicks { get; }
+
+        public double MinIntervalErrorTicks { get; }
+
+        public double DriftTicks { get; }
+
+        public double TargetIntervalTicks { get; }
+
+        public double IntervalRmsMilliseconds => IntervalSamples == 0 ? 0 : IntervalRmsTicks / TimeSpan.TicksPerMillisecond;
+
+        public double PeakIntervalErrorMilliseconds => IntervalSamples == 0
+            ? 0
+            : Math.Max(Math.Abs(MaxIntervalErrorTicks), Math.Abs(MinIntervalErrorTicks)) / TimeSpan.TicksPerMillisecond;
+
+        public double DriftMilliseconds => IntervalSamples == 0 ? 0 : DriftTicks / TimeSpan.TicksPerMillisecond;
+
+        public double DriftFrames => IntervalSamples == 0 || TargetIntervalTicks == 0 ? 0 : DriftTicks / TargetIntervalTicks;
+    }
+
     private static NDIlib.video_frame_v2_t CreateVideoFrame(NdiVideoFrame frame, int numerator, int denominator)
     {
         return new NDIlib.video_frame_v2_t
@@ -662,6 +857,14 @@ internal sealed class NdiVideoPipeline : IDisposable
 
         lastTelemetry = DateTime.UtcNow;
 
+        var captureSnapshot = captureCadenceTracker.GetSnapshot();
+        var outputSnapshot = outputCadenceTracker.GetSnapshot();
+        var alignmentDelta = Interlocked.CompareExchange(ref cadenceAlignmentDeltaFrames, 0d, 0d);
+        if (!double.IsFinite(alignmentDelta))
+        {
+            alignmentDelta = 0;
+        }
+
         var bufferStats = BufferingEnabled && ringBuffer is not null
             ? $", primed={bufferPrimed}, buffered={ringBuffer.Count}, droppedOverflow={ringBuffer.DroppedFromOverflow}, droppedStale={ringBuffer.DroppedAsStale}, underruns={Interlocked.Read(ref underruns)}, warmups={Interlocked.Read(ref warmupCycles)}, lastWarmupMs={ComputeLastWarmupMilliseconds():F1}, lastWarmupRepeats={Interlocked.Read(ref lastWarmupRepeatTicks)}, lowWaterHits={Interlocked.Read(ref lowWatermarkHits)}, highWaterHits={Interlocked.Read(ref highWatermarkHits)}, resyncDrops={Interlocked.Read(ref latencyResyncDrops)}, latencyError={Volatile.Read(ref latencyError):F2}"
             : string.Empty;
@@ -670,12 +873,16 @@ internal sealed class NdiVideoPipeline : IDisposable
             bufferStats += $", latencyExpansionSessions={Interlocked.Read(ref latencyExpansionSessions)}, latencyExpansionTicks={Interlocked.Read(ref latencyExpansionTicks)}, latencyExpansionFrames={Interlocked.Read(ref latencyExpansionFramesServed)}";
         }
 
+        var cadenceStats = System.FormattableString.Invariant(
+            $", captureJitterRmsMs={captureSnapshot.IntervalRmsMilliseconds:F4}, captureJitterPkMs={captureSnapshot.PeakIntervalErrorMilliseconds:F4}, captureDriftMs={captureSnapshot.DriftMilliseconds:F4}, captureIntervals={captureSnapshot.IntervalSamples}, outputJitterRmsMs={outputSnapshot.IntervalRmsMilliseconds:F4}, outputJitterPkMs={outputSnapshot.PeakIntervalErrorMilliseconds:F4}, outputDriftMs={outputSnapshot.DriftMilliseconds:F4}, outputIntervals={outputSnapshot.IntervalSamples}, driftDeltaFrames={alignmentDelta:F4}");
+
         logger.Information(
-            "NDI video pipeline stats: captured={Captured}, sent={Sent}, repeated={Repeated}{BufferStats} (caller={Caller})",
+            "NDI video pipeline stats: captured={Captured}, sent={Sent}, repeated={Repeated}{BufferStats}{CadenceStats} (caller={Caller})",
             Interlocked.Read(ref capturedFrames),
             Interlocked.Read(ref sentFrames),
             Interlocked.Read(ref repeatedFrames),
             bufferStats,
+            cadenceStats,
             caller);
     }
 
