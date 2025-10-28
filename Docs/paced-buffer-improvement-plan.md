@@ -101,11 +101,15 @@ PR41 while ensuring the latency bucket never collapses below the chosen depth.
   fractional drift between producer and consumer cadence. Because the error is
   additive, it can also drive adaptive logging that estimates the effective
   latency in milliseconds for dashboards.
-- In addition to the integrator the pacing loop now stretches or shortens its
-  next deadline by up to half a frame based on the current backlog so the send
-  cadence gradually realigns with capture when the clocks diverge. This keeps
-  large buffers from draining due to timer jitter while avoiding sudden bursts
-  that could reintroduce judder.【F:Video/NdiVideoPipeline.cs†L149-L214】
+- In addition to the integrator the pacing loop now recalculates each deadline
+  from a monotonic sequence anchored to the most recent warm-up boundary and
+  then stretches or shortens that deadline by up to half a frame based on the
+  current backlog (plus a fraction of the accumulated latency error). This
+  keeps capture and output clocks aligned without letting the backlog drain or
+  spike uncontrollably.【F:Video/NdiVideoPipeline.cs†L108-L215】
+- The pacer waits for each deadline using a coarse `Task.Delay` followed by a
+  sub-millisecond spin so OS timer jitter cannot erode the queue depth, yet the
+  loop still honours cancellation instantly when the pipeline shuts down.【F:Video/NdiVideoPipeline.cs†L217-L254】
 - Tests should simulate producer jitter bursts (dropouts, speed-ups, and long
   over-production spurts) to verify that the output cadence remains constant
   while latency never dips below `targetDepth` and never grows beyond one frame

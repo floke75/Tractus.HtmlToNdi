@@ -19,6 +19,8 @@ internal sealed class NdiVideoPipeline : IDisposable
     private readonly CancellationTokenSource cancellation = new();
     private readonly FrameRingBuffer<NdiVideoFrame>? ringBuffer;
     private readonly ILogger logger;
+    private static readonly TimeSpan BusyWaitThreshold = TimeSpan.FromMilliseconds(1);
+
     private readonly int targetDepth;
     private readonly double lowWatermark;
     private readonly double highWatermark;
@@ -44,6 +46,8 @@ internal sealed class NdiVideoPipeline : IDisposable
     private long latencyExpansionSessions;
     private long latencyExpansionTicks;
     private long latencyExpansionFramesServed;
+
+    private volatile bool pacingResetRequested;
 
     private Task? pacingTask;
     private NdiVideoFrame? lastSentFrame;
@@ -106,6 +110,7 @@ internal sealed class NdiVideoPipeline : IDisposable
         }
 
         ResetBufferingState();
+        pacingResetRequested = true;
         pacingTask = Task.Run(async () => await RunPacedLoopAsync(cancellation.Token));
     }
 
@@ -157,25 +162,26 @@ internal sealed class NdiVideoPipeline : IDisposable
     private async Task RunPacedLoopAsync(CancellationToken token)
     {
         var pacingClock = Stopwatch.StartNew();
-        var deadline = pacingClock.Elapsed + frameInterval;
+        var pacingOrigin = pacingClock.Elapsed;
+        long pacingSequence = 0;
 
         while (!token.IsCancellationRequested)
         {
-            var wait = deadline - pacingClock.Elapsed;
-            if (wait > TimeSpan.Zero)
+            if (Volatile.Read(ref pacingResetRequested))
             {
-                try
-                {
-                    await Task.Delay(wait, token);
-                }
-                catch (TaskCanceledException)
-                {
-                    break;
-                }
+                pacingOrigin = pacingClock.Elapsed;
+                pacingSequence = 0;
+                Volatile.Write(ref pacingResetRequested, false);
             }
-            else if (wait < -frameInterval)
+
+            var nextSequence = pacingSequence + 1;
+            var deadline = CalculateNextDeadline(pacingOrigin, nextSequence);
+
+            await WaitUntilAsync(pacingClock, deadline, token);
+
+            if (token.IsCancellationRequested)
             {
-                deadline = pacingClock.Elapsed;
+                break;
             }
 
             var sent = TrySendBufferedFrame();
@@ -184,13 +190,13 @@ internal sealed class NdiVideoPipeline : IDisposable
                 RepeatLastFrame();
             }
 
-            deadline = CalculateNextDeadline(deadline);
+            pacingSequence = nextSequence;
         }
     }
 
-    private TimeSpan CalculateNextDeadline(TimeSpan previousDeadline)
+    private TimeSpan CalculateNextDeadline(TimeSpan origin, long nextSequence)
     {
-        var baseline = previousDeadline + frameInterval;
+        var baseline = origin + TimeSpan.FromTicks(frameInterval.Ticks * nextSequence);
 
         if (!BufferingEnabled || ringBuffer is null)
         {
@@ -209,27 +215,54 @@ internal sealed class NdiVideoPipeline : IDisposable
         }
 
         var offset = targetDepth - backlog;
-        if (offset == 0)
+        var integral = Math.Clamp(Volatile.Read(ref latencyError) / Math.Max(1d, targetDepth), -2d, 2d);
+        var normalized = Math.Clamp(offset / (double)targetDepth, -1.5d, 1.5d);
+        var adjustmentFactor = normalized + (integral * 0.2d);
+        if (Math.Abs(adjustmentFactor) < 1e-6)
         {
             return baseline;
         }
 
-        var normalized = Math.Clamp(offset / (double)targetDepth, -1d, 1d);
-        var adjustmentTicks = (long)(normalized * maxPacingAdjustmentTicks);
-        if (adjustmentTicks == 0)
-        {
-            return baseline;
-        }
+        var adjustmentTicks = (long)Math.Clamp(adjustmentFactor * frameInterval.Ticks, -maxPacingAdjustmentTicks, maxPacingAdjustmentTicks);
+        return baseline + TimeSpan.FromTicks(adjustmentTicks);
+    }
 
-        var adjusted = baseline + TimeSpan.FromTicks(adjustmentTicks);
-        var minimum = previousDeadline + TimeSpan.FromTicks(frameInterval.Ticks / 4);
-        if (adjusted < minimum)
+    private static async Task WaitUntilAsync(Stopwatch clock, TimeSpan deadline, CancellationToken token)
+    {
+        while (!token.IsCancellationRequested)
         {
-            return minimum;
-        }
+            var remaining = deadline - clock.Elapsed;
+            if (remaining <= TimeSpan.Zero)
+            {
+                return;
+            }
 
-        var maximum = previousDeadline + frameInterval + TimeSpan.FromTicks(maxPacingAdjustmentTicks);
-        return adjusted > maximum ? maximum : adjusted;
+            if (remaining <= BusyWaitThreshold)
+            {
+                while (deadline > clock.Elapsed)
+                {
+                    token.ThrowIfCancellationRequested();
+                    Thread.SpinWait(64);
+                }
+
+                return;
+            }
+
+            var sleep = remaining - BusyWaitThreshold;
+            if (sleep < TimeSpan.FromMilliseconds(1))
+            {
+                sleep = TimeSpan.FromMilliseconds(1);
+            }
+
+            try
+            {
+                await Task.Delay(sleep, token);
+            }
+            catch (TaskCanceledException)
+            {
+                return;
+            }
+        }
     }
 
     private bool TrySendBufferedFrame()
@@ -479,6 +512,7 @@ internal sealed class NdiVideoPipeline : IDisposable
 
         var clampCeiling = latencyExpansionActive ? targetDepth : 0;
         latencyError = Math.Clamp(latencyError, -targetDepth, clampCeiling);
+        pacingResetRequested = true;
     }
 
     private void ExitWarmup()
@@ -514,6 +548,8 @@ internal sealed class NdiVideoPipeline : IDisposable
             latencyError,
             Interlocked.Read(ref latencyExpansionTicks),
             Interlocked.Read(ref latencyExpansionFramesServed));
+
+        pacingResetRequested = true;
     }
 
     private void ResetBufferingState()
