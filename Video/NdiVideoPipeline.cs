@@ -945,6 +945,12 @@ internal sealed class NdiVideoPipeline : IDisposable
         {
             logger.Warning("Capture backpressure requested without buffering; invalidations will still be paced but backpressure cannot engage.");
         }
+
+        // Request an initial invalidate in case the scheduler was attached after the pipeline
+        // already requested pacing hints (for example, if Start() ran before Chromium finished
+        // wiring up the pump). This mirrors the priming logic used when the pipeline starts but
+        // avoids relying on call ordering for the first paced paint.
+        PrimeSchedulerIfNeeded();
     }
 
     private void PrimeSchedulerIfNeeded()
