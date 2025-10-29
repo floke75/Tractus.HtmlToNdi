@@ -8,17 +8,17 @@ namespace Tractus.HtmlToNdi.Chromium;
 /// </summary>
 public sealed class SingleThreadSynchronizationContext : SynchronizationContext
 {
-    private readonly BlockingCollection<KeyValuePair<SendOrPostCallback, object>> queue =
-        new BlockingCollection<KeyValuePair<SendOrPostCallback, object>>();
+    private readonly BlockingCollection<KeyValuePair<SendOrPostCallback, object?>> queue =
+        new BlockingCollection<KeyValuePair<SendOrPostCallback, object?>>();
 
     /// <summary>
     /// Dispatches an asynchronous message to the synchronization context.
     /// </summary>
     /// <param name="d">The <see cref="SendOrPostCallback"/> delegate to call.</param>
     /// <param name="state">The object passed to the delegate.</param>
-    public override void Post(SendOrPostCallback d, object state)
+    public override void Post(SendOrPostCallback d, object? state)
     {
-        this.queue.Add(new KeyValuePair<SendOrPostCallback, object>(d, state));
+        this.queue.Add(new KeyValuePair<SendOrPostCallback, object?>(d, state));
     }
 
     /// <summary>

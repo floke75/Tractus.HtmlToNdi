@@ -10,7 +10,7 @@ using Serilog;
 
 namespace Tractus.HtmlToNdi.Chromium;
 
-internal interface IPacedInvalidationScheduler : IDisposable
+public interface IPacedInvalidationScheduler : IDisposable
 {
     Task RequestInvalidateAsync(CancellationToken cancellationToken = default);
 
@@ -53,7 +53,7 @@ internal sealed class FramePump : IPacedInvalidationScheduler
     private Task? watchdogTask;
     private volatile bool paused;
     private volatile bool started;
-    private volatile double cadenceAlignmentDeltaFrames;
+    private double cadenceAlignmentDeltaFrames;
     private long lastPaintTicks = DateTime.UtcNow.Ticks;
     private bool disposed;
 
