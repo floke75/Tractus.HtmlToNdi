@@ -26,7 +26,10 @@ public sealed class LaunchParameters
         bool disableFrameRateLimit,
         bool allowLatencyExpansion,
         bool alignWithCaptureTimestamps,
-        bool enableCadenceTelemetry)
+        bool enableCadenceTelemetry,
+        bool enablePacedInvalidation,
+        bool enableCaptureBackpressure,
+        bool enablePumpCadenceAdaptation)
     {
         NdiName = ndiName;
         Port = port;
@@ -43,6 +46,9 @@ public sealed class LaunchParameters
         AllowLatencyExpansion = allowLatencyExpansion;
         AlignWithCaptureTimestamps = alignWithCaptureTimestamps;
         EnableCadenceTelemetry = enableCadenceTelemetry;
+        EnablePacedInvalidation = enablePacedInvalidation;
+        EnableCaptureBackpressure = enableCaptureBackpressure;
+        EnablePumpCadenceAdaptation = enablePumpCadenceAdaptation;
     }
 
     /// <summary>
@@ -121,6 +127,21 @@ public sealed class LaunchParameters
     public bool EnableCadenceTelemetry { get; }
 
     /// <summary>
+    /// Gets a value indicating whether Chromium invalidation should be paced by the sender loop.
+    /// </summary>
+    public bool EnablePacedInvalidation { get; }
+
+    /// <summary>
+    /// Gets a value indicating whether capture backpressure should pause Chromium invalidation when the buffer is ahead.
+    /// </summary>
+    public bool EnableCaptureBackpressure { get; }
+
+    /// <summary>
+    /// Gets a value indicating whether the Chromium pump adapts its cadence using pipeline telemetry.
+    /// </summary>
+    public bool EnablePumpCadenceAdaptation { get; }
+
+    /// <summary>
     /// Attempts to create a <see cref="LaunchParameters"/> instance from command-line arguments.
     /// </summary>
     /// <param name="args">The command-line arguments.</param>
@@ -135,6 +156,30 @@ public sealed class LaunchParameters
                 .Split('=', 2)[1];
 
         bool HasFlag(string flag) => args.Any(x => x.Equals(flag, StringComparison.Ordinal));
+
+        bool ResolveToggle(string enableFlag, string disableFlag, bool defaultValue)
+        {
+            var enabled = HasFlag(enableFlag);
+            var disabled = HasFlag(disableFlag);
+
+            if (enabled && disabled)
+            {
+                Log.Warning("Both {EnableFlag} and {DisableFlag} were provided; defaulting to {Default}", enableFlag, disableFlag, defaultValue);
+                return defaultValue;
+            }
+
+            if (enabled)
+            {
+                return true;
+            }
+
+            if (disabled)
+            {
+                return false;
+            }
+
+            return defaultValue;
+        }
 
         var ndiName = GetArgValue("--ndiname") ?? "HTML5";
         if (string.IsNullOrWhiteSpace(ndiName))
@@ -237,6 +282,10 @@ public sealed class LaunchParameters
             enableCadenceTelemetry = true;
         }
 
+        var enablePacedInvalidation = ResolveToggle("--enable-paced-invalidation", "--disable-paced-invalidation", false);
+        var enableCaptureBackpressure = ResolveToggle("--enable-capture-backpressure", "--disable-capture-backpressure", false);
+        var enablePumpCadenceAdaptation = ResolveToggle("--enable-pump-cadence-adaptation", "--disable-pump-cadence-adaptation", false);
+
         int? windowlessFrameRateOverride = null;
         var windowlessRateArg = GetArgValue("--windowless-frame-rate");
         if (windowlessRateArg is not null)
@@ -267,7 +316,10 @@ public sealed class LaunchParameters
             HasFlag("--disable-frame-rate-limit"),
             HasFlag("--allow-latency-expansion"),
             alignWithCaptureTimestamps,
-            enableCadenceTelemetry);
+            enableCadenceTelemetry,
+            enablePacedInvalidation,
+            enableCaptureBackpressure,
+            enablePumpCadenceAdaptation);
 
         return true;
     }
@@ -354,6 +406,9 @@ public sealed class LaunchParameters
             settings.DisableFrameRateLimit,
             settings.AllowLatencyExpansion,
             settings.AlignWithCaptureTimestamps,
-            settings.EnableCadenceTelemetry);
+            settings.EnableCadenceTelemetry,
+            settings.EnablePacedInvalidation,
+            settings.EnableCaptureBackpressure,
+            settings.EnablePumpCadenceAdaptation);
     }
 }

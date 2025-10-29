@@ -1,9 +1,11 @@
-using NewTek;
-using NewTek.NDI;
-using Serilog;
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using System.Threading;
+using System.Threading.Tasks;
+using NewTek;
+using NewTek.NDI;
+using Serilog;
+using Tractus.HtmlToNdi.Chromium;
 
 namespace Tractus.HtmlToNdi.Video;
 
@@ -62,6 +64,13 @@ internal sealed class NdiVideoPipeline : IDisposable
     private readonly bool cadenceTelemetryEnabled;
     private readonly bool cadenceTrackingEnabled;
     private double cadenceAlignmentDeltaFrames;
+    private readonly bool pacedInvalidationEnabled;
+    private readonly bool captureBackpressureEnabled;
+    private readonly bool pumpCadenceAdaptationEnabled;
+
+    private IPacedInvalidationScheduler? invalidationScheduler;
+    private bool captureGateActive;
+    private int consecutivePositiveLatencyTicks;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="NdiVideoPipeline"/> class.
@@ -86,6 +95,9 @@ internal sealed class NdiVideoPipeline : IDisposable
         alignWithCaptureTimestamps = options.AlignWithCaptureTimestamps;
         cadenceTelemetryEnabled = options.EnableCadenceTelemetry;
         cadenceTrackingEnabled = alignWithCaptureTimestamps || cadenceTelemetryEnabled;
+        pacedInvalidationEnabled = options.EnableBuffering && options.EnablePacedInvalidation;
+        captureBackpressureEnabled = options.EnableBuffering && options.EnableCaptureBackpressure;
+        pumpCadenceAdaptationEnabled = options.EnablePumpCadenceAdaptation;
         captureCadenceTracker = new CadenceTracker(frameInterval);
         outputCadenceTracker = new CadenceTracker(frameInterval);
 
@@ -110,6 +122,27 @@ internal sealed class NdiVideoPipeline : IDisposable
     /// Gets the configured frame rate.
     /// </summary>
     public FrameRate FrameRate => configuredFrameRate;
+
+    internal NdiVideoPipelineOptions Options => options;
+
+    internal void AttachInvalidationScheduler(IPacedInvalidationScheduler? scheduler)
+    {
+        invalidationScheduler = scheduler;
+        captureGateActive = false;
+        consecutivePositiveLatencyTicks = 0;
+
+        if (scheduler is null)
+        {
+            return;
+        }
+
+        scheduler.UpdateCadenceAlignment(0);
+
+        if (BufferingEnabled && pacedInvalidationEnabled)
+        {
+            ScheduleWarmupInvalidations(targetDepth);
+        }
+    }
 
     /// <summary>
     /// Starts the video pipeline.
@@ -207,6 +240,8 @@ internal sealed class NdiVideoPipeline : IDisposable
             }
 
             pacingSequence = nextSequence;
+
+            await RequestNextInvalidationAsync(token).ConfigureAwait(false);
         }
     }
 
@@ -259,6 +294,123 @@ internal sealed class NdiVideoPipeline : IDisposable
         return baseline + TimeSpan.FromTicks(adjustmentTicks);
     }
 
+    private async Task RequestNextInvalidationAsync(CancellationToken token)
+    {
+        if (!BufferingEnabled || !pacedInvalidationEnabled)
+        {
+            return;
+        }
+
+        var scheduler = invalidationScheduler;
+        if (scheduler is null || captureGateActive || scheduler.IsPaused)
+        {
+            return;
+        }
+
+        try
+        {
+            await scheduler.RequestInvalidateAsync(token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        catch (ObjectDisposedException)
+        {
+        }
+        catch (Exception ex)
+        {
+            logger.Warning(ex, "Failed to request Chromium invalidation from pacing loop");
+        }
+    }
+
+    private void ScheduleWarmupInvalidations(int count)
+    {
+        if (!pacedInvalidationEnabled || count <= 0)
+        {
+            return;
+        }
+
+        var scheduler = invalidationScheduler;
+        if (scheduler is null)
+        {
+            return;
+        }
+
+        _ = Task.Run(async () =>
+        {
+            for (var i = 0; i < count && !cancellation.IsCancellationRequested; i++)
+            {
+                try
+                {
+                    await scheduler.RequestInvalidateAsync(cancellation.Token).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException)
+                {
+                    break;
+                }
+                catch (ObjectDisposedException)
+                {
+                    break;
+                }
+                catch (Exception ex)
+                {
+                    logger.Debug(ex, "Warmup invalidate request failed");
+                    break;
+                }
+            }
+        });
+    }
+
+    private void UpdateCaptureBackpressure(int backlog)
+    {
+        if (!captureBackpressureEnabled)
+        {
+            return;
+        }
+
+        var scheduler = invalidationScheduler;
+        if (scheduler is null)
+        {
+            return;
+        }
+
+        if (latencyError > 0.5d)
+        {
+            if (consecutivePositiveLatencyTicks < int.MaxValue)
+            {
+                consecutivePositiveLatencyTicks++;
+            }
+        }
+        else if (latencyError <= 0)
+        {
+            consecutivePositiveLatencyTicks = 0;
+        }
+
+        var highBacklog = backlog >= highWatermark;
+        if (!captureGateActive && (highBacklog || consecutivePositiveLatencyTicks >= 3))
+        {
+            captureGateActive = true;
+            scheduler.Pause();
+            logger.Information(
+                "Chromium capture paused due to oversupply: backlog={Backlog}, latencyError={LatencyError:F2}",
+                backlog,
+                latencyError);
+            return;
+        }
+
+        if (captureGateActive && backlog <= targetDepth && latencyError <= 0)
+        {
+            captureGateActive = false;
+            consecutivePositiveLatencyTicks = 0;
+            scheduler.Resume();
+            logger.Information(
+                "Chromium capture resumed after oversupply: backlog={Backlog}, latencyError={LatencyError:F2}",
+                backlog,
+                latencyError);
+            ScheduleWarmupInvalidations(targetDepth);
+        }
+    }
+
     private double CalculateCadenceAlignmentOffset()
     {
         if (!alignWithCaptureTimestamps || !cadenceTrackingEnabled)
@@ -271,6 +423,11 @@ internal sealed class NdiVideoPipeline : IDisposable
         var outputDrift = outputCadenceTracker.GetDriftFrames();
         var delta = captureDrift - outputDrift;
         Interlocked.Exchange(ref cadenceAlignmentDeltaFrames, delta);
+
+        if (pumpCadenceAdaptationEnabled && invalidationScheduler is not null)
+        {
+            invalidationScheduler.UpdateCadenceAlignment(delta);
+        }
 
         if (double.IsNaN(delta) || Math.Abs(delta) < 0.01d)
         {
@@ -454,6 +611,8 @@ internal sealed class NdiVideoPipeline : IDisposable
             }
         }
 
+        UpdateCaptureBackpressure(backlog);
+
         if (ringBuffer.TryDequeue(out var frame) && frame is not null)
         {
             SendBufferedFrame(frame);
@@ -581,6 +740,7 @@ internal sealed class NdiVideoPipeline : IDisposable
         pacingResetRequested = true;
         outputCadenceTracker.Reset();
         Interlocked.Exchange(ref cadenceAlignmentDeltaFrames, 0d);
+        invalidationScheduler?.UpdateCadenceAlignment(0);
     }
 
     private void ExitWarmup()
@@ -618,6 +778,10 @@ internal sealed class NdiVideoPipeline : IDisposable
             Interlocked.Read(ref latencyExpansionFramesServed));
 
         pacingResetRequested = true;
+        if (BufferingEnabled && pacedInvalidationEnabled)
+        {
+            ScheduleWarmupInvalidations(targetDepth);
+        }
     }
 
     private void ResetBufferingState()
@@ -647,6 +811,9 @@ internal sealed class NdiVideoPipeline : IDisposable
         ringBuffer?.Clear();
         lastSentFrame?.Dispose();
         lastSentFrame = null;
+        captureGateActive = false;
+        consecutivePositiveLatencyTicks = 0;
+        invalidationScheduler?.Resume();
     }
 
     private double ComputeLastWarmupMilliseconds()
@@ -670,6 +837,8 @@ internal sealed class NdiVideoPipeline : IDisposable
     internal long LatencyExpansionTicks => Interlocked.Read(ref latencyExpansionTicks);
 
     internal long LatencyExpansionFramesServed => Interlocked.Read(ref latencyExpansionFramesServed);
+
+    internal bool CaptureGateActive => captureBackpressureEnabled && captureGateActive;
 
     private (int numerator, int denominator) ResolveFrameRate(DateTime timestamp)
     {

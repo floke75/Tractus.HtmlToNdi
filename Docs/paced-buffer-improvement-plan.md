@@ -112,12 +112,16 @@ PR41 while ensuring the latency bucket never collapses below the chosen depth.
   that drift back into the deadline adjustment while telemetry now reports RMS
   and peak jitter plus per-stage drift against the configured cadence to help
   operators spot capture/output mismatches.【F:Video/NdiVideoPipeline.cs†L38-L54】【F:Video/NdiVideoPipeline.cs†L187-L205】【F:Video/NdiVideoPipeline.cs†L620-L873】
-- Operators can disable timestamp alignment or cadence telemetry when chasing
-  legacy behaviour or quieter logs. The launcher exposes dedicated checkboxes
-  while the CLI honours `--disable-capture-alignment` /
-  `--disable-cadence-telemetry` (with matching `--align-with-capture-timestamps`
-  and `--enable-cadence-telemetry` overrides). Both options default to enabled
-  so existing deployments keep the improved pacing unless operators opt out.【F:Launcher/LauncherForm.cs†L28-L123】【F:Launcher/LaunchParameters.cs†L146-L204】【F:README.md†L28-L44】
+- Chromium invalidation now runs through a pacing-aware scheduler. Legacy builds
+  keep the periodic timer, while paced invalidation routes every `Invalidate`
+  through the send loop and honours pause/resume calls when the capture gate
+  engages. Cadence adaptation stretches or delays invalidations by up to half a
+  frame so Chromium converges toward the paced sender.【F:Chromium/FramePump.cs†L1-L312】【F:Video/NdiVideoPipeline.cs†L76-L309】
+- Operators can toggle timestamp alignment, cadence telemetry, paced
+  invalidation, capture backpressure, and pump cadence adaptation either from
+  the launcher or the CLI. Each switch has an explicit `--enable-...` /
+  `--disable-...` pair so production runs can opt into the new behaviour
+  gradually.【F:Launcher/LauncherForm.cs†L94-L341】【F:Launcher/LaunchParameters.cs†L146-L210】【F:README.md†L34-L47】
 - The pacer waits for each deadline using a coarse `Task.Delay` followed by a
   sub-millisecond spin so OS timer jitter cannot erode the queue depth, yet the
   loop still honours cancellation instantly when the pipeline shuts down.【F:Video/NdiVideoPipeline.cs†L217-L254】
