@@ -852,6 +852,63 @@ public class NdiVideoPipelineTests
     }
 
     [Fact]
+    public void DirectInvalidationsRecoverAfterDroppedPaint()
+    {
+        var sender = new CollectingSender();
+        var scheduler = new TestScheduler();
+        var options = new NdiVideoPipelineOptions
+        {
+            EnableBuffering = false,
+            TelemetryInterval = TimeSpan.FromDays(1),
+            EnablePacedInvalidation = true,
+        };
+
+        var pipeline = new NdiVideoPipeline(sender, new FrameRate(60, 1), options, CreateNullLogger());
+        pipeline.AttachInvalidationScheduler(scheduler);
+
+        try
+        {
+            var initial = SpinWait.SpinUntil(
+                () => scheduler.RequestCount >= 1,
+                TimeSpan.FromMilliseconds(500));
+            Assert.True(initial, "Initial paced invalidation request not observed.");
+
+            var baseline = scheduler.RequestCount;
+            var reissued = SpinWait.SpinUntil(
+                () => scheduler.RequestCount >= baseline + 1,
+                TimeSpan.FromMilliseconds(1000));
+
+            Assert.True(
+                reissued,
+                $"Direct paced invalidation did not reissue after timeout. Baseline={baseline}, Current={scheduler.RequestCount}");
+
+            var requestAfterTimeout = scheduler.RequestCount;
+            var frameSize = 4 * 2 * 2;
+            var buffer = Marshal.AllocHGlobal(frameSize);
+
+            try
+            {
+                FillBuffer(buffer, frameSize, 0x42);
+                pipeline.HandleFrame(CreateCapturedFrame(buffer, 2, 2, 8));
+            }
+            finally
+            {
+                Marshal.FreeHGlobal(buffer);
+            }
+
+            var followUp = SpinWait.SpinUntil(
+                () => scheduler.RequestCount >= requestAfterTimeout + 1,
+                TimeSpan.FromMilliseconds(500));
+            Assert.True(followUp, "Pipeline did not request a follow-up invalidation after sending direct frame.");
+        }
+        finally
+        {
+            pipeline.Dispose();
+            scheduler.Dispose();
+        }
+    }
+
+    [Fact]
     public async Task PacedInvalidationRequestsInDirectMode()
     {
         var sender = new CollectingSender();

@@ -23,11 +23,8 @@ internal sealed class NdiVideoPipeline : IDisposable
     private readonly FrameRingBuffer<NdiVideoFrame>? ringBuffer;
     private readonly ILogger logger;
     private static readonly TimeSpan BusyWaitThreshold = TimeSpan.FromMilliseconds(1);
-    private static readonly TimeSpan InvalidationTicketTimeout = TimeSpan.FromMilliseconds(250);
     private static readonly double StopwatchTicksToTimeSpanTicks = TimeSpan.TicksPerSecond / (double)Stopwatch.Frequency;
     private static readonly double TimeSpanTicksToStopwatchTicks = Stopwatch.Frequency / (double)TimeSpan.TicksPerSecond;
-    private static readonly long InvalidationTicketTimeoutStopwatchTicks =
-        (long)Math.Max(1d, InvalidationTicketTimeout.Ticks * TimeSpanTicksToStopwatchTicks);
 
     private readonly int targetDepth;
     private readonly double lowWatermark;
@@ -35,6 +32,9 @@ internal sealed class NdiVideoPipeline : IDisposable
     private readonly bool allowLatencyExpansion;
     private readonly TimeSpan frameInterval;
     private readonly long maxPacingAdjustmentTicks;
+    private readonly TimeSpan invalidationTicketTimeout;
+    private readonly long invalidationTicketTimeoutStopwatchTicks;
+    private readonly TimeSpan captureDemandCheckInterval;
     private readonly ConcurrentQueue<long> invalidationTicketTimestamps = new();
 
     private bool bufferPrimed;
@@ -85,6 +85,9 @@ internal sealed class NdiVideoPipeline : IDisposable
     private long pendingInvalidations;
     private long spuriousCaptureCount;
     private long expiredInvalidationTickets;
+    private readonly object captureDemandMaintenanceGate = new();
+    private CancellationTokenSource? captureDemandMaintenanceCts;
+    private Task? captureDemandMaintenanceTask;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="NdiVideoPipeline"/> class.
@@ -106,6 +109,10 @@ internal sealed class NdiVideoPipeline : IDisposable
         allowLatencyExpansion = options.AllowLatencyExpansion && options.EnableBuffering;
         frameInterval = frameRate.FrameDuration;
         maxPacingAdjustmentTicks = Math.Max(1, frameInterval.Ticks / 2);
+        invalidationTicketTimeout = CalculateInvalidationTicketTimeout(frameInterval);
+        invalidationTicketTimeoutStopwatchTicks =
+            (long)Math.Max(1d, invalidationTicketTimeout.Ticks * TimeSpanTicksToStopwatchTicks);
+        captureDemandCheckInterval = CalculateCaptureDemandCheckInterval(frameInterval, invalidationTicketTimeout);
         alignWithCaptureTimestamps = options.AlignWithCaptureTimestamps;
         cadenceTelemetryEnabled = options.EnableCadenceTelemetry;
         cadenceTrackingEnabled = alignWithCaptureTimestamps || cadenceTelemetryEnabled;
@@ -163,10 +170,12 @@ internal sealed class NdiVideoPipeline : IDisposable
 
         if (scheduler is null)
         {
+            StopCaptureDemandMaintenance();
             return;
         }
 
         scheduler.UpdateCadenceAlignment(0);
+        StartCaptureDemandMaintenance();
 
         if (directPacedInvalidationEnabled)
         {
@@ -207,6 +216,7 @@ internal sealed class NdiVideoPipeline : IDisposable
     public void Stop()
     {
         cancellation.Cancel();
+        StopCaptureDemandMaintenance();
         try
         {
             pacingTask?.Wait();
@@ -352,6 +362,28 @@ internal sealed class NdiVideoPipeline : IDisposable
         return baseline + TimeSpan.FromTicks(adjustmentTicks);
     }
 
+    private static TimeSpan CalculateInvalidationTicketTimeout(TimeSpan frameDuration)
+    {
+        var minTimeout = TimeSpan.FromMilliseconds(40);
+        var maxTimeout = TimeSpan.FromMilliseconds(200);
+        var desiredTicks = frameDuration.Ticks * 3L;
+        desiredTicks = Math.Max(minTimeout.Ticks, desiredTicks);
+        desiredTicks = Math.Min(maxTimeout.Ticks, desiredTicks);
+        return TimeSpan.FromTicks(desiredTicks);
+    }
+
+    private static TimeSpan CalculateCaptureDemandCheckInterval(TimeSpan frameDuration, TimeSpan ticketTimeout)
+    {
+        var minIntervalTicks = TimeSpan.FromMilliseconds(5).Ticks;
+        var maxIntervalTicks = TimeSpan.FromMilliseconds(100).Ticks;
+        var frameTicks = Math.Max(1L, frameDuration.Ticks);
+        var timeoutTicks = Math.Max(1L, ticketTimeout.Ticks / 2);
+        var candidateTicks = Math.Min(frameTicks, timeoutTicks);
+        candidateTicks = Math.Max(minIntervalTicks, candidateTicks);
+        candidateTicks = Math.Min(maxIntervalTicks, candidateTicks);
+        return TimeSpan.FromTicks(candidateTicks);
+    }
+
     private void EnsureCaptureDemand()
     {
         EnsureCaptureDemandInternal(ringBuffer?.Count);
@@ -407,6 +439,123 @@ internal sealed class NdiVideoPipeline : IDisposable
             }
 
             current = updated;
+        }
+    }
+
+    private void StartCaptureDemandMaintenance()
+    {
+        if (!directPacedInvalidationEnabled || !CaptureTicketsEnabled)
+        {
+            return;
+        }
+
+        lock (captureDemandMaintenanceGate)
+        {
+            if (captureDemandMaintenanceTask is not null && !captureDemandMaintenanceTask.IsCompleted)
+            {
+                return;
+            }
+
+            captureDemandMaintenanceCts?.Cancel();
+            captureDemandMaintenanceCts?.Dispose();
+
+            var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellation.Token);
+            captureDemandMaintenanceCts = linked;
+            captureDemandMaintenanceTask = Task.Run(() => RunCaptureDemandMaintenanceAsync(linked.Token));
+        }
+    }
+
+    private void StopCaptureDemandMaintenance()
+    {
+        CancellationTokenSource? cts;
+        Task? task;
+
+        lock (captureDemandMaintenanceGate)
+        {
+            cts = captureDemandMaintenanceCts;
+            task = captureDemandMaintenanceTask;
+            captureDemandMaintenanceCts = null;
+            captureDemandMaintenanceTask = null;
+        }
+
+        if (cts is not null)
+        {
+            try
+            {
+                cts.Cancel();
+            }
+            catch (ObjectDisposedException)
+            {
+            }
+            finally
+            {
+                cts.Dispose();
+            }
+        }
+
+        if (task is not null)
+        {
+            _ = task.ContinueWith(
+                t =>
+                {
+                    if (!t.IsFaulted || t.Exception is null)
+                    {
+                        return;
+                    }
+
+                    var root = t.Exception.GetBaseException() ?? t.Exception;
+                    if (root is OperationCanceledException || root is ObjectDisposedException)
+                    {
+                        return;
+                    }
+
+                    logger.Warning(root, "Capture demand maintenance task faulted");
+                },
+                CancellationToken.None,
+                TaskContinuationOptions.ExecuteSynchronously,
+                TaskScheduler.Default);
+        }
+    }
+
+    private async Task RunCaptureDemandMaintenanceAsync(CancellationToken token)
+    {
+        var interval = captureDemandCheckInterval > TimeSpan.Zero
+            ? captureDemandCheckInterval
+            : TimeSpan.FromMilliseconds(10);
+
+        try
+        {
+            using var timer = new PeriodicTimer(interval);
+            while (await timer.WaitForNextTickAsync(token).ConfigureAwait(false))
+            {
+                if (token.IsCancellationRequested)
+                {
+                    break;
+                }
+
+                try
+                {
+                    EnsureCaptureDemand();
+                }
+                catch (OperationCanceledException)
+                {
+                    break;
+                }
+                catch (ObjectDisposedException)
+                {
+                    break;
+                }
+                catch (Exception ex)
+                {
+                    logger.Warning(ex, "Capture demand maintenance tick failed");
+                }
+            }
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        catch (ObjectDisposedException)
+        {
         }
     }
 
@@ -513,7 +662,7 @@ internal sealed class NdiVideoPipeline : IDisposable
 
         while (invalidationTicketTimestamps.TryPeek(out var issuedAt))
         {
-            if (now - issuedAt < InvalidationTicketTimeoutStopwatchTicks)
+            if (now - issuedAt < invalidationTicketTimeoutStopwatchTicks)
             {
                 break;
             }
