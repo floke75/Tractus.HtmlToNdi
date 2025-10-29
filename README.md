@@ -46,7 +46,15 @@ Parameter|Description
 `--launcher`|Forces the launcher window to appear even when other parameters are supplied.
 `--no-launcher`|Skips the launcher and honours the supplied command-line arguments only.
 
-When the paced buffer is enabled the pipeline repeats the most recently transmitted frame while warming up or recovering from an underrun so receivers continue to see a stable cadence. Passing `--allow-latency-expansion` switches that recovery into a variable-latency mode that keeps playing any queued frames before falling back to repeats, smoothing out motion at the cost of temporary additional delay. Pairing the buffer with `--enable-paced-invalidation` keeps Chromium renders in lockstep with the paced sender, while `--enable-capture-backpressure` and `--enable-pump-alignment` add latency guardrails and cadence alignment on top. The launcher exposes checkboxes for latency expansion, paced invalidation, capture backpressure, pump alignment, capture alignment, and cadence telemetry so operators can toggle those behaviours without touching the command line. See [`Docs/paced-output-buffer.md`](Docs/paced-output-buffer.md) for a deeper walkthrough of the priming and telemetry behaviour.
+### Pacing and capture backpressure
+
+When the paced buffer is enabled the pipeline repeats the most recently transmitted frame while warming up or recovering from an underrun so receivers continue to see a stable cadence. Passing `--allow-latency-expansion` switches that recovery into a variable-latency mode that keeps playing any queued frames before falling back to repeats, smoothing out motion at the cost of temporary additional delay.
+
+`--enable-paced-invalidation` moves Chromium onto the same cadence as the paced sender so repaints only happen when the pipeline can deliver the next frame. This pacing can be used on its own (even with zero-copy output) to eliminate redundant Chromium work, or it can be combined with buffering to keep capture and output in lockstep.
+
+`--enable-capture-backpressure` pauses Chromium invalidations whenever the buffer backlog exceeds the configured depth and resumes once latency returns to the target. This option requires both buffering and paced invalidation so the scheduler can actually halt and resume repaint requests. `--enable-pump-alignment` layers cadence drift feedback on top, nudging Chromium's pump earlier or later to follow the paced sender when capture timestamps wander.
+
+The launcher exposes checkboxes for latency expansion, paced invalidation, capture backpressure, pump alignment, capture alignment, and cadence telemetry so operators can toggle those behaviours without touching the command line. See [`Docs/paced-output-buffer.md`](Docs/paced-output-buffer.md) for a deeper walkthrough of the priming and telemetry behaviour.
 
 #### Example Launch
 

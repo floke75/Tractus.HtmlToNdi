@@ -12,7 +12,7 @@ For the current paced-buffer design direction and recommendations, review `Docs/
 ## 1. What the current build actually does (net8.0, December 2024 snapshot)
 
 * Entry point: `Program.Main` (`Program.cs`). It sets the working directory, initializes logging via `AppManagement.Initialize`, parses CLI flags (including `--fps`, buffering, and telemetry settings), allocates the NDI sender up front, constructs an `NdiVideoPipeline`, then starts CefSharp OffScreen inside a dedicated synchronization context. After the browser bootstraps the app spins up the ASP.NET Core minimal API.
-* Chromium lifecycle: `AsyncContext.Run` + `SingleThreadSynchronizationContext` keep CefSharp happy on one STA-like thread. `CefWrapper.InitializeWrapperAsync` waits for the first page load, unmutes audio (CEF starts muted), subscribes to the `Paint` event, and starts a `FramePump` that invalidates Chromium at the requested cadence while a watchdog keeps the UI thread alive.
+* Chromium lifecycle: `AsyncContext.Run` + `SingleThreadSynchronizationContext` keep CefSharp happy on one STA-like thread. `CefWrapper.InitializeWrapperAsync` waits for the first page load, unmutes audio (CEF starts muted), subscribes to the `Paint` event, and starts a `FramePump`/`IChromiumInvalidationScheduler` pair that invalidates Chromium at the requested cadence while a watchdog keeps the UI thread alive and honours paced, pausable invalidation hints from the video pipeline.
 * Video path: `ChromiumWebBrowser.Paint` forwards frames to the `NdiVideoPipeline`. In zero-copy mode the pipeline sends the GPU buffer directly; when buffering is enabled it copies into a pooled ring buffer, waits until `BufferDepth` frames are queued, then drains the backlog FIFO while repeating the latest frame on underruns so cadence stays constant. Frame-rate metadata is advertised using either the configured target cadence or the measured average.
 * Audio path: `CustomAudioHandler` exposes Cef audio, allocates a float buffer sized for one second, copies each planar channel into contiguous blocks inside that buffer, and sends it with `NDIlib.send_send_audio_v2`. (Note: the code claims “interleaved” but still stores channels sequentially; downstream receivers must cope with planar-like layout.)
 * Control plane: ASP.NET Core minimal API listens on HTTP (no TLS, no auth). Swagger UI is enabled. All endpoints directly call methods on the static `Program.browserWrapper` instance.
@@ -137,7 +137,7 @@ When adding routes, update **both** this table and `Tractus.HtmlToNdi.http` samp
 
 ### CefWrapper (`Chromium/CefWrapper.cs`)
 * `ChromiumWebBrowser` is constructed with `AudioHandler = new CustomAudioHandler()` and a fixed `System.Drawing.Size(width,height)`.
-* A `FramePump` invalidates Chromium on the cadence derived from `--fps` (or `--windowless-frame-rate`) and contains a watchdog to recover if paint events stall. When paced invalidation is enabled it waits for the NDI pipeline to request the next invalidate and honours pause/alignment hints before touching Chromium.
+* A `FramePump` invalidates Chromium on the cadence derived from `--fps` (or `--windowless-frame-rate`) and contains a watchdog to recover if paint events stall. When paced invalidation is enabled it acts as an `IChromiumInvalidationScheduler`, waiting for the NDI pipeline to request the next invalidate, honouring pause/alignment hints before touching Chromium, and resetting the watchdog baseline whenever capture resumes after backpressure.
 * `ScrollBy` always uses `(x=0,y=0)` as the mouse location; complex scrolling (e.g., inside scrolled divs) may require additional API work.
 * `Click` only supports the left mouse button; drag, double-click, or right-click interactions are not implemented.
 * `SendKeystrokes` issues **only** `KeyDown` events with `NativeKeyCode=Convert.ToInt32(char)`. There is no key-up, modifiers, or IME support—uppercase letters require the page to handle them despite missing Shift state.
@@ -157,6 +157,10 @@ When adding routes, update **both** this table and `Tractus.HtmlToNdi.http` samp
 ### Frame buffering (`Video/FrameRingBuffer.cs`)
 * `FrameRingBuffer<T>` drops the oldest frame when capacity is exceeded and surfaces it via the `out` parameter. That action increments `DroppedFromOverflow` but does **not** dispose the frame; the caller must do so.
 * `TryDequeue` returns the oldest frame without disturbing the rest of the queue so the paced sender can preserve FIFO ordering. `DequeueLatest` remains available for scenarios that only care about the newest frame; it disposes older entries before returning the most recent one and avoids double-counting stale drops when overflow was already recorded.
+
+### Video pacing (`Video/NdiVideoPipeline.cs`)
+* The pipeline owns the paced buffer, cadence telemetry, and Chromium invalidation scheduler. It primes the scheduler even in direct-send mode, pauses capture when the backlog rises above the configured depth, and resumes/aligns Chromium once latency targets are restored.
+* Backpressure (`EnableCaptureBackpressure`) requires both buffering and paced invalidation so the scheduler can halt repaint requests while the buffer drains. Pump alignment feeds cadence drift back into the scheduler via `UpdateAlignmentDelta`.
 
 ### Logging & diagnostics (`AppManagement.cs`)
 * `AppManagement.InstanceName` composes `<os>_<arch>_<machinename>` for telemetry or metadata (not currently used elsewhere).

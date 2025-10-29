@@ -7,7 +7,9 @@ using System.Threading.Channels;
 namespace Tractus.HtmlToNdi.Video;
 
 /// <summary>
-/// Periodically invalidates the Chromium browser to trigger paint events.
+/// Drives Chromium invalidations either on a fixed cadence or in response to
+/// paced pipeline requests so the browser only repaints when the sender is
+/// ready for a new frame.
 /// </summary>
 internal sealed class FramePump : IChromiumInvalidationScheduler
 {
@@ -28,9 +30,9 @@ internal sealed class FramePump : IChromiumInvalidationScheduler
     /// <summary>
     /// Initializes a new instance of the <see cref="FramePump"/> class.
     /// </summary>
-    /// <param name="browser">The Chromium browser instance.</param>
-    /// <param name="interval">The interval at which to invalidate the browser.</param>
-    /// <param name="watchdogInterval">The interval for the watchdog timer.</param>
+    /// <param name="browser">The Chromium browser instance that will be invalidated.</param>
+    /// <param name="interval">The nominal interval between invalidations.</param>
+    /// <param name="watchdogInterval">How frequently the watchdog should force a repaint if Chromium stalls.</param>
     /// <param name="logger">The logger instance.</param>
     /// <param name="pacedMode">Whether Chromium invalidations should be explicitly paced instead of free-running.</param>
     public FramePump(ChromiumWebBrowser browser, TimeSpan interval, TimeSpan? watchdogInterval, ILogger logger, bool pacedMode = false)
@@ -75,10 +77,15 @@ internal sealed class FramePump : IChromiumInvalidationScheduler
     }
 
     /// <summary>
-    /// Notifies the frame pump that a paint event has occurred.
+    /// Records that Chromium produced a paint so the watchdog can measure
+    /// forward progress.
     /// </summary>
     public void NotifyPaint() => lastPaint = DateTime.UtcNow;
 
+    /// <summary>
+    /// Requests that the next Chromium invalidation be issued, typically after
+    /// the paced sender transmits or repeats a frame.
+    /// </summary>
     public void RequestNextInvalidate()
     {
         if (!pacedMode || pacedRequests is null || cancellation.IsCancellationRequested)
@@ -89,6 +96,10 @@ internal sealed class FramePump : IChromiumInvalidationScheduler
         pacedRequests.Writer.TryWrite(true);
     }
 
+    /// <summary>
+    /// Temporarily pauses Chromium invalidations so capture can yield to
+    /// backpressure while the paced pipeline drains the buffer.
+    /// </summary>
     public void PauseInvalidation()
     {
         if (!pacedMode)
@@ -99,6 +110,10 @@ internal sealed class FramePump : IChromiumInvalidationScheduler
         resumeGate.Reset();
     }
 
+    /// <summary>
+    /// Resumes Chromium invalidations after a pause and resets the watchdog
+    /// baseline so it does not immediately trigger.
+    /// </summary>
     public void ResumeInvalidation()
     {
         if (!pacedMode)
@@ -110,6 +125,10 @@ internal sealed class FramePump : IChromiumInvalidationScheduler
         resumeGate.Set();
     }
 
+    /// <summary>
+    /// Applies cadence-alignment feedback so the next paced invalidate can
+    /// skew earlier or later by the requested frame fraction.
+    /// </summary>
     public void UpdateAlignmentDelta(double deltaFrames)
     {
         if (!pacedMode)

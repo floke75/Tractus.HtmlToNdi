@@ -8,7 +8,9 @@ using System.Threading;
 namespace Tractus.HtmlToNdi.Video;
 
 /// <summary>
-/// Manages the video pipeline, including buffering and sending frames to NDI.
+/// Manages the video pipeline, including the paced buffer, capture cadence
+/// telemetry, and coordination with Chromium invalidations to provide
+/// backpressure-aware frame delivery to NDI.
 /// </summary>
 internal sealed class NdiVideoPipeline : IDisposable
 {
@@ -124,7 +126,8 @@ internal sealed class NdiVideoPipeline : IDisposable
     public FrameRate FrameRate => configuredFrameRate;
 
     /// <summary>
-    /// Starts the video pipeline.
+    /// Starts the video pipeline, priming paced invalidation immediately so the
+    /// browser repaints even when buffering is disabled.
     /// </summary>
     public void Start()
     {
@@ -916,6 +919,11 @@ internal sealed class NdiVideoPipeline : IDisposable
         };
     }
 
+    /// <summary>
+    /// Attaches the Chromium invalidation scheduler that will receive pacing,
+    /// backpressure, and alignment hints from the pipeline.
+    /// </summary>
+    /// <param name="scheduler">The scheduler instance to coordinate with.</param>
     internal void AttachInvalidationScheduler(IChromiumInvalidationScheduler? scheduler)
     {
         Volatile.Write(ref invalidationScheduler, scheduler);
