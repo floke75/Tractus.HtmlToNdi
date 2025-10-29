@@ -106,6 +106,7 @@ internal sealed class FramePump : IChromiumInvalidationScheduler
             return;
         }
 
+        lastPaint = DateTime.UtcNow;
         resumeGate.Set();
     }
 
