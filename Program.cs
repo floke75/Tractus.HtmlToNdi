@@ -15,6 +15,7 @@ using System.Globalization;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Text;
+using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Forms;
 using Tractus.HtmlToNdi.Chromium;
@@ -162,6 +163,13 @@ public class Program
             EnablePumpCadenceAdaptation = parameters.EnablePumpCadenceAdaptation,
         };
 
+        NativeNdiVideoSender? ndiSender = null;
+        NdiVideoPipeline? videoPipeline = null;
+        CancellationTokenSource? metadataCancellation = null;
+        Thread? metadataThread = null;
+        bool metadataThreadStarted = false;
+        bool pipelineAttachedToBrowser = false;
+
         Log.Information("Ensuring NDI native runtime is available...");
         EnsureNdiNativeLibraryLoaded();
         Log.Information("NDI native runtime setup complete");
@@ -199,59 +207,62 @@ public class Program
             return;
         }
 
-        Log.Information("NDI sender created successfully");
-
-        var ndiSender = new NativeNdiVideoSender(Program.NdiSenderPtr);
-        var videoPipeline = new NdiVideoPipeline(ndiSender, frameRate, pipelineOptions, Log.Logger);
-
         try
         {
-            Log.Information("Initialising Chromium via AsyncContext");
-            AsyncContext.Run(async delegate
+            Log.Information("NDI sender created successfully");
+
+            ndiSender = new NativeNdiVideoSender(Program.NdiSenderPtr);
+            videoPipeline = new NdiVideoPipeline(ndiSender, frameRate, pipelineOptions, Log.Logger);
+
+            try
             {
-                var settings = new CefSettings();
-                if (!Directory.Exists(launchCachePath))
+                Log.Information("Initialising Chromium via AsyncContext");
+                AsyncContext.Run(async delegate
                 {
-                    Directory.CreateDirectory(launchCachePath);
-                }
+                    var settings = new CefSettings();
+                    if (!Directory.Exists(launchCachePath))
+                    {
+                        Directory.CreateDirectory(launchCachePath);
+                    }
 
-                settings.RootCachePath = launchCachePath;
-                settings.CefCommandLineArgs.Add("autoplay-policy", "no-user-gesture-required");
+                    settings.RootCachePath = launchCachePath;
+                    settings.CefCommandLineArgs.Add("autoplay-policy", "no-user-gesture-required");
 
-                var targetWindowlessRate = windowlessFrameRateOverride ?? Math.Clamp((int)Math.Round(frameRate.Value), 1, 240);
-                settings.CefCommandLineArgs.Add("off-screen-frame-rate", targetWindowlessRate.ToString(CultureInfo.InvariantCulture));
+                    var targetWindowlessRate = windowlessFrameRateOverride ?? Math.Clamp((int)Math.Round(frameRate.Value), 1, 240);
+                    settings.CefCommandLineArgs.Add("off-screen-frame-rate", targetWindowlessRate.ToString(CultureInfo.InvariantCulture));
 
-                if (parameters.DisableGpuVsync)
-                {
-                    settings.CefCommandLineArgs.Add("disable-gpu-vsync", "1");
-                }
+                    if (parameters.DisableGpuVsync)
+                    {
+                        settings.CefCommandLineArgs.Add("disable-gpu-vsync", "1");
+                    }
 
-                if (parameters.DisableFrameRateLimit)
-                {
-                    settings.CefCommandLineArgs.Add("disable-frame-rate-limit", "1");
-                }
+                    if (parameters.DisableFrameRateLimit)
+                    {
+                        settings.CefCommandLineArgs.Add("disable-frame-rate-limit", "1");
+                    }
 
-                settings.EnableAudio();
-                Cef.Initialize(settings);
-                browserWrapper = new CefWrapper(
-                    width,
-                    height,
-                    startUrl,
-                    videoPipeline,
-                    frameRate,
-                    Log.Logger,
-                    windowlessFrameRateOverride);
+                    settings.EnableAudio();
+                    var cefInitialized = Cef.Initialize(settings);
+                    Log.Information("CEF initialization {Result}", cefInitialized ? "succeeded" : "reported failure");
+                    browserWrapper = new CefWrapper(
+                        width,
+                        height,
+                        startUrl,
+                        videoPipeline,
+                        frameRate,
+                        Log.Logger,
+                        windowlessFrameRateOverride);
+                    pipelineAttachedToBrowser = true;
 
-                await browserWrapper.InitializeWrapperAsync();
-                Log.Information("Chromium initialised successfully");
-            });
-        }
-        catch (Exception ex)
-        {
-            Log.Fatal(ex, "Failed to initialize Chromium or the video pipeline.");
-            videoPipeline.Dispose();
-            return;
-        }
+                    await browserWrapper.InitializeWrapperAsync();
+                    Log.Information("Chromium initialised successfully");
+                });
+            }
+            catch (Exception ex)
+            {
+                Log.Fatal(ex, "Failed to initialize Chromium or the video pipeline.");
+                return;
+            }
 
         Log.Information("Building ASP.NET Core host on port {Port}", parameters.Port);
         var builder = WebApplication.CreateBuilder(args);
@@ -283,66 +294,98 @@ public class Program
         NDIlib.send_add_connection_metadata(NdiSenderPtr, ref metaframe);
         Marshal.FreeHGlobal(capabilitiesPtr);
 
-        var running = true;
-        var thread = new Thread(() =>
+        metadataCancellation = new CancellationTokenSource();
+        var metadataToken = metadataCancellation.Token;
+        metadataThread = new Thread(() =>
         {
             var metadata = new NDIlib.metadata_frame_t();
             var x = 0.0f;
             var y = 0.0f;
-            while (running)
+            Log.Information("NDI metadata capture thread started");
+            try
             {
-                var result = NDIlib.send_capture(NdiSenderPtr, ref metadata, 1000);
-
-                if (result == NDIlib.frame_type_e.frame_type_none)
+                while (!metadataToken.IsCancellationRequested)
                 {
-                    continue;
-                }
-                else if (result == NDIlib.frame_type_e.frame_type_metadata)
-                {
-                    var metadataConverted = UTF.Utf8ToString(metadata.p_data);
-
-                    if(metadataConverted.StartsWith("<ndi_kvm u=\""))
+                    var senderHandle = Program.NdiSenderPtr;
+                    if (senderHandle == nint.Zero)
                     {
-                        metadataConverted = metadataConverted.Replace("<ndi_kvm u=\"", "");
-                        metadataConverted = metadataConverted.Replace("\"/>", "");
-
-                        try
+                        if (metadataToken.WaitHandle.WaitOne(100))
                         {
-                            var binary = Convert.FromBase64String(metadataConverted);
-
-                            var opcode = binary[0];
-
-                            if(opcode == 0x03)
-                            {
-                                x = BitConverter.ToSingle(binary, 1);
-                                y = BitConverter.ToSingle(binary, 5);
-                            }
-                            else if(opcode == 0x04)
-                            {
-                                // Mouse Left Down
-                                var screenX = (int)(x * width);
-                                var screenY = (int)(y * height);
-
-                                browserWrapper.Click(screenX, screenY);
-                            }
-                            else if(opcode == 0x07)
-                            {
-                                // Mouse Left Up
-                            }
+                            break;
                         }
-                        catch
-                        {
 
-                        }
+                        continue;
                     }
 
-                    Log.Logger.Warning("Got metadata: " + metadataConverted);
-                    NDIlib.send_free_metadata(NdiSenderPtr, ref metadata);
-                }
+                    var result = NDIlib.send_capture(senderHandle, ref metadata, 1000);
 
+                    if (metadataToken.IsCancellationRequested)
+                    {
+                        break;
+                    }
+
+                    if (result == NDIlib.frame_type_e.frame_type_none)
+                    {
+                        continue;
+                    }
+                    else if (result == NDIlib.frame_type_e.frame_type_metadata)
+                    {
+                        var metadataConverted = UTF.Utf8ToString(metadata.p_data);
+
+                        if (metadataConverted.StartsWith("<ndi_kvm u=\"", StringComparison.Ordinal))
+                        {
+                            metadataConverted = metadataConverted.Replace("<ndi_kvm u=\"", string.Empty, StringComparison.Ordinal);
+                            metadataConverted = metadataConverted.Replace("\"/>", string.Empty, StringComparison.Ordinal);
+
+                            try
+                            {
+                                var binary = Convert.FromBase64String(metadataConverted);
+
+                                var opcode = binary[0];
+
+                                if (opcode == 0x03)
+                                {
+                                    x = BitConverter.ToSingle(binary, 1);
+                                    y = BitConverter.ToSingle(binary, 5);
+                                }
+                                else if (opcode == 0x04)
+                                {
+                                    // Mouse Left Down
+                                    var screenX = (int)(x * width);
+                                    var screenY = (int)(y * height);
+
+                                    browserWrapper?.Click(screenX, screenY);
+                                }
+                                else if (opcode == 0x07)
+                                {
+                                    // Mouse Left Up
+                                }
+                            }
+                            catch
+                            {
+                            }
+                        }
+
+                        Log.Logger.Warning("Got metadata: " + metadataConverted);
+                        NDIlib.send_free_metadata(senderHandle, ref metadata);
+                    }
+                }
             }
-        });
-        thread.Start();
+            catch (Exception ex) when (!metadataToken.IsCancellationRequested)
+            {
+                Log.Warning(ex, "NDI metadata capture thread terminated with an exception");
+            }
+            finally
+            {
+                Log.Information("NDI metadata capture thread exiting");
+            }
+        })
+        {
+            IsBackground = true,
+            Name = "NDI metadata capture"
+        };
+        metadataThread.Start();
+        metadataThreadStarted = true;
 
 
         app.MapPost("/seturl", (HttpContext httpContext, GoToUrlModel url) =>
@@ -380,27 +423,181 @@ public class Program
             browserWrapper.RefreshPage();
         }).WithOpenApi();
 
-        Log.Information("Starting ASP.NET Core host");
-        app.Run();
-        Log.Information("ASP.NET Core host exited");
-
-        running = false;
-        thread.Join();
-        browserWrapper.Dispose();
-
-        if (Directory.Exists(launchCachePath))
+            Log.Information("Starting ASP.NET Core host");
+            try
+            {
+                app.Run();
+                Log.Information("ASP.NET Core host exited");
+            }
+            finally
+            {
+                Log.Information("ASP.NET Core host shutdown sequence initiated");
+            }
+        }
+        finally
         {
             try
             {
-                Directory.Delete(launchCachePath, true);
+                Log.Information("Stopping NDI metadata capture thread");
+                metadataCancellation?.Cancel();
+
+                if (metadataThreadStarted && metadataThread is not null)
+                {
+                    if (!metadataThread.Join(TimeSpan.FromSeconds(5)))
+                    {
+                        Log.Warning("NDI metadata capture thread did not exit within timeout; waiting indefinitely");
+                        metadataThread.Join();
+                    }
+                }
+
+                Log.Information("NDI metadata capture thread stopped");
+            }
+            catch (Exception ex)
+            {
+                Log.Warning(ex, "Failed to stop metadata capture thread cleanly");
+            }
+            finally
+            {
+                metadataCancellation?.Dispose();
+            }
+
+            try
+            {
+                if (browserWrapper is not null)
+                {
+                    Log.Information("Disposing browser wrapper");
+                    browserWrapper.Dispose();
+                    pipelineAttachedToBrowser = false;
+                    Log.Information("Browser wrapper disposed");
+                }
+            }
+            catch (Exception ex)
+            {
+                Log.Warning(ex, "Browser wrapper disposal encountered an exception");
+            }
+            finally
+            {
+                if (pipelineAttachedToBrowser)
+                {
+                    Log.Warning("Browser wrapper disposal failed; detaching video pipeline to allow cleanup");
+                    pipelineAttachedToBrowser = false;
+                }
+
+                browserWrapper = null!;
+
+                if (Cef.IsInitialized)
+                {
+                    try
+                    {
+                        Log.Information("Shutting down Cef");
+                        Cef.Shutdown();
+                        Log.Information("Cef shutdown complete");
+                    }
+                    catch (Exception ex)
+                    {
+                        Log.Warning(ex, "Cef shutdown encountered an exception");
+                    }
+                }
+            }
+
+            try
+            {
+                if (Directory.Exists(launchCachePath))
+                {
+                    Log.Information("Deleting launch cache {CachePath}", launchCachePath);
+                    Directory.Delete(launchCachePath, true);
+                    Log.Information("Launch cache {CachePath} deleted", launchCachePath);
+                }
             }
             catch (Exception ex)
             {
                 Log.Warning(ex, "Failed to delete launch cache {CachePath}", launchCachePath);
             }
-        }
 
-        Log.Information("RunApplication completed after {Elapsed}ms", StartupStopwatch.ElapsedMilliseconds);
+            try
+            {
+                if (videoPipeline is not null && !pipelineAttachedToBrowser)
+                {
+                    Log.Information("Disposing NDI video pipeline");
+                    videoPipeline.Dispose();
+                    Log.Information("NDI video pipeline disposed");
+                }
+            }
+            catch (Exception ex)
+            {
+                Log.Warning(ex, "NDI video pipeline disposal encountered an exception");
+            }
+
+            try
+            {
+                if (Program.NdiSenderPtr != nint.Zero)
+                {
+                    Log.Information("Destroying NDI sender instance");
+                    NDIlib.send_destroy(Program.NdiSenderPtr);
+                    Program.NdiSenderPtr = nint.Zero;
+                    Log.Information("NDI sender instance destroyed");
+                }
+            }
+            catch (Exception ex)
+            {
+                Log.Warning(ex, "Failed to destroy NDI sender instance");
+            }
+
+            try
+            {
+                Log.Information("Destroying NDI send subsystem");
+                NDIlib.destroy_send();
+                Log.Information("NDI send subsystem destroyed");
+            }
+            catch (EntryPointNotFoundException ex)
+            {
+                Log.Warning(ex, "NDIlib.destroy_send is not available in this runtime");
+            }
+            catch (DllNotFoundException ex)
+            {
+                Log.Warning(ex, "NDIlib.destroy_send failed because the native library is unavailable");
+            }
+            catch (Exception ex)
+            {
+                Log.Warning(ex, "Unexpected exception while destroying NDI send subsystem");
+            }
+
+            try
+            {
+                Log.Information("Destroying NDI runtime");
+                NDIlib.destroy();
+                Log.Information("NDI runtime destroyed");
+            }
+            catch (EntryPointNotFoundException ex)
+            {
+                Log.Warning(ex, "NDIlib.destroy is not available in this runtime");
+            }
+            catch (DllNotFoundException ex)
+            {
+                Log.Warning(ex, "NDIlib.destroy failed because the native library is unavailable");
+            }
+            catch (Exception ex)
+            {
+                Log.Warning(ex, "Unexpected exception while destroying NDI runtime");
+            }
+
+            try
+            {
+                if (NdiNativeLibraryHandle != nint.Zero)
+                {
+                    Log.Information("Unloading native NDI library");
+                    NativeLibrary.Free(NdiNativeLibraryHandle);
+                    NdiNativeLibraryHandle = nint.Zero;
+                    Log.Information("Native NDI library unloaded");
+                }
+            }
+            catch (Exception ex)
+            {
+                Log.Warning(ex, "Failed to unload native NDI library");
+            }
+
+            Log.Information("RunApplication cleanup completed after {Elapsed}ms", StartupStopwatch.ElapsedMilliseconds);
+        }
     }
 
     private static void EnsureNdiNativeLibraryLoaded()
