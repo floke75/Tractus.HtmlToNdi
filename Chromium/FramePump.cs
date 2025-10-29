@@ -42,6 +42,7 @@ internal sealed class FramePump : IPacedInvalidationScheduler
     private readonly ILogger logger;
     private readonly FramePumpMode mode;
     private readonly bool cadenceAdaptationEnabled;
+    private readonly Func<CancellationToken, Task> invalidateBrowserAsync;
     private readonly Channel<InvalidationRequest> requestChannel;
     private readonly CancellationTokenSource cancellation = new();
     private readonly object stateGate = new();
@@ -62,7 +63,8 @@ internal sealed class FramePump : IPacedInvalidationScheduler
         TimeSpan? watchdogInterval,
         ILogger logger,
         FramePumpMode mode,
-        bool cadenceAdaptationEnabled)
+        bool cadenceAdaptationEnabled,
+        Func<ChromiumWebBrowser, ILogger, CancellationToken, Task>? invalidateBrowser = null)
     {
         this.browser = browser ?? throw new ArgumentNullException(nameof(browser));
         baseInterval = interval;
@@ -70,6 +72,8 @@ internal sealed class FramePump : IPacedInvalidationScheduler
         this.logger = logger;
         this.mode = mode;
         this.cadenceAdaptationEnabled = cadenceAdaptationEnabled;
+        var invalidate = invalidateBrowser ?? DefaultInvalidateBrowserAsync;
+        invalidateBrowserAsync = token => invalidate(this.browser, this.logger, token);
 
         requestChannel = Channel.CreateUnbounded<InvalidationRequest>(new UnboundedChannelOptions
         {
@@ -282,7 +286,7 @@ internal sealed class FramePump : IPacedInvalidationScheduler
                 await ApplyOnDemandCadenceDelayAsync(token).ConfigureAwait(false);
             }
 
-            await InvalidateBrowserAsync(token).ConfigureAwait(false);
+            await invalidateBrowserAsync(token).ConfigureAwait(false);
             request.Complete();
         }
         catch (OperationCanceledException ex)
@@ -297,7 +301,10 @@ internal sealed class FramePump : IPacedInvalidationScheduler
         }
     }
 
-    private async Task InvalidateBrowserAsync(CancellationToken token)
+    private static async Task DefaultInvalidateBrowserAsync(
+        ChromiumWebBrowser browser,
+        ILogger logger,
+        CancellationToken token)
     {
         var host = browser.GetBrowserHost();
         if (host is null)
