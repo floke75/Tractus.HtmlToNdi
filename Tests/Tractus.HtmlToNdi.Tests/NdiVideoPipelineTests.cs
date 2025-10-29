@@ -392,7 +392,7 @@ public class NdiVideoPipelineTests
     }
 
     [Fact]
-    public void BufferedPacedInvalidationDropsUnrequestedFrames()
+    public void BufferedPacedInvalidationMaintainsDemand()
     {
         var sender = new CollectingSender();
         var options = new NdiVideoPipelineOptions
@@ -422,8 +422,50 @@ public class NdiVideoPipelineTests
                 pipeline.HandleFrame(CreateCapturedFrame(buffers[i], 2, 2, 8));
             }
 
+            Assert.Equal(0, pipeline.SpuriousCaptureCount);
+            Assert.Equal(1, pipeline.PendingInvalidations);
+        }
+        finally
+        {
+            pipeline.Dispose();
+            foreach (var ptr in buffers)
+            {
+                if (ptr != IntPtr.Zero)
+                {
+                    Marshal.FreeHGlobal(ptr);
+                }
+            }
+        }
+    }
+
+    [Fact]
+    public void BufferedPacedInvalidationDropsFramesWithoutScheduler()
+    {
+        var sender = new CollectingSender();
+        var options = new NdiVideoPipelineOptions
+        {
+            EnableBuffering = true,
+            BufferDepth = 2,
+            EnablePacedInvalidation = true,
+            TelemetryInterval = TimeSpan.FromDays(1),
+        };
+
+        var pipeline = new NdiVideoPipeline(sender, new FrameRate(60, 1), options, CreateNullLogger());
+
+        var frameSize = 4 * 2 * 2;
+        var buffers = new IntPtr[2];
+
+        try
+        {
+            for (var i = 0; i < buffers.Length; i++)
+            {
+                buffers[i] = Marshal.AllocHGlobal(frameSize);
+                FillBuffer(buffers[i], frameSize, (byte)(0x50 + i));
+                pipeline.HandleFrame(CreateCapturedFrame(buffers[i], 2, 2, 8));
+            }
+
             Assert.Equal(0, pipeline.PendingInvalidations);
-            Assert.Equal(1, pipeline.SpuriousCaptureCount);
+            Assert.Equal(buffers.Length, pipeline.SpuriousCaptureCount);
         }
         finally
         {
