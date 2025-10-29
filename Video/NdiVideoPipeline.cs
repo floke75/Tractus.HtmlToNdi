@@ -242,6 +242,20 @@ internal sealed class NdiVideoPipeline : IDisposable
         }
 
         var adjustmentTicks = (long)Math.Clamp(adjustmentFactor * frameInterval.Ticks, -maxPacingAdjustmentTicks, maxPacingAdjustmentTicks);
+
+        if (!bufferPrimed && latencyExpansionActive && backlog < targetDepth)
+        {
+            var backlogDeficit = targetDepth - backlog;
+            if (backlogDeficit > 0)
+            {
+                var requiredTicks = frameInterval.Ticks * backlogDeficit;
+                if (requiredTicks > adjustmentTicks)
+                {
+                    adjustmentTicks = requiredTicks;
+                }
+            }
+        }
+
         return baseline + TimeSpan.FromTicks(adjustmentTicks);
     }
 
