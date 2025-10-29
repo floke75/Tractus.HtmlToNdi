@@ -229,6 +229,11 @@ internal sealed class FramePump : IChromiumInvalidationPump, IDisposable
                 return;
             }
 
+            if (usePacedInvalidation && Volatile.Read(ref pacedPauseState) == 1)
+            {
+                return;
+            }
+
             var host = browser.GetBrowserHost();
             if (host is null)
             {
@@ -237,7 +242,9 @@ internal sealed class FramePump : IChromiumInvalidationPump, IDisposable
 
             await Cef.UIThreadTaskFactory.StartNew(() =>
             {
-                if (cancellation.IsCancellationRequested || token.IsCancellationRequested)
+                if (cancellation.IsCancellationRequested
+                    || token.IsCancellationRequested
+                    || (usePacedInvalidation && Volatile.Read(ref pacedPauseState) == 1))
                 {
                     return;
                 }
