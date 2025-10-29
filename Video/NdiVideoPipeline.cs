@@ -168,7 +168,7 @@ internal sealed class NdiVideoPipeline : IDisposable
 
         if (BufferingEnabled && pacedInvalidationEnabled)
         {
-            ScheduleWarmupInvalidations(targetDepth);
+            EnsureCaptureDemand();
         }
     }
 
@@ -252,6 +252,7 @@ internal sealed class NdiVideoPipeline : IDisposable
         ringBuffer.Enqueue(copy, out var dropped);
         dropped?.Dispose();
         EmitTelemetryIfNeeded();
+        EnsureCaptureDemand(ringBuffer.Count);
     }
 
     private async Task RunPacedLoopAsync(CancellationToken token)
@@ -286,8 +287,6 @@ internal sealed class NdiVideoPipeline : IDisposable
             }
 
             pacingSequence = nextSequence;
-
-            await RequestNextInvalidationAsync(token).ConfigureAwait(false);
         }
     }
 
@@ -342,7 +341,17 @@ internal sealed class NdiVideoPipeline : IDisposable
         return baseline + TimeSpan.FromTicks(adjustmentTicks);
     }
 
-    private async Task RequestNextInvalidationAsync(CancellationToken token)
+    private void EnsureCaptureDemand()
+    {
+        if (!BufferingEnabled || !pacedInvalidationEnabled || ringBuffer is null)
+        {
+            return;
+        }
+
+        EnsureCaptureDemand(ringBuffer.Count);
+    }
+
+    private void EnsureCaptureDemand(int backlog)
     {
         if (!BufferingEnabled || !pacedInvalidationEnabled)
         {
@@ -355,69 +364,96 @@ internal sealed class NdiVideoPipeline : IDisposable
             return;
         }
 
-        try
+        var desired = CalculateDesiredPendingInvalidations(backlog);
+        var current = Volatile.Read(ref pendingInvalidations);
+        while (current < desired)
         {
-            await RequestInvalidateWithTicketAsync(scheduler, token).ConfigureAwait(false);
-        }
-        catch (OperationCanceledException)
-        {
-        }
-        catch (ObjectDisposedException)
-        {
-        }
-        catch (Exception ex)
-        {
-            logger.Warning(ex, "Failed to request Chromium invalidation from pacing loop");
+            var request = RequestInvalidateWithTicketAsync(scheduler, cancellation.Token);
+            ObserveInvalidationRequest(request, "Failed to request Chromium invalidation while refilling demand");
+
+            var updated = Volatile.Read(ref pendingInvalidations);
+            if (updated <= current)
+            {
+                break;
+            }
+
+            current = updated;
         }
     }
 
-    /// <summary>
-    /// Primes Chromium with a burst of invalidation requests so the paced buffer can warm up quickly after (re)start.
-    /// </summary>
-    /// <param name="count">The number of invalidations to queue.</param>
-    private void ScheduleWarmupInvalidations(int count)
+    private int CalculateDesiredPendingInvalidations(int backlog)
     {
-        if (!BufferingEnabled || !pacedInvalidationEnabled || count <= 0)
+        var desired = targetDepth - backlog;
+        if (desired < 1)
         {
-            return;
+            desired = 1;
         }
 
-        var scheduler = invalidationScheduler;
-        if (scheduler is null)
+        if (!bufferPrimed || isWarmingUp || latencyExpansionActive)
         {
-            return;
-        }
-
-        _ = Task.Run(async () =>
-        {
-            for (var i = 0; i < count && !cancellation.IsCancellationRequested; i++)
+            if (desired < targetDepth)
             {
-                try
+                desired = targetDepth;
+            }
+        }
+
+        var limit = GetPendingInvalidationLimit();
+        if (desired > limit)
+        {
+            desired = limit;
+        }
+
+        return desired;
+    }
+
+    private void ObserveInvalidationRequest(Task request, string warningMessage)
+    {
+        if (request.IsCompleted)
+        {
+            if (request.IsFaulted)
+            {
+                var ex = request.Exception?.GetBaseException() ?? request.Exception;
+                if (ex is not OperationCanceledException && ex is not ObjectDisposedException)
                 {
-                    await RequestInvalidateWithTicketAsync(scheduler, cancellation.Token).ConfigureAwait(false);
-                }
-                catch (OperationCanceledException)
-                {
-                    break;
-                }
-                catch (ObjectDisposedException)
-                {
-                    break;
-                }
-                catch (Exception ex)
-                {
-                    logger.Debug(ex, "Warmup invalidate request failed");
-                    break;
+                    logger.Warning(ex, warningMessage);
                 }
             }
-        });
+
+            return;
+        }
+
+        _ = request.ContinueWith(
+            static (task, state) =>
+            {
+                if (!task.IsFaulted)
+                {
+                    return;
+                }
+
+                var (logger, message) = ((ILogger Logger, string Message))state!;
+                var root = task.Exception?.GetBaseException() ?? task.Exception;
+                if (root is OperationCanceledException || root is ObjectDisposedException)
+                {
+                    return;
+                }
+
+                logger.Warning(root, message);
+            },
+            (logger, warningMessage),
+            CancellationToken.None,
+            TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default);
     }
 
     private bool CaptureTicketsEnabled => directPacedInvalidationEnabled || (BufferingEnabled && pacedInvalidationEnabled);
 
     private async Task RequestInvalidateWithTicketAsync(IPacedInvalidationScheduler scheduler, CancellationToken token)
     {
-        Interlocked.Increment(ref pendingInvalidations);
+        if (!TryAcquireInvalidationSlot())
+        {
+            return;
+        }
+
         try
         {
             await scheduler.RequestInvalidateAsync(token).ConfigureAwait(false);
@@ -427,6 +463,58 @@ internal sealed class NdiVideoPipeline : IDisposable
             ReturnInvalidationTicket();
             throw;
         }
+    }
+
+    private bool TryAcquireInvalidationSlot()
+    {
+        if (!CaptureTicketsEnabled)
+        {
+            return true;
+        }
+
+        var limit = GetPendingInvalidationLimit();
+        while (true)
+        {
+            var pending = Volatile.Read(ref pendingInvalidations);
+            if (pending >= limit)
+            {
+                return false;
+            }
+
+            if (Interlocked.CompareExchange(ref pendingInvalidations, pending + 1, pending) == pending)
+            {
+                return true;
+            }
+        }
+    }
+
+    private int GetPendingInvalidationLimit()
+    {
+        if (!CaptureTicketsEnabled)
+        {
+            return int.MaxValue;
+        }
+
+        if (directPacedInvalidationEnabled)
+        {
+            return 1;
+        }
+
+        if (!BufferingEnabled)
+        {
+            return 1;
+        }
+
+        var primed = Volatile.Read(ref bufferPrimed);
+        var warming = Volatile.Read(ref isWarmingUp);
+        var expanding = Volatile.Read(ref latencyExpansionActive);
+
+        if (!primed || warming || expanding)
+        {
+            return Math.Max(2, targetDepth + 1);
+        }
+
+        return Math.Max(1, targetDepth);
     }
 
     private bool TryConsumePendingInvalidationTicket()
@@ -560,7 +648,7 @@ internal sealed class NdiVideoPipeline : IDisposable
                 "Chromium capture resumed after oversupply: backlog={Backlog}, latencyError={LatencyError:F2}",
                 backlog,
                 latencyError);
-            ScheduleWarmupInvalidations(targetDepth);
+            EnsureCaptureDemand();
         }
     }
 
@@ -769,6 +857,7 @@ internal sealed class NdiVideoPipeline : IDisposable
         if (ringBuffer.TryDequeue(out var frame) && frame is not null)
         {
             SendBufferedFrame(frame);
+            EnsureCaptureDemand(ringBuffer.Count);
             if (latencyExpansionActive || allowSendWhileWarming)
             {
                 Interlocked.Increment(ref latencyExpansionFramesServed);
@@ -894,6 +983,7 @@ internal sealed class NdiVideoPipeline : IDisposable
         outputCadenceTracker.Reset();
         Interlocked.Exchange(ref cadenceAlignmentDeltaFrames, 0d);
         invalidationScheduler?.UpdateCadenceAlignment(0);
+        EnsureCaptureDemand();
     }
 
     private void ExitWarmup()
@@ -933,7 +1023,7 @@ internal sealed class NdiVideoPipeline : IDisposable
         Volatile.Write(ref pacingResetRequested, true);
         if (BufferingEnabled && pacedInvalidationEnabled)
         {
-            ScheduleWarmupInvalidations(targetDepth);
+            EnsureCaptureDemand();
         }
     }
 
