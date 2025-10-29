@@ -384,7 +384,7 @@ public class NdiVideoPipelineTests
     }
 
     [Fact]
-    public async Task LatencyExpansionPlaysQueuedFramesBeforeRepeats()
+    public void LatencyExpansionPlaysQueuedFramesBeforeRepeats()
     {
         var sender = new CollectingSender();
         var options = new NdiVideoPipelineOptions

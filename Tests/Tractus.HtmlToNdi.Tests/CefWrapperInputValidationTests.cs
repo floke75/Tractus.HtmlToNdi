@@ -1,5 +1,6 @@
 using System.Reflection;
-using System.Runtime.Serialization;
+using System.Runtime.CompilerServices;
+using CefSharp.OffScreen;
 using Serilog;
 using Tractus.HtmlToNdi.Chromium;
 using Tractus.HtmlToNdi.Models;
@@ -59,9 +60,9 @@ public class CefWrapperInputValidationTests
 
     private static CefWrapper CreateWrapper()
     {
-        var wrapper = (CefWrapper)FormatterServices.GetUninitializedObject(typeof(CefWrapper));
+        var wrapper = (CefWrapper)RuntimeHelpers.GetUninitializedObject(typeof(CefWrapper));
         SetField(wrapper, "logger", CreateLogger());
-        SetField(wrapper, "browser", null);
+        SetField<ChromiumWebBrowser?>(wrapper, "browser", null);
         return wrapper;
     }
 

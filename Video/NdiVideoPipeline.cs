@@ -52,7 +52,7 @@ internal sealed class NdiVideoPipeline : IDisposable
     private long captureGatePauses;
     private long captureGateResumes;
 
-    private volatile bool pacingResetRequested;
+    private bool pacingResetRequested;
 
     private Task? pacingTask;
     private NdiVideoFrame? lastSentFrame;
@@ -179,7 +179,7 @@ internal sealed class NdiVideoPipeline : IDisposable
         }
 
         ResetBufferingState();
-        pacingResetRequested = true;
+        Volatile.Write(ref pacingResetRequested, true);
         pacingTask = Task.Run(async () => await RunPacedLoopAsync(cancellation.Token));
     }
 
@@ -820,7 +820,7 @@ internal sealed class NdiVideoPipeline : IDisposable
 
         var clampCeiling = latencyExpansionActive ? targetDepth : 0;
         latencyError = Math.Clamp(latencyError, -targetDepth, clampCeiling);
-        pacingResetRequested = true;
+        Volatile.Write(ref pacingResetRequested, true);
         outputCadenceTracker.Reset();
         Interlocked.Exchange(ref cadenceAlignmentDeltaFrames, 0d);
         invalidationScheduler?.UpdateCadenceAlignment(0);
@@ -860,7 +860,7 @@ internal sealed class NdiVideoPipeline : IDisposable
             Interlocked.Read(ref latencyExpansionTicks),
             Interlocked.Read(ref latencyExpansionFramesServed));
 
-        pacingResetRequested = true;
+        Volatile.Write(ref pacingResetRequested, true);
         if (BufferingEnabled && pacedInvalidationEnabled)
         {
             ScheduleWarmupInvalidations(targetDepth);
