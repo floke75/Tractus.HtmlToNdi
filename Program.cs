@@ -692,14 +692,47 @@ public class Program
                 return candidates.FirstOrDefault();
             }
 
-            var selectedLibrary = SelectPreferredCandidate(nativeCandidates);
+            var remainingCandidates = nativeCandidates.ToList();
 
-            if (string.IsNullOrWhiteSpace(selectedLibrary))
+            while (remainingCandidates.Count > 0)
             {
-                throw new DllNotFoundException(CreateNdiFailureMessage());
+                var selectedLibrary = SelectPreferredCandidate(remainingCandidates);
+
+                if (string.IsNullOrWhiteSpace(selectedLibrary))
+                {
+                    break;
+                }
+
+                try
+                {
+                    ConfigureSelectedLibrary(selectedLibrary, isBundled: false);
+                    return;
+                }
+                catch (DllNotFoundException ex)
+                {
+                    Log.Warning(ex, "NDI native library {Library} failed to load; will try remaining candidates", selectedLibrary);
+                }
+                catch (BadImageFormatException ex)
+                {
+                    Log.Warning(ex, "NDI native library {Library} has incompatible format; will try remaining candidates", selectedLibrary);
+                }
+                catch (FileLoadException ex)
+                {
+                    Log.Warning(ex, "NDI native library {Library} could not be loaded; will try remaining candidates", selectedLibrary);
+                }
+
+                RemoveCandidate(selectedLibrary);
             }
 
-            ConfigureSelectedLibrary(selectedLibrary, isBundled: false);
+            throw new DllNotFoundException(CreateNdiFailureMessage());
+
+            void RemoveCandidate(string candidate)
+            {
+                remainingCandidates.RemoveAll(path => string.Equals(path, candidate, StringComparison.OrdinalIgnoreCase));
+                NdiLibraryCandidates = NdiLibraryCandidates
+                    .Where(path => !string.Equals(path, candidate, StringComparison.OrdinalIgnoreCase))
+                    .ToArray();
+            }
 
             void ConfigureSelectedLibrary(string libraryPath, bool isBundled)
             {
