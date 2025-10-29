@@ -169,6 +169,7 @@ internal sealed class NdiVideoPipeline : IDisposable
         bufferPrimed = false;
         isWarmingUp = true;
         Interlocked.Exchange(ref capturePauseState, 0);
+        invalidator?.ResumeInvalidation();
         captureRequestPending = options.EnablePacedInvalidation;
     }
 
@@ -623,6 +624,8 @@ internal sealed class NdiVideoPipeline : IDisposable
             outputCadenceTracker.Record(Stopwatch.GetTimestamp());
         }
         EmitTelemetryIfNeeded();
+
+        RequestNextCapture();
     }
 
     private void SendBufferedFrame(NdiVideoFrame frame)
@@ -790,6 +793,7 @@ internal sealed class NdiVideoPipeline : IDisposable
         lastSentFrame = null;
 
         Interlocked.Exchange(ref capturePauseState, 0);
+        invalidator?.ResumeInvalidation();
         captureRequestPending = options.EnablePacedInvalidation;
         RequestNextCapture();
     }

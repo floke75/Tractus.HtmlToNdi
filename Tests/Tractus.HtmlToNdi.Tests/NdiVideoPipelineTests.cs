@@ -381,6 +381,64 @@ public class NdiVideoPipelineTests
     }
 
     [Fact]
+    public async Task PacedInvalidationRequestsInDirectMode()
+    {
+        var sender = new CollectingSender();
+        var options = new NdiVideoPipelineOptions
+        {
+            EnableBuffering = false,
+            TelemetryInterval = TimeSpan.FromDays(1),
+            EnablePacedInvalidation = true
+        };
+
+        var pipeline = new NdiVideoPipeline(sender, new FrameRate(30, 1), options, CreateNullLogger());
+        var frameCounter = 0;
+        var invalidator = new TestInvalidator(ct =>
+        {
+            if (ct.IsCancellationRequested)
+            {
+                return Task.CompletedTask;
+            }
+
+            var frameSize = 4 * 2 * 2;
+            var buffer = Marshal.AllocHGlobal(frameSize);
+            try
+            {
+                var value = (byte)Interlocked.Increment(ref frameCounter);
+                FillBuffer(buffer, frameSize, value);
+                pipeline.HandleFrame(CreateCapturedFrame(buffer, 2, 2, 8));
+            }
+            finally
+            {
+                Marshal.FreeHGlobal(buffer);
+            }
+
+            return Task.CompletedTask;
+        });
+
+        pipeline.AttachInvalidator(invalidator);
+        pipeline.Start();
+
+        try
+        {
+            var captured = SpinWait.SpinUntil(
+                () => sender.Frames.Count >= 4 && invalidator.RequestCount >= 4,
+                TimeSpan.FromMilliseconds(500));
+            Assert.True(captured);
+
+            await Task.Delay(50);
+
+            Assert.Equal(frameCounter, sender.Frames.Count);
+            Assert.True(invalidator.RequestCount >= frameCounter);
+        }
+        finally
+        {
+            invalidator.Dispose();
+            pipeline.Dispose();
+        }
+    }
+
+    [Fact]
     public void LegacyInvalidationDoesNotRequestInvalidator()
     {
         var sender = new CollectingSender();
