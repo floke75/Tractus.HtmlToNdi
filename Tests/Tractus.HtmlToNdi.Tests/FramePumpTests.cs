@@ -1,6 +1,6 @@
 using System;
 using System.Diagnostics;
-using System.Runtime.Serialization;
+using System.Runtime.CompilerServices;
 using System.Threading;
 using System.Threading.Tasks;
 using CefSharp.OffScreen;
@@ -14,7 +14,7 @@ public class FramePumpTests
 {
     private static ChromiumWebBrowser CreateBrowserStub()
     {
-        return (ChromiumWebBrowser)FormatterServices.GetUninitializedObject(typeof(ChromiumWebBrowser));
+        return (ChromiumWebBrowser)RuntimeHelpers.GetUninitializedObject(typeof(ChromiumWebBrowser));
     }
 
     private static ILogger CreateNullLogger()

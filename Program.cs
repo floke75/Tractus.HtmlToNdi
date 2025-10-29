@@ -33,7 +33,7 @@ public class Program
     /// A pointer to the NDI sender instance.
     /// </summary>
     public static nint NdiSenderPtr;
-    internal static CefWrapper browserWrapper;
+    internal static CefWrapper browserWrapper = null!;
 
     private static readonly object NdiLibraryLock = new();
     private static bool NdiLibraryConfigured;
