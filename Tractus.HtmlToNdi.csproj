@@ -42,9 +42,16 @@
       <CopyToOutputDirectory>Always</CopyToOutputDirectory>
     </Content>
   </ItemGroup>
-	<ItemGroup>
-		<FrameworkReference Include="Microsoft.AspNetCore.App" />
-	</ItemGroup>
+  <ItemGroup>
+    <None Include="Native\Processing.NDI.Lib.x64.dll">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+      <TargetPath>runtimes/win-x64/native/Processing.NDI.Lib.x64.dll</TargetPath>
+    </None>
+  </ItemGroup>
+        <ItemGroup>
+                <FrameworkReference Include="Microsoft.AspNetCore.App" />
+        </ItemGroup>
   <ItemGroup>
     <PackageReference Include="CefSharp.OffScreen.NETCore" Version="129.0.110" />
     <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="8.0.8" />

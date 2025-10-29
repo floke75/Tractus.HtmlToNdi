@@ -6,7 +6,8 @@ A simple wrapper around [CEFSharp](https://github.com/cefsharp/CefSharp) and [ND
 
 ## Prerequisites
 
-- Install the NDI Runtime (NDI® 6 or later). The app automatically scans common locations such as `C:\Program Files\NDI\NDI 6 Runtime\v6` and `...\NDI 6 SDK\Bin\x64`, and it honours the `NDILIB_REDIST_FOLDER` environment variable. If the runtime is not installed, copy `Processing.NDI.Lib.x64.dll` next to `Tractus.HtmlToNdi.exe` before launching.
+- No external NDI Runtime installation is required for typical deployments—the ZIP now ships with `Processing.NDI.Lib.x64.dll` under `runtimes/win-x64/native/` and the app prefers that bundled copy automatically.
+- If you prefer to use an existing runtime (or need to update the DLL independently), install the NDI Runtime (NDI® 6 or later). The app still scans common locations such as `C:\Program Files\NDI\NDI 6 Runtime\v6` and `...\NDI 6 SDK\Bin\x64`, and it honours the `NDILIB_REDIST_FOLDER` environment variable.
 
 ## Building from source
 
