@@ -34,4 +34,22 @@ internal sealed record NdiVideoPipelineOptions
     /// Gets or sets a value indicating whether capture/output cadence metrics are logged with telemetry.
     /// </summary>
     public bool EnableCadenceTelemetry { get; init; } = true;
+
+    /// <summary>
+    /// Gets or sets a value indicating whether paced invalidation should be driven by the paced sender.
+    /// </summary>
+    public bool EnablePacedInvalidation { get; init; }
+        = false;
+
+    /// <summary>
+    /// Gets or sets a value indicating whether capture invalidation should pause when the buffer is ahead.
+    /// </summary>
+    public bool EnableCaptureBackpressure { get; init; }
+        = false;
+
+    /// <summary>
+    /// Gets or sets a value indicating whether cadence alignment measurements should influence the frame pump.
+    /// </summary>
+    public bool EnablePumpCadenceAlignment { get; init; }
+        = false;
 }

@@ -6,6 +6,7 @@ using System.Runtime.InteropServices;
 using System.Threading;
 using Serilog;
 using Serilog.Core;
+using System.Threading.Tasks;
 using Tractus.HtmlToNdi.Video;
 using Xunit;
 using NewTek;
@@ -46,6 +47,83 @@ public class NdiVideoPipelineTests
 
                 frames.Add(new SentFrame(frame, payload));
             }
+        }
+    }
+
+    private sealed class TestInvalidator : IChromiumInvalidator
+    {
+        private readonly Func<CancellationToken, Task>? onRequest;
+        private readonly CancellationTokenSource cts = new();
+        private int requestCount;
+        private int pauseCount;
+        private int resumeCount;
+        private double lastDrift;
+
+        public TestInvalidator(Func<CancellationToken, Task>? onRequest = null)
+        {
+            this.onRequest = onRequest;
+        }
+
+        public int RequestCount => Volatile.Read(ref requestCount);
+
+        public int PauseCount => Volatile.Read(ref pauseCount);
+
+        public int ResumeCount => Volatile.Read(ref resumeCount);
+
+        public double LastCadenceDrift => Volatile.Read(ref lastDrift);
+
+        public void Start(bool usePacedInvalidation, bool enableCadenceAlignment)
+        {
+        }
+
+        public void NotifyPaint()
+        {
+        }
+
+        public void RequestInvalidate()
+        {
+            Interlocked.Increment(ref requestCount);
+            var callback = onRequest;
+            if (callback is null || cts.IsCancellationRequested)
+            {
+                return;
+            }
+
+            Task.Run(async () =>
+            {
+                try
+                {
+                    await callback(cts.Token).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException)
+                {
+                }
+            }, cts.Token);
+        }
+
+        public void PauseInvalidation()
+        {
+            Interlocked.Increment(ref pauseCount);
+        }
+
+        public void ResumeInvalidation()
+        {
+            Interlocked.Increment(ref resumeCount);
+        }
+
+        public void UpdateCadenceDrift(double deltaFrames)
+        {
+            Volatile.Write(ref lastDrift, deltaFrames);
+        }
+
+        public void Dispose()
+        {
+            if (!cts.IsCancellationRequested)
+            {
+                cts.Cancel();
+            }
+
+            cts.Dispose();
         }
     }
 
@@ -242,6 +320,153 @@ public class NdiVideoPipelineTests
                 }
             }
         }
+    }
+
+    [Fact]
+    public async Task PacedInvalidationRequestsOneCapturePerTick()
+    {
+        var sender = new CollectingSender();
+        var options = new NdiVideoPipelineOptions
+        {
+            EnableBuffering = true,
+            BufferDepth = 1,
+            TelemetryInterval = TimeSpan.FromDays(1),
+            EnablePacedInvalidation = true
+        };
+
+        var pipeline = new NdiVideoPipeline(sender, new FrameRate(30, 1), options, CreateNullLogger());
+        var frameCounter = 0;
+        var invalidator = new TestInvalidator(ct =>
+        {
+            if (ct.IsCancellationRequested)
+            {
+                return Task.CompletedTask;
+            }
+
+            var frameSize = 4 * 2 * 2;
+            var buffer = Marshal.AllocHGlobal(frameSize);
+            try
+            {
+                var value = (byte)Interlocked.Increment(ref frameCounter);
+                FillBuffer(buffer, frameSize, value);
+                pipeline.HandleFrame(CreateCapturedFrame(buffer, 2, 2, 8));
+            }
+            finally
+            {
+                Marshal.FreeHGlobal(buffer);
+            }
+
+            return Task.CompletedTask;
+        });
+
+        pipeline.AttachInvalidator(invalidator);
+        pipeline.Start();
+
+        try
+        {
+            var captured = SpinWait.SpinUntil(() => sender.Frames.Count >= 4, TimeSpan.FromSeconds(2));
+            Assert.True(captured);
+
+            await Task.Delay(100);
+
+            Assert.True(invalidator.RequestCount >= sender.Frames.Count);
+            Assert.Equal(sender.Frames.Count + 1, invalidator.RequestCount);
+            Assert.Equal(invalidator.RequestCount, frameCounter);
+        }
+        finally
+        {
+            invalidator.Dispose();
+            pipeline.Dispose();
+        }
+    }
+
+    [Fact]
+    public void LegacyInvalidationDoesNotRequestInvalidator()
+    {
+        var sender = new CollectingSender();
+        var options = new NdiVideoPipelineOptions
+        {
+            EnableBuffering = false,
+            TelemetryInterval = TimeSpan.FromDays(1),
+            EnablePacedInvalidation = false
+        };
+
+        var pipeline = new NdiVideoPipeline(sender, new FrameRate(60, 1), options, CreateNullLogger());
+        var invalidator = new TestInvalidator();
+        pipeline.AttachInvalidator(invalidator);
+
+        var frameSize = 4 * 2 * 2;
+        var buffer = Marshal.AllocHGlobal(frameSize);
+        try
+        {
+            FillBuffer(buffer, frameSize, 0x55);
+            pipeline.HandleFrame(CreateCapturedFrame(buffer, 2, 2, 8));
+        }
+        finally
+        {
+            Marshal.FreeHGlobal(buffer);
+            pipeline.Dispose();
+            invalidator.Dispose();
+        }
+
+        Assert.Single(sender.Frames);
+        Assert.Equal(0, invalidator.RequestCount);
+    }
+
+    [Fact]
+    public async Task BackpressurePausesAndResumesCapture()
+    {
+        var sender = new CollectingSender();
+        var options = new NdiVideoPipelineOptions
+        {
+            EnableBuffering = true,
+            BufferDepth = 2,
+            TelemetryInterval = TimeSpan.FromDays(1),
+            EnablePacedInvalidation = true,
+            EnableCaptureBackpressure = true
+        };
+
+        var pipeline = new NdiVideoPipeline(sender, new FrameRate(30, 1), options, CreateNullLogger());
+        var invalidator = new TestInvalidator();
+        pipeline.AttachInvalidator(invalidator);
+        pipeline.Start();
+
+        var frameSize = 4 * 2 * 2;
+        var buffers = new List<IntPtr>();
+
+        try
+        {
+            for (var i = 0; i < 8; i++)
+            {
+                var ptr = Marshal.AllocHGlobal(frameSize);
+                buffers.Add(ptr);
+                FillBuffer(ptr, frameSize, (byte)(0x90 + i));
+                pipeline.HandleFrame(CreateCapturedFrame(ptr, 2, 2, 8));
+            }
+
+            var paused = SpinWait.SpinUntil(() => invalidator.PauseCount >= 1, TimeSpan.FromMilliseconds(500));
+            Assert.True(paused);
+
+            var resumed = SpinWait.SpinUntil(() => invalidator.ResumeCount >= 1, TimeSpan.FromMilliseconds(1500));
+            Assert.True(resumed);
+
+            await Task.Delay(50);
+        }
+        finally
+        {
+            pipeline.Dispose();
+            invalidator.Dispose();
+            foreach (var ptr in buffers)
+            {
+                if (ptr != IntPtr.Zero)
+                {
+                    Marshal.FreeHGlobal(ptr);
+                }
+            }
+        }
+
+        Assert.True(invalidator.PauseCount >= 1);
+        Assert.True(invalidator.ResumeCount >= 1);
     }
 
     [Fact]

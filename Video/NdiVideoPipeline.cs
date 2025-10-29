@@ -62,6 +62,9 @@ internal sealed class NdiVideoPipeline : IDisposable
     private readonly bool cadenceTelemetryEnabled;
     private readonly bool cadenceTrackingEnabled;
     private double cadenceAlignmentDeltaFrames;
+    private IChromiumInvalidator? invalidator;
+    private volatile bool captureRequestPending;
+    private int capturePauseState;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="NdiVideoPipeline"/> class.
@@ -99,6 +102,8 @@ internal sealed class NdiVideoPipeline : IDisposable
             bufferPrimed = true;
             isWarmingUp = false;
         }
+
+        captureRequestPending = options.EnablePacedInvalidation;
     }
 
     /// <summary>
@@ -110,6 +115,8 @@ internal sealed class NdiVideoPipeline : IDisposable
     /// Gets the configured frame rate.
     /// </summary>
     public FrameRate FrameRate => configuredFrameRate;
+
+    internal NdiVideoPipelineOptions Options => options;
 
     /// <summary>
     /// Starts the video pipeline.
@@ -124,6 +131,23 @@ internal sealed class NdiVideoPipeline : IDisposable
         ResetBufferingState();
         pacingResetRequested = true;
         pacingTask = Task.Run(async () => await RunPacedLoopAsync(cancellation.Token));
+
+        RequestNextCapture();
+    }
+
+    internal void AttachInvalidator(IChromiumInvalidator chromiumInvalidator)
+    {
+        invalidator = chromiumInvalidator ?? throw new ArgumentNullException(nameof(chromiumInvalidator));
+
+        if (options.EnablePumpCadenceAlignment)
+        {
+            invalidator.UpdateCadenceDrift(Volatile.Read(ref cadenceAlignmentDeltaFrames));
+        }
+
+        if (options.EnablePacedInvalidation && captureRequestPending)
+        {
+            RequestNextCapture();
+        }
     }
 
     /// <summary>
@@ -144,6 +168,8 @@ internal sealed class NdiVideoPipeline : IDisposable
         pacingTask = null;
         bufferPrimed = false;
         isWarmingUp = true;
+        Interlocked.Exchange(ref capturePauseState, 0);
+        captureRequestPending = options.EnablePacedInvalidation;
     }
 
     /// <summary>
@@ -173,6 +199,11 @@ internal sealed class NdiVideoPipeline : IDisposable
         ringBuffer.Enqueue(copy, out var dropped);
         dropped?.Dispose();
         EmitTelemetryIfNeeded();
+
+        if (options.EnablePacedInvalidation && BufferingEnabled && !bufferPrimed)
+        {
+            RequestNextCapture();
+        }
     }
 
     private async Task RunPacedLoopAsync(CancellationToken token)
@@ -207,6 +238,15 @@ internal sealed class NdiVideoPipeline : IDisposable
             }
 
             pacingSequence = nextSequence;
+
+            if (options.EnablePacedInvalidation)
+            {
+                var shouldRequest = sent || (!sent && lastSentFrame is not null) || !BufferPrimed;
+                if (shouldRequest)
+                {
+                    RequestNextCapture();
+                }
+            }
         }
     }
 
@@ -259,11 +299,97 @@ internal sealed class NdiVideoPipeline : IDisposable
         return baseline + TimeSpan.FromTicks(adjustmentTicks);
     }
 
+    private void RequestNextCapture()
+    {
+        if (!options.EnablePacedInvalidation)
+        {
+            return;
+        }
+
+        if (Volatile.Read(ref capturePauseState) == 1)
+        {
+            captureRequestPending = true;
+            return;
+        }
+
+        var target = invalidator;
+        if (target is null)
+        {
+            captureRequestPending = true;
+            return;
+        }
+
+        target.RequestInvalidate();
+        captureRequestPending = false;
+    }
+
+    private void EvaluateCaptureBackpressure(int backlog)
+    {
+        if (!options.EnableCaptureBackpressure || !options.EnablePacedInvalidation)
+        {
+            return;
+        }
+
+        if (ringBuffer is null)
+        {
+            return;
+        }
+
+        var target = invalidator;
+        if (target is null)
+        {
+            return;
+        }
+
+        if (isWarmingUp)
+        {
+            return;
+        }
+
+        var paused = Volatile.Read(ref capturePauseState) == 1;
+        var integrator = Volatile.Read(ref latencyError);
+
+        if (!paused)
+        {
+            if (backlog >= highWatermark || integrator > 0)
+            {
+                if (Interlocked.CompareExchange(ref capturePauseState, 1, 0) == 0)
+                {
+                    logger.Information(
+                        "Chromium capture paused: buffered={Buffered}, latencyError={LatencyError:F2}",
+                        backlog,
+                        integrator);
+                    target.PauseInvalidation();
+                    captureRequestPending = true;
+                }
+            }
+
+            return;
+        }
+
+        if (backlog <= targetDepth)
+        {
+            if (Interlocked.CompareExchange(ref capturePauseState, 0, 1) == 1)
+            {
+                logger.Information(
+                    "Chromium capture resumed: buffered={Buffered}, latencyError={LatencyError:F2}",
+                    backlog,
+                    integrator);
+                target.ResumeInvalidation();
+                RequestNextCapture();
+            }
+        }
+    }
+
     private double CalculateCadenceAlignmentOffset()
     {
         if (!alignWithCaptureTimestamps || !cadenceTrackingEnabled)
         {
             Interlocked.Exchange(ref cadenceAlignmentDeltaFrames, 0d);
+            if (options.EnablePumpCadenceAlignment)
+            {
+                invalidator?.UpdateCadenceDrift(0d);
+            }
             return 0d;
         }
 
@@ -271,6 +397,11 @@ internal sealed class NdiVideoPipeline : IDisposable
         var outputDrift = outputCadenceTracker.GetDriftFrames();
         var delta = captureDrift - outputDrift;
         Interlocked.Exchange(ref cadenceAlignmentDeltaFrames, delta);
+
+        if (options.EnablePumpCadenceAlignment)
+        {
+            invalidator?.UpdateCadenceDrift(delta);
+        }
 
         if (double.IsNaN(delta) || Math.Abs(delta) < 0.01d)
         {
@@ -325,6 +456,8 @@ internal sealed class NdiVideoPipeline : IDisposable
             return false;
         }
 
+        void EvaluateBackpressure() => EvaluateCaptureBackpressure(ringBuffer.Count);
+
         var backlog = ringBuffer.Count;
         var delta = backlog - targetDepth;
         var integratorUpdated = false;
@@ -376,6 +509,7 @@ internal sealed class NdiVideoPipeline : IDisposable
                 {
                     latencyExpansionActive = false;
                 }
+                EvaluateBackpressure();
                 return false;
             }
         }
@@ -401,6 +535,7 @@ internal sealed class NdiVideoPipeline : IDisposable
                 {
                     Interlocked.Increment(ref lowWatermarkHits);
                     EnterWarmup();
+                    EvaluateBackpressure();
                     return false;
                 }
             }
@@ -461,10 +596,12 @@ internal sealed class NdiVideoPipeline : IDisposable
             {
                 Interlocked.Increment(ref latencyExpansionFramesServed);
             }
+            EvaluateBackpressure();
             return true;
         }
 
         EnterWarmup();
+        EvaluateBackpressure();
         return false;
     }
 
@@ -527,6 +664,8 @@ internal sealed class NdiVideoPipeline : IDisposable
             outputCadenceTracker.Record(Stopwatch.GetTimestamp());
         }
         EmitTelemetryIfNeeded();
+
+        RequestNextCapture();
     }
 
     private void EnterWarmup(bool preserveBufferedFrames = false)
@@ -581,6 +720,8 @@ internal sealed class NdiVideoPipeline : IDisposable
         pacingResetRequested = true;
         outputCadenceTracker.Reset();
         Interlocked.Exchange(ref cadenceAlignmentDeltaFrames, 0d);
+
+        RequestNextCapture();
     }
 
     private void ExitWarmup()
@@ -647,6 +788,10 @@ internal sealed class NdiVideoPipeline : IDisposable
         ringBuffer?.Clear();
         lastSentFrame?.Dispose();
         lastSentFrame = null;
+
+        Interlocked.Exchange(ref capturePauseState, 0);
+        captureRequestPending = options.EnablePacedInvalidation;
+        RequestNextCapture();
     }
 
     private double ComputeLastWarmupMilliseconds()
