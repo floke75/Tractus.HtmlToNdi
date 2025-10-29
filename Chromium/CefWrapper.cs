@@ -84,7 +84,7 @@ internal class CefWrapper : IDisposable
         this.browser.Paint += this.OnBrowserPaint;
 
         var pipelineOptions = this.videoPipeline.Options;
-        var pumpMode = pipelineOptions.EnableBuffering && pipelineOptions.EnablePacedInvalidation
+        var pumpMode = pipelineOptions.EnablePacedInvalidation
             ? FramePumpMode.OnDemand
             : FramePumpMode.Periodic;
 

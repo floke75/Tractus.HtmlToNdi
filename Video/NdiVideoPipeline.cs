@@ -68,12 +68,14 @@ internal sealed class NdiVideoPipeline : IDisposable
     private double cadenceAlignmentDeltaFrames;
     private readonly bool pacedInvalidationEnabled;
     private readonly bool captureBackpressureEnabled;
+    private readonly bool directPacedInvalidationEnabled;
     private readonly bool pumpCadenceAdaptationEnabled;
 
     private IPacedInvalidationScheduler? invalidationScheduler;
     private bool captureGateActive;
     private int consecutivePositiveLatencyTicks;
     private long lastPacingOffsetTicks;
+    private int directInvalidationPending;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="NdiVideoPipeline"/> class.
@@ -98,10 +100,11 @@ internal sealed class NdiVideoPipeline : IDisposable
         alignWithCaptureTimestamps = options.AlignWithCaptureTimestamps;
         cadenceTelemetryEnabled = options.EnableCadenceTelemetry;
         cadenceTrackingEnabled = alignWithCaptureTimestamps || cadenceTelemetryEnabled;
-        pacedInvalidationEnabled = options.EnableBuffering && options.EnablePacedInvalidation;
+        pacedInvalidationEnabled = options.EnablePacedInvalidation;
         captureBackpressureEnabled = options.EnableBuffering
             && options.EnableCaptureBackpressure
             && options.EnablePacedInvalidation;
+        directPacedInvalidationEnabled = !options.EnableBuffering && options.EnablePacedInvalidation;
         if (options.EnableBuffering && options.EnableCaptureBackpressure && !options.EnablePacedInvalidation)
         {
             logger.Warning(
@@ -148,6 +151,13 @@ internal sealed class NdiVideoPipeline : IDisposable
 
         scheduler.UpdateCadenceAlignment(0);
 
+        if (directPacedInvalidationEnabled)
+        {
+            Interlocked.Exchange(ref directInvalidationPending, 0);
+            RequestDirectInvalidation();
+            return;
+        }
+
         if (BufferingEnabled && pacedInvalidationEnabled)
         {
             ScheduleWarmupInvalidations(targetDepth);
@@ -187,6 +197,7 @@ internal sealed class NdiVideoPipeline : IDisposable
         pacingTask = null;
         bufferPrimed = false;
         isWarmingUp = true;
+        Interlocked.Exchange(ref directInvalidationPending, 0);
     }
 
     /// <summary>
@@ -203,7 +214,13 @@ internal sealed class NdiVideoPipeline : IDisposable
 
         if (!BufferingEnabled)
         {
+            if (directPacedInvalidationEnabled)
+            {
+                Interlocked.Exchange(ref directInvalidationPending, 0);
+            }
+
             SendDirect(frame);
+            RequestDirectInvalidation();
             return;
         }
 
@@ -337,7 +354,7 @@ internal sealed class NdiVideoPipeline : IDisposable
 
     private void ScheduleWarmupInvalidations(int count)
     {
-        if (!pacedInvalidationEnabled || count <= 0)
+        if (!BufferingEnabled || !pacedInvalidationEnabled || count <= 0)
         {
             return;
         }
@@ -369,6 +386,47 @@ internal sealed class NdiVideoPipeline : IDisposable
                     logger.Debug(ex, "Warmup invalidate request failed");
                     break;
                 }
+            }
+        });
+    }
+
+    private void RequestDirectInvalidation()
+    {
+        if (!directPacedInvalidationEnabled)
+        {
+            return;
+        }
+
+        if (Interlocked.CompareExchange(ref directInvalidationPending, 1, 0) != 0)
+        {
+            return;
+        }
+
+        var scheduler = invalidationScheduler;
+        if (scheduler is null)
+        {
+            Interlocked.Exchange(ref directInvalidationPending, 0);
+            return;
+        }
+
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await scheduler.RequestInvalidateAsync(cancellation.Token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                Interlocked.Exchange(ref directInvalidationPending, 0);
+            }
+            catch (ObjectDisposedException)
+            {
+                Interlocked.Exchange(ref directInvalidationPending, 0);
+            }
+            catch (Exception ex)
+            {
+                logger.Warning(ex, "Failed to request Chromium invalidation for direct pacing");
+                Interlocked.Exchange(ref directInvalidationPending, 0);
             }
         });
     }

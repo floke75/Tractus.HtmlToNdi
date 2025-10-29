@@ -615,6 +615,66 @@ public class NdiVideoPipelineTests
     }
 
     [Fact]
+    public async Task PacedInvalidationRequestsInDirectMode()
+    {
+        var sender = new CollectingSender();
+        var scheduler = new TestScheduler();
+        var options = new NdiVideoPipelineOptions
+        {
+            EnableBuffering = false,
+            TelemetryInterval = TimeSpan.FromDays(1),
+            EnablePacedInvalidation = true
+        };
+
+        var pipeline = new NdiVideoPipeline(sender, new FrameRate(30, 1), options, CreateNullLogger());
+        pipeline.AttachInvalidationScheduler(scheduler);
+        pipeline.Start();
+
+        try
+        {
+            var initialRequest = SpinWait.SpinUntil(() => scheduler.RequestCount >= 1, TimeSpan.FromMilliseconds(500));
+            Assert.True(initialRequest);
+
+            var frameSize = 4 * 2 * 2;
+            var buffers = new IntPtr[6];
+
+            try
+            {
+                for (var i = 0; i < buffers.Length; i++)
+                {
+                    buffers[i] = Marshal.AllocHGlobal(frameSize);
+                    FillBuffer(buffers[i], frameSize, (byte)(0x90 + i));
+                    pipeline.HandleFrame(CreateCapturedFrame(buffers[i], 2, 2, 8));
+                }
+
+                var sent = SpinWait.SpinUntil(() => sender.Frames.Count >= buffers.Length, TimeSpan.FromMilliseconds(500));
+                Assert.True(sent);
+
+                await Task.Delay(50);
+            }
+            finally
+            {
+                foreach (var ptr in buffers)
+                {
+                    if (ptr != IntPtr.Zero)
+                    {
+                        Marshal.FreeHGlobal(ptr);
+                    }
+                }
+            }
+
+            var requests = scheduler.RequestCount;
+            Assert.True(requests >= sender.Frames.Count);
+            Assert.InRange(requests, sender.Frames.Count, sender.Frames.Count + 2);
+        }
+        finally
+        {
+            pipeline.Dispose();
+            scheduler.Dispose();
+        }
+    }
+
+    [Fact]
     public void CaptureBackpressurePausesAndResumes()
     {
         var sender = new CollectingSender();
