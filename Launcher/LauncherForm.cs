@@ -239,15 +239,8 @@ public sealed class LauncherForm : Form
         AcceptButton = launchButton;
         CancelButton = cancelButton;
 
-        _enableBufferingCheckBox.CheckedChanged += (_, _) =>
-        {
-            var enabled = _enableBufferingCheckBox.Checked;
-            _bufferDepthNumericUpDown.Enabled = enabled;
-            _allowLatencyExpansionCheckBox.Enabled = enabled;
-            _enablePacedInvalidationCheckBox.Enabled = enabled;
-            _enableCaptureBackpressureCheckBox.Enabled = enabled;
-            _enablePumpCadenceAdaptationCheckBox.Enabled = enabled;
-        };
+        _enableBufferingCheckBox.CheckedChanged += (_, _) => UpdateBufferingDependentControls();
+        _enablePacedInvalidationCheckBox.CheckedChanged += (_, _) => UpdateBufferingDependentControls();
 
         ApplySettings(initialSettings);
     }
@@ -275,12 +268,27 @@ public sealed class LauncherForm : Form
         _enablePacedInvalidationCheckBox.Checked = settings.EnablePacedInvalidation;
         _enableCaptureBackpressureCheckBox.Checked = settings.EnableCaptureBackpressure;
         _enablePumpCadenceAdaptationCheckBox.Checked = settings.EnablePumpCadenceAdaptation;
-        _enablePacedInvalidationCheckBox.Enabled = settings.EnableBuffering;
-        _enableCaptureBackpressureCheckBox.Enabled = settings.EnableBuffering;
-        _enablePumpCadenceAdaptationCheckBox.Enabled = settings.EnableBuffering;
         _windowlessFrameRateTextBox.Text = settings.WindowlessFrameRateOverride ?? string.Empty;
         _disableGpuVsyncCheckBox.Checked = settings.DisableGpuVsync;
         _disableFrameRateLimitCheckBox.Checked = settings.DisableFrameRateLimit;
+
+        UpdateBufferingDependentControls();
+    }
+
+    private void UpdateBufferingDependentControls()
+    {
+        var bufferingEnabled = _enableBufferingCheckBox.Checked;
+        _bufferDepthNumericUpDown.Enabled = bufferingEnabled;
+        _allowLatencyExpansionCheckBox.Enabled = bufferingEnabled;
+        _enablePacedInvalidationCheckBox.Enabled = bufferingEnabled;
+        _enablePumpCadenceAdaptationCheckBox.Enabled = bufferingEnabled;
+
+        var backpressureAllowed = bufferingEnabled && _enablePacedInvalidationCheckBox.Checked;
+        _enableCaptureBackpressureCheckBox.Enabled = backpressureAllowed;
+        if (!backpressureAllowed)
+        {
+            _enableCaptureBackpressureCheckBox.Checked = false;
+        }
     }
 
     private void OnLaunch()

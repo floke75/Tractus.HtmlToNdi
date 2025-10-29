@@ -729,6 +729,61 @@ public class NdiVideoPipelineTests
         }
     }
 
+    [Fact]
+    public void CaptureBackpressureRequiresPacedInvalidation()
+    {
+        var sender = new CollectingSender();
+        var scheduler = new TestScheduler();
+        var options = new NdiVideoPipelineOptions
+        {
+            EnableBuffering = true,
+            BufferDepth = 3,
+            TelemetryInterval = TimeSpan.FromDays(1),
+            EnableCaptureBackpressure = true,
+            EnablePacedInvalidation = false
+        };
+
+        var pipeline = new NdiVideoPipeline(sender, new FrameRate(60, 1), options, CreateNullLogger());
+        pipeline.AttachInvalidationScheduler(scheduler);
+        pipeline.Start();
+
+        var frameSize = 4 * 2 * 2;
+        var buffers = new List<IntPtr>();
+
+        try
+        {
+            for (var i = 0; i < 12; i++)
+            {
+                var ptr = Marshal.AllocHGlobal(frameSize);
+                buffers.Add(ptr);
+                FillBuffer(ptr, frameSize, (byte)(0xA0 + i));
+                pipeline.HandleFrame(CreateCapturedFrame(ptr, 2, 2, 8));
+            }
+
+            var primed = SpinWait.SpinUntil(() => pipeline.BufferPrimed, TimeSpan.FromMilliseconds(800));
+            Assert.True(primed);
+
+            var sent = SpinWait.SpinUntil(() => sender.Frames.Count >= buffers.Count, TimeSpan.FromMilliseconds(1200));
+            Assert.True(sent);
+
+            Assert.Equal(0, scheduler.PauseCount);
+            Assert.Equal(0, scheduler.ResumeCount);
+            Assert.False(pipeline.CaptureGateActive);
+        }
+        finally
+        {
+            pipeline.Dispose();
+            scheduler.Dispose();
+            foreach (var ptr in buffers)
+            {
+                if (ptr != IntPtr.Zero)
+                {
+                    Marshal.FreeHGlobal(ptr);
+                }
+            }
+        }
+    }
+
     private static void FillBuffer(IntPtr buffer, int size, byte value)
     {
         var data = new byte[size];
