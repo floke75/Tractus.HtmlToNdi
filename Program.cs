@@ -477,6 +477,12 @@ public class Program
             }
             finally
             {
+                if (pipelineAttachedToBrowser)
+                {
+                    Log.Warning("Browser wrapper disposal failed; detaching video pipeline to allow cleanup");
+                    pipelineAttachedToBrowser = false;
+                }
+
                 browserWrapper = null!;
 
                 if (Cef.IsInitialized)
