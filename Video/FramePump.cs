@@ -15,7 +15,7 @@ internal interface IChromiumInvalidationPump
 }
 
 /// <summary>
-/// Periodically invalidates the Chromium browser to trigger paint events.
+/// Invalidates the Chromium browser either on a fixed cadence or through telemetry-driven paced requests from the video pipeline.
 /// </summary>
 internal sealed class FramePump : IChromiumInvalidationPump, IDisposable
 {
@@ -76,6 +76,12 @@ internal sealed class FramePump : IChromiumInvalidationPump, IDisposable
     /// </summary>
     public void NotifyPaint() => lastPaint = DateTime.UtcNow;
 
+    /// <summary>
+    /// Queues a paced Chromium invalidation using the supplied delay and cadence offset.
+    /// </summary>
+    /// <param name="delay">Optional delay before the invalidation executes; defaults to the pump interval.</param>
+    /// <param name="cadenceOffset">An optional cadence alignment offset contributed by the video pipeline.</param>
+    /// <returns><c>true</c> if a paced invalidation was scheduled; otherwise, <c>false</c>.</returns>
     public bool RequestNextInvalidate(TimeSpan? delay = null, TimeSpan? cadenceOffset = null)
     {
         if (!usePacedInvalidation)
@@ -146,6 +152,10 @@ internal sealed class FramePump : IChromiumInvalidationPump, IDisposable
         return true;
     }
 
+    /// <summary>
+    /// Cancels any pending paced invalidation, pausing future watchdog retries until another request is scheduled.
+    /// </summary>
+    /// <returns><c>true</c> if an outstanding invalidation was cancelled; otherwise, <c>false</c>.</returns>
     public bool CancelPendingInvalidate()
     {
         if (!usePacedInvalidation)

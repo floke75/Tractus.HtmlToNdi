@@ -9,7 +9,7 @@ using System.Threading;
 namespace Tractus.HtmlToNdi.Video;
 
 /// <summary>
-/// Manages the video pipeline, including buffering and sending frames to NDI.
+/// Manages buffering, telemetry, paced Chromium invalidation, and sends frames to NDI.
 /// </summary>
 internal sealed class NdiVideoPipeline : IDisposable
 {
@@ -311,6 +311,11 @@ internal sealed class NdiVideoPipeline : IDisposable
         return Math.Clamp(delta * 0.15d, -0.75d, 0.75d);
     }
 
+    /// <summary>
+    /// Applies backlog/latency heuristics to decide whether to pause or schedule the next Chromium invalidation.
+    /// </summary>
+    /// <param name="context">The telemetry context that triggered the pacing decision.</param>
+    /// <param name="scheduleRequest">Indicates whether the caller wants to enqueue a new invalidation when pacing is active.</param>
     private void MaybeScheduleChromiumInvalidate(string context, bool scheduleRequest = true)
     {
         if (!usePacedInvalidation || ringBuffer is null)
