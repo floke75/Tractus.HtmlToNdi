@@ -84,4 +84,22 @@ public class LauncherSettings
     /// Gets or sets a value indicating whether to include capture/output cadence metrics in telemetry logs.
     /// </summary>
     public bool EnableCadenceTelemetry { get; set; } = true;
+
+    /// <summary>
+    /// Gets or sets a value indicating whether Chromium invalidations should be paced by the pipeline.
+    /// </summary>
+    public bool EnablePacedInvalidation { get; set; }
+        = false;
+
+    /// <summary>
+    /// Gets or sets a value indicating whether capture backpressure should pause Chromium when the buffer is ahead.
+    /// </summary>
+    public bool EnableCaptureBackpressure { get; set; }
+        = false;
+
+    /// <summary>
+    /// Gets or sets a value indicating whether the Chromium pump should align with capture cadence telemetry.
+    /// </summary>
+    public bool EnablePumpAlignment { get; set; }
+        = false;
 }

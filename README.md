@@ -34,6 +34,9 @@ Parameter|Description
 `--buffer-depth=3`|Enable the paced output buffer with the specified frame capacity. When enabled the sender waits for the queue to hold `depth` frames before transmitting, adding roughly `depth / fps` seconds of intentional latency. Set to `0` (default) to run zero-copy.
 `--enable-output-buffer`|Shortcut to turn on paced buffering with the default depth of 3 frames (≈`3 / fps` seconds of latency once primed).
 `--allow-latency-expansion`|Let the paced buffer keep playing any queued frames during recovery instead of immediately repeating the last frame. This trades temporary extra latency for smoother motion after underruns.
+`--enable-paced-invalidation`|Throttle Chromium invalidations so the browser only repaints after each paced send or repeat. Works with or without buffering; combine it with the paced buffer to keep capture and output in lockstep.
+`--enable-capture-backpressure`|Requires paced invalidation and buffering. Pauses Chromium invalidations while the backlog sits above the configured depth so latency never balloons, then resumes once the queue settles.
+`--enable-pump-alignment`|Requires paced invalidation and capture-alignment telemetry. Feeds cadence drift back to the Chromium pump so repaint deadlines converge with the paced sender.
 `--disable-capture-alignment`|Turns off the paced sender’s capture timestamp alignment (enabled by default). Use `--align-with-capture-timestamps` to explicitly re-enable it for a specific run.
 `--disable-cadence-telemetry`|Suppresses the capture/output cadence jitter metrics in telemetry logs (enabled by default). Use `--enable-cadence-telemetry` to force-enable them when needed.
 `--telemetry-interval=10`|Seconds between video pipeline telemetry log entries. Defaults to 10 seconds.
@@ -43,7 +46,15 @@ Parameter|Description
 `--launcher`|Forces the launcher window to appear even when other parameters are supplied.
 `--no-launcher`|Skips the launcher and honours the supplied command-line arguments only.
 
-When the paced buffer is enabled the pipeline repeats the most recently transmitted frame while warming up or recovering from an underrun so receivers continue to see a stable cadence. Passing `--allow-latency-expansion` switches that recovery into a variable-latency mode that keeps playing any queued frames before falling back to repeats, smoothing out motion at the cost of temporary additional delay. The launcher exposes checkboxes for latency expansion, capture alignment, and cadence telemetry so operators can toggle those behaviours without touching the command line. See [`Docs/paced-output-buffer.md`](Docs/paced-output-buffer.md) for a deeper walkthrough of the priming and telemetry behaviour.
+### Pacing and capture backpressure
+
+When the paced buffer is enabled the pipeline repeats the most recently transmitted frame while warming up or recovering from an underrun so receivers continue to see a stable cadence. Passing `--allow-latency-expansion` switches that recovery into a variable-latency mode that keeps playing any queued frames before falling back to repeats, smoothing out motion at the cost of temporary additional delay.
+
+`--enable-paced-invalidation` moves Chromium onto the same cadence as the paced sender so repaints only happen when the pipeline can deliver the next frame. This pacing can be used on its own (even with zero-copy output) to eliminate redundant Chromium work, or it can be combined with buffering to keep capture and output in lockstep.
+
+`--enable-capture-backpressure` pauses Chromium invalidations whenever the buffer backlog exceeds the configured depth and resumes once latency returns to the target. This option requires both buffering and paced invalidation so the scheduler can actually halt and resume repaint requests. `--enable-pump-alignment` layers cadence drift feedback on top, nudging Chromium's pump earlier or later to follow the paced sender when capture timestamps wander.
+
+The launcher exposes checkboxes for latency expansion, paced invalidation, capture backpressure, pump alignment, capture alignment, and cadence telemetry so operators can toggle those behaviours without touching the command line. See [`Docs/paced-output-buffer.md`](Docs/paced-output-buffer.md) for a deeper walkthrough of the priming and telemetry behaviour.
 
 #### Example Launch
 

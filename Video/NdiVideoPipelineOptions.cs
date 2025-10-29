@@ -34,4 +34,19 @@ internal sealed record NdiVideoPipelineOptions
     /// Gets or sets a value indicating whether capture/output cadence metrics are logged with telemetry.
     /// </summary>
     public bool EnableCadenceTelemetry { get; init; } = true;
+
+    /// <summary>
+    /// Gets or sets a value indicating whether Chromium invalidations should be paced alongside the NDI sender.
+    /// </summary>
+    public bool EnablePacedInvalidation { get; init; }
+
+    /// <summary>
+    /// Gets or sets a value indicating whether capture should be paused when the backlog exceeds pacing capacity.
+    /// </summary>
+    public bool EnableCaptureBackpressure { get; init; }
+
+    /// <summary>
+    /// Gets or sets a value indicating whether the Chromium pump should follow cadence-alignment telemetry.
+    /// </summary>
+    public bool EnablePumpAlignment { get; init; }
 }
