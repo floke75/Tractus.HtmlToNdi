@@ -803,6 +803,55 @@ public class NdiVideoPipelineTests
     }
 
     [Fact]
+    public void BufferedInvalidationsRecoverAfterDroppedPaint()
+    {
+        var sender = new CollectingSender();
+        var scheduler = new TestScheduler();
+        var options = new NdiVideoPipelineOptions
+        {
+            EnableBuffering = true,
+            BufferDepth = 3,
+            TelemetryInterval = TimeSpan.FromDays(1),
+            EnablePacedInvalidation = true,
+        };
+
+        var pipeline = new NdiVideoPipeline(sender, new FrameRate(60, 1), options, CreateNullLogger());
+        pipeline.AttachInvalidationScheduler(scheduler);
+        pipeline.Start();
+
+        try
+        {
+            var warmed = SpinWait.SpinUntil(
+                () => scheduler.RequestCount >= options.BufferDepth,
+                TimeSpan.FromMilliseconds(500));
+            Assert.True(warmed, "Warm-up invalidation requests not observed");
+
+            var baseline = scheduler.RequestCount;
+
+            var reissued = SpinWait.SpinUntil(
+                () => scheduler.RequestCount >= baseline + options.BufferDepth,
+                TimeSpan.FromMilliseconds(2000));
+
+            Assert.True(
+                reissued,
+                $"Scheduler did not reissue invalidations after dropped paint timeout. Baseline={baseline}, Current={scheduler.RequestCount}");
+
+            var expiredField = typeof(NdiVideoPipeline)
+                .GetField("expiredInvalidationTickets", BindingFlags.Instance | BindingFlags.NonPublic);
+            Assert.NotNull(expiredField);
+            var expired = (long)(expiredField!.GetValue(pipeline) ?? 0L);
+
+            Assert.True(expired > 0, "Expired invalidation ticket counter did not advance");
+            Assert.True(pipeline.PendingInvalidations > 0);
+        }
+        finally
+        {
+            pipeline.Dispose();
+            scheduler.Dispose();
+        }
+    }
+
+    [Fact]
     public async Task PacedInvalidationRequestsInDirectMode()
     {
         var sender = new CollectingSender();

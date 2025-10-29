@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using System.Threading;
@@ -22,7 +23,11 @@ internal sealed class NdiVideoPipeline : IDisposable
     private readonly FrameRingBuffer<NdiVideoFrame>? ringBuffer;
     private readonly ILogger logger;
     private static readonly TimeSpan BusyWaitThreshold = TimeSpan.FromMilliseconds(1);
+    private static readonly TimeSpan InvalidationTicketTimeout = TimeSpan.FromMilliseconds(250);
     private static readonly double StopwatchTicksToTimeSpanTicks = TimeSpan.TicksPerSecond / (double)Stopwatch.Frequency;
+    private static readonly double TimeSpanTicksToStopwatchTicks = Stopwatch.Frequency / (double)TimeSpan.TicksPerSecond;
+    private static readonly long InvalidationTicketTimeoutStopwatchTicks =
+        (long)Math.Max(1d, InvalidationTicketTimeout.Ticks * TimeSpanTicksToStopwatchTicks);
 
     private readonly int targetDepth;
     private readonly double lowWatermark;
@@ -30,6 +35,7 @@ internal sealed class NdiVideoPipeline : IDisposable
     private readonly bool allowLatencyExpansion;
     private readonly TimeSpan frameInterval;
     private readonly long maxPacingAdjustmentTicks;
+    private readonly ConcurrentQueue<long> invalidationTicketTimestamps = new();
 
     private bool bufferPrimed;
     private bool isWarmingUp = true;
@@ -78,6 +84,7 @@ internal sealed class NdiVideoPipeline : IDisposable
     private int directInvalidationPending;
     private long pendingInvalidations;
     private long spuriousCaptureCount;
+    private long expiredInvalidationTickets;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="NdiVideoPipeline"/> class.
@@ -151,6 +158,8 @@ internal sealed class NdiVideoPipeline : IDisposable
         consecutivePositiveLatencyTicks = 0;
         Interlocked.Exchange(ref pendingInvalidations, 0);
         Interlocked.Exchange(ref spuriousCaptureCount, 0);
+        ClearInvalidationTicketTimestamps();
+        Interlocked.Exchange(ref expiredInvalidationTickets, 0);
 
         if (scheduler is null)
         {
@@ -263,6 +272,8 @@ internal sealed class NdiVideoPipeline : IDisposable
 
         while (!token.IsCancellationRequested)
         {
+            EnsureCaptureDemand();
+
             if (Volatile.Read(ref pacingResetRequested))
             {
                 pacingOrigin = pacingClock.Elapsed;
@@ -343,17 +354,19 @@ internal sealed class NdiVideoPipeline : IDisposable
 
     private void EnsureCaptureDemand()
     {
-        if (!BufferingEnabled || !pacedInvalidationEnabled || ringBuffer is null)
-        {
-            return;
-        }
-
-        EnsureCaptureDemand(ringBuffer.Count);
+        EnsureCaptureDemandInternal(ringBuffer?.Count);
     }
 
     private void EnsureCaptureDemand(int backlog)
     {
-        if (!BufferingEnabled || !pacedInvalidationEnabled)
+        EnsureCaptureDemandInternal(backlog);
+    }
+
+    private void EnsureCaptureDemandInternal(int? backlog)
+    {
+        var expired = ExpireStaleInvalidationTickets();
+
+        if (!pacedInvalidationEnabled)
         {
             return;
         }
@@ -361,10 +374,26 @@ internal sealed class NdiVideoPipeline : IDisposable
         var scheduler = invalidationScheduler;
         if (scheduler is null || captureGateActive || scheduler.IsPaused)
         {
+            if (directPacedInvalidationEnabled && expired)
+            {
+                Interlocked.Exchange(ref directInvalidationPending, 0);
+            }
+
             return;
         }
 
-        var desired = CalculateDesiredPendingInvalidations(backlog);
+        if (!BufferingEnabled || backlog is null || ringBuffer is null)
+        {
+            if (directPacedInvalidationEnabled && expired)
+            {
+                Interlocked.Exchange(ref directInvalidationPending, 0);
+                RequestDirectInvalidation();
+            }
+
+            return;
+        }
+
+        var desired = CalculateDesiredPendingInvalidations(backlog.Value);
         var current = Volatile.Read(ref pendingInvalidations);
         while (current < desired)
         {
@@ -447,6 +476,81 @@ internal sealed class NdiVideoPipeline : IDisposable
 
     private bool CaptureTicketsEnabled => directPacedInvalidationEnabled || (BufferingEnabled && pacedInvalidationEnabled);
 
+    private void RecordInvalidationTicketIssued()
+    {
+        if (!CaptureTicketsEnabled)
+        {
+            return;
+        }
+
+        invalidationTicketTimestamps.Enqueue(Stopwatch.GetTimestamp());
+    }
+
+    private void DiscardOldestInvalidationTimestamp()
+    {
+        if (!CaptureTicketsEnabled)
+        {
+            return;
+        }
+
+        invalidationTicketTimestamps.TryDequeue(out _);
+    }
+
+    private bool ExpireStaleInvalidationTickets()
+    {
+        if (!CaptureTicketsEnabled)
+        {
+            return false;
+        }
+
+        if (invalidationTicketTimestamps.IsEmpty)
+        {
+            return false;
+        }
+
+        var now = Stopwatch.GetTimestamp();
+        var expiredAny = false;
+
+        while (invalidationTicketTimestamps.TryPeek(out var issuedAt))
+        {
+            if (now - issuedAt < InvalidationTicketTimeoutStopwatchTicks)
+            {
+                break;
+            }
+
+            if (!invalidationTicketTimestamps.TryDequeue(out issuedAt))
+            {
+                continue;
+            }
+
+            expiredAny = true;
+
+            while (true)
+            {
+                var pending = Volatile.Read(ref pendingInvalidations);
+                if (pending <= 0)
+                {
+                    break;
+                }
+
+                if (Interlocked.CompareExchange(ref pendingInvalidations, pending - 1, pending) == pending)
+                {
+                    Interlocked.Increment(ref expiredInvalidationTickets);
+                    break;
+                }
+            }
+        }
+
+        return expiredAny;
+    }
+
+    private void ClearInvalidationTicketTimestamps()
+    {
+        while (invalidationTicketTimestamps.TryDequeue(out _))
+        {
+        }
+    }
+
     private async Task RequestInvalidateWithTicketAsync(IPacedInvalidationScheduler scheduler, CancellationToken token)
     {
         if (!TryAcquireInvalidationSlot())
@@ -483,6 +587,7 @@ internal sealed class NdiVideoPipeline : IDisposable
 
             if (Interlocked.CompareExchange(ref pendingInvalidations, pending + 1, pending) == pending)
             {
+                RecordInvalidationTicketIssued();
                 return true;
             }
         }
@@ -534,6 +639,7 @@ internal sealed class NdiVideoPipeline : IDisposable
 
             if (Interlocked.CompareExchange(ref pendingInvalidations, pending - 1, pending) == pending)
             {
+                DiscardOldestInvalidationTimestamp();
                 return true;
             }
         }
@@ -546,11 +652,13 @@ internal sealed class NdiVideoPipeline : IDisposable
             var pending = Volatile.Read(ref pendingInvalidations);
             if (pending <= 0)
             {
+                DiscardOldestInvalidationTimestamp();
                 return;
             }
 
             if (Interlocked.CompareExchange(ref pendingInvalidations, pending - 1, pending) == pending)
             {
+                DiscardOldestInvalidationTimestamp();
                 return;
             }
         }
@@ -1034,6 +1142,8 @@ internal sealed class NdiVideoPipeline : IDisposable
         Interlocked.Exchange(ref cadenceAlignmentDeltaFrames, 0d);
         Interlocked.Exchange(ref pendingInvalidations, 0);
         Interlocked.Exchange(ref spuriousCaptureCount, 0);
+        ClearInvalidationTicketTimestamps();
+        Interlocked.Exchange(ref expiredInvalidationTickets, 0);
         bufferPrimed = false;
         isWarmingUp = true;
         hasPrimedOnce = false;
@@ -1347,7 +1457,8 @@ internal sealed class NdiVideoPipeline : IDisposable
         {
             var pending = Volatile.Read(ref pendingInvalidations);
             var spurious = Interlocked.Read(ref spuriousCaptureCount);
-            pacingStats = $", pendingInvalidations={pending}, spuriousCaptures={spurious}";
+            var expired = Interlocked.Read(ref expiredInvalidationTickets);
+            pacingStats = $", pendingInvalidations={pending}, spuriousCaptures={spurious}, expiredInvalidationTickets={expired}";
         }
 
         var cadenceStats = string.Empty;
