@@ -128,7 +128,13 @@ internal sealed class NdiVideoPipeline : IDisposable
     /// </summary>
     public void Start()
     {
-        if (!BufferingEnabled || pacingTask != null)
+        if (!BufferingEnabled)
+        {
+            PrimeSchedulerIfNeeded();
+            return;
+        }
+
+        if (pacingTask != null)
         {
             return;
         }

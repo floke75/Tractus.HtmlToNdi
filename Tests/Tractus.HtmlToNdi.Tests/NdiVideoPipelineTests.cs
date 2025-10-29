@@ -141,6 +141,33 @@ public class NdiVideoPipelineTests
     }
 
     [Fact]
+    public void DirectModePrimesSchedulerWhenPacingEnabled()
+    {
+        var sender = new CollectingSender();
+        var scheduler = new FakeScheduler();
+        var options = new NdiVideoPipelineOptions
+        {
+            EnableBuffering = false,
+            TelemetryInterval = TimeSpan.FromDays(1),
+            EnablePacedInvalidation = true,
+        };
+
+        var pipeline = new NdiVideoPipeline(sender, new FrameRate(60, 1), options, CreateNullLogger());
+        try
+        {
+            pipeline.AttachInvalidationScheduler(scheduler);
+            pipeline.Start();
+
+            Assert.True(scheduler.ResumeCount >= 1, "Expected scheduler resume to be requested");
+            Assert.True(scheduler.RequestCount >= 1, "Expected scheduler request to be issued");
+        }
+        finally
+        {
+            pipeline.Dispose();
+        }
+    }
+
+    [Fact]
     public async Task BufferedModeWaitsForWarmupBeforeSending()
     {
         var sender = new CollectingSender();
