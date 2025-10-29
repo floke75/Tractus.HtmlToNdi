@@ -224,6 +224,11 @@ internal sealed class FramePump : IChromiumInvalidationPump, IDisposable
         try
         {
             token.ThrowIfCancellationRequested();
+            if (cancellation.IsCancellationRequested)
+            {
+                return;
+            }
+
             var host = browser.GetBrowserHost();
             if (host is null)
             {
@@ -232,13 +237,13 @@ internal sealed class FramePump : IChromiumInvalidationPump, IDisposable
 
             await Cef.UIThreadTaskFactory.StartNew(() =>
             {
-                if (token.IsCancellationRequested)
+                if (cancellation.IsCancellationRequested || token.IsCancellationRequested)
                 {
                     return;
                 }
 
                 host.Invalidate(CefSharp.PaintElementType.View);
-            });
+            }).ConfigureAwait(false);
         }
         catch (OperationCanceledException)
         {
