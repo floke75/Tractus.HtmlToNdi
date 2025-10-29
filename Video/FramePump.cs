@@ -31,6 +31,7 @@ internal sealed class FramePump : IChromiumInvalidationPump, IDisposable
     private readonly object pacedRequestGate = new();
     private CancellationTokenSource? pendingInvalidateCts;
     private int pendingInvalidate;
+    private int pacedPauseState;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="FramePump"/> class.
@@ -110,6 +111,7 @@ internal sealed class FramePump : IChromiumInvalidationPump, IDisposable
             pendingInvalidate = 1;
             requestCts = CancellationTokenSource.CreateLinkedTokenSource(cancellation.Token);
             pendingInvalidateCts = requestCts;
+            Volatile.Write(ref pacedPauseState, 0);
         }
 
         _ = Task.Run(async () =>
@@ -162,11 +164,13 @@ internal sealed class FramePump : IChromiumInvalidationPump, IDisposable
 
         if (requestCts is null)
         {
+            Volatile.Write(ref pacedPauseState, 1);
             return false;
         }
 
         requestCts.Cancel();
         requestCts.Dispose();
+        Volatile.Write(ref pacedPauseState, 1);
         return true;
     }
 
@@ -199,6 +203,11 @@ internal sealed class FramePump : IChromiumInvalidationPump, IDisposable
                 await Task.Delay(watchdogInterval, token);
                 if (DateTime.UtcNow - lastPaint > watchdogInterval)
                 {
+                    if (usePacedInvalidation && Volatile.Read(ref pacedPauseState) == 1)
+                    {
+                        continue;
+                    }
+
                     logger.Debug("FramePump watchdog: re-invalidate Chromium after {Seconds}s", watchdogInterval.TotalSeconds);
                     await InvalidateAsync();
                 }
