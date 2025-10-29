@@ -297,9 +297,9 @@ internal sealed class NdiVideoPipeline : IDisposable
             return baseline;
         }
 
-        var offset = targetDepth - backlog;
-        var integral = Math.Clamp(Volatile.Read(ref latencyError) / Math.Max(1d, targetDepth), -2d, 2d);
-        var normalized = Math.Clamp(offset / (double)targetDepth, -1.5d, 1.5d);
+        var backlogError = targetDepth - backlog;
+        var normalized = Math.Clamp(backlogError / (double)targetDepth, -1.5d, 1.5d);
+        var integral = Math.Clamp(-Volatile.Read(ref latencyError) / Math.Max(1d, targetDepth), -2d, 2d);
         var adjustmentFactor = normalized + (integral * 0.2d);
         var cadenceAdjustment = CalculateCadenceAlignmentOffset();
         adjustmentFactor += cadenceAdjustment;

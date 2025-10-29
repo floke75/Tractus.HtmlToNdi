@@ -10,6 +10,7 @@ using Serilog.Core;
 using Tractus.HtmlToNdi.Chromium;
 using Tractus.HtmlToNdi.Video;
 using Xunit;
+using Xunit.Abstractions;
 using NewTek;
 using NewTek.NDI;
 
@@ -17,7 +18,14 @@ namespace Tractus.HtmlToNdi.Tests;
 
 public class NdiVideoPipelineTests
 {
-    private sealed record SentFrame(NDIlib.video_frame_v2_t Frame, byte[] Payload);
+    private readonly ITestOutputHelper output;
+
+    public NdiVideoPipelineTests(ITestOutputHelper output)
+    {
+        this.output = output;
+    }
+
+    private sealed record SentFrame(NDIlib.video_frame_v2_t Frame, byte[] Payload, DateTime Timestamp, long MonotonicTimestamp);
 
     private sealed class CollectingSender : INdiVideoSender
     {
@@ -46,7 +54,7 @@ public class NdiVideoPipelineTests
                     Marshal.Copy(frame.p_data, payload, 0, size);
                 }
 
-                frames.Add(new SentFrame(frame, payload));
+                frames.Add(new SentFrame(frame, payload, DateTime.UtcNow, Stopwatch.GetTimestamp()));
             }
         }
     }
@@ -726,6 +734,267 @@ public class NdiVideoPipelineTests
                 }
             }
             Assert.True(requestCount >= options.BufferDepth);
+        }
+    }
+
+    [Fact]
+    public void CalculateNextDeadlineDelaysOrHastensBasedOnBacklog()
+    {
+        var sender = new CollectingSender();
+        var options = new NdiVideoPipelineOptions
+        {
+            EnableBuffering = true,
+            BufferDepth = 4,
+            TelemetryInterval = TimeSpan.FromDays(1)
+        };
+
+        var pipeline = new NdiVideoPipeline(sender, new FrameRate(60, 1), options, CreateNullLogger());
+        var frameInterval = pipeline.FrameRate.FrameDuration;
+
+        var ringBufferField = typeof(NdiVideoPipeline)
+            .GetField("ringBuffer", BindingFlags.Instance | BindingFlags.NonPublic);
+        Assert.NotNull(ringBufferField);
+
+        var bufferPrimedField = typeof(NdiVideoPipeline)
+            .GetField("bufferPrimed", BindingFlags.Instance | BindingFlags.NonPublic);
+        Assert.NotNull(bufferPrimedField);
+
+        var latencyErrorField = typeof(NdiVideoPipeline)
+            .GetField("latencyError", BindingFlags.Instance | BindingFlags.NonPublic);
+        Assert.NotNull(latencyErrorField);
+
+        var calculateNextDeadline = typeof(NdiVideoPipeline)
+            .GetMethod("CalculateNextDeadline", BindingFlags.Instance | BindingFlags.NonPublic);
+        Assert.NotNull(calculateNextDeadline);
+
+        var ringBuffer = (FrameRingBuffer<NdiVideoFrame>?)ringBufferField!.GetValue(pipeline);
+        Assert.NotNull(ringBuffer);
+
+        bufferPrimedField!.SetValue(pipeline, true);
+
+        var frameSize = 4 * 2 * 2;
+        var buffer = Marshal.AllocHGlobal(frameSize);
+
+        try
+        {
+            FillBuffer(buffer, frameSize, 0x55);
+
+            void PopulateBacklog(int count)
+            {
+                ringBuffer!.Clear();
+                for (var i = 0; i < count; i++)
+                {
+                    pipeline.HandleFrame(CreateCapturedFrame(buffer, 2, 2, 8));
+                }
+            }
+
+            TimeSpan InvokeDeadline()
+            {
+                return (TimeSpan)calculateNextDeadline!.Invoke(pipeline, new object[] { TimeSpan.Zero, 1L })!;
+            }
+
+            PopulateBacklog(options.BufferDepth - 1);
+            latencyErrorField!.SetValue(pipeline, 0d);
+            var underDeadline = InvokeDeadline();
+            Assert.True(underDeadline - frameInterval > TimeSpan.Zero, "Backlog deficit should delay the deadline.");
+
+            PopulateBacklog(options.BufferDepth + 1);
+            latencyErrorField.SetValue(pipeline, 0d);
+            var overDeadline = InvokeDeadline();
+            Assert.True(overDeadline - frameInterval < TimeSpan.Zero, "Oversupply should hasten the deadline.");
+
+            PopulateBacklog(options.BufferDepth);
+            latencyErrorField.SetValue(pipeline, (double)options.BufferDepth);
+            var integralAccelerates = InvokeDeadline();
+            Assert.True(integralAccelerates - frameInterval < TimeSpan.Zero, "Positive latencyError should hasten pacing.");
+
+            latencyErrorField.SetValue(pipeline, -(double)options.BufferDepth);
+            var integralDelays = InvokeDeadline();
+            Assert.True(integralDelays - frameInterval > TimeSpan.Zero, "Negative latencyError should delay pacing.");
+        }
+        finally
+        {
+            pipeline.Dispose();
+            if (buffer != IntPtr.Zero)
+            {
+                Marshal.FreeHGlobal(buffer);
+            }
+        }
+    }
+
+    [Fact]
+    public void TrySendBufferedFrameMaintainsIntegratorSign()
+    {
+        var options = new NdiVideoPipelineOptions
+        {
+            EnableBuffering = true,
+            BufferDepth = 3,
+            TelemetryInterval = TimeSpan.FromDays(1)
+        };
+
+        static (bool Sent, double LatencyError) InvokeSend(int backlog, NdiVideoPipelineOptions options)
+        {
+            var sender = new CollectingSender();
+            var pipeline = new NdiVideoPipeline(sender, new FrameRate(60, 1), options, CreateNullLogger());
+
+            var trySend = typeof(NdiVideoPipeline)
+                .GetMethod("TrySendBufferedFrame", BindingFlags.Instance | BindingFlags.NonPublic);
+            Assert.NotNull(trySend);
+
+            var bufferPrimedField = typeof(NdiVideoPipeline)
+                .GetField("bufferPrimed", BindingFlags.Instance | BindingFlags.NonPublic);
+            Assert.NotNull(bufferPrimedField);
+
+            var isWarmingUpField = typeof(NdiVideoPipeline)
+                .GetField("isWarmingUp", BindingFlags.Instance | BindingFlags.NonPublic);
+            Assert.NotNull(isWarmingUpField);
+
+            var latencyErrorField = typeof(NdiVideoPipeline)
+                .GetField("latencyError", BindingFlags.Instance | BindingFlags.NonPublic);
+            Assert.NotNull(latencyErrorField);
+
+            var frameSize = 4 * 2 * 2;
+            var buffer = Marshal.AllocHGlobal(frameSize);
+
+            try
+            {
+                FillBuffer(buffer, frameSize, 0x5A);
+
+                for (var i = 0; i < backlog; i++)
+                {
+                    pipeline.HandleFrame(CreateCapturedFrame(buffer, 2, 2, 8));
+                }
+
+                bufferPrimedField!.SetValue(pipeline, true);
+                isWarmingUpField!.SetValue(pipeline, false);
+                latencyErrorField!.SetValue(pipeline, 0d);
+
+                var sent = (bool)trySend!.Invoke(pipeline, Array.Empty<object>())!;
+                var latency = (double)(latencyErrorField.GetValue(pipeline) ?? 0d);
+
+                return (sent, latency);
+            }
+            finally
+            {
+                pipeline.Dispose();
+
+                if (buffer != IntPtr.Zero)
+                {
+                    Marshal.FreeHGlobal(buffer);
+                }
+            }
+        }
+
+        var (sentOversupplied, latencyOversupplied) = InvokeSend(options.BufferDepth + 1, options);
+        Assert.True(sentOversupplied);
+        Assert.True(latencyOversupplied > 0, "Oversupply should leave a positive latencyError.");
+
+        var (sentUndersupplied, latencyUndersupplied) = InvokeSend(options.BufferDepth - 1, options);
+        Assert.True(sentUndersupplied);
+        Assert.True(latencyUndersupplied < 0, "Undersupply should leave a negative latencyError.");
+    }
+
+    [Fact]
+    public async Task LatencyErrorConvergesNearZeroWithBuffering()
+    {
+        var sender = new CollectingSender();
+        var options = new NdiVideoPipelineOptions
+        {
+            EnableBuffering = true,
+            BufferDepth = 3,
+            TelemetryInterval = TimeSpan.FromMilliseconds(200)
+        };
+
+        var pipeline = new NdiVideoPipeline(sender, new FrameRate(60, 1), options, CreateNullLogger());
+        pipeline.Start();
+
+        var frameInterval = pipeline.FrameRate.FrameDuration;
+        var frameSize = 4 * 2 * 2;
+        var buffer = Marshal.AllocHGlobal(frameSize);
+        var cts = new CancellationTokenSource();
+        Task producerTask = Task.CompletedTask;
+
+        try
+        {
+            FillBuffer(buffer, frameSize, 0x77);
+
+            producerTask = Task.Run(async () =>
+            {
+                try
+                {
+                    while (!cts.IsCancellationRequested)
+                    {
+                        pipeline.HandleFrame(CreateCapturedFrame(buffer, 2, 2, 8));
+                        await Task.Delay(frameInterval, cts.Token);
+                    }
+                }
+                catch (OperationCanceledException)
+                {
+                }
+            });
+
+            var primed = SpinWait.SpinUntil(
+                () => pipeline.BufferPrimed && sender.Frames.Count >= options.BufferDepth,
+                TimeSpan.FromSeconds(2));
+            Assert.True(primed);
+
+            await Task.Delay(TimeSpan.FromMilliseconds(frameInterval.TotalMilliseconds * 120));
+
+            var frames = sender.Frames;
+            Assert.True(frames.Count > options.BufferDepth + 5, "Not enough frames captured for cadence analysis.");
+
+            var analysisFrames = frames.Skip(Math.Max(0, frames.Count - 60)).ToArray();
+            Assert.True(analysisFrames.Length >= 2, "Need at least two frames for cadence analysis.");
+
+            var intervals = analysisFrames
+                .Zip(analysisFrames.Skip(1), (first, second) =>
+                {
+                    var delta = second.MonotonicTimestamp - first.MonotonicTimestamp;
+                    return delta / (double)Stopwatch.Frequency;
+                })
+                .ToArray();
+
+            Assert.NotEmpty(intervals);
+
+            var frameIntervalSeconds = frameInterval.TotalSeconds;
+            var averageInterval = intervals.Average();
+            var maxDeviation = intervals.Max(delta => Math.Abs(delta - frameIntervalSeconds));
+
+            var latencyErrorField = typeof(NdiVideoPipeline)
+                .GetField("latencyError", BindingFlags.Instance | BindingFlags.NonPublic);
+            Assert.NotNull(latencyErrorField);
+            var latencyError = (double)(latencyErrorField!.GetValue(pipeline) ?? 0d);
+
+            var offsetField = typeof(NdiVideoPipeline)
+                .GetField("lastPacingOffsetTicks", BindingFlags.Instance | BindingFlags.NonPublic);
+            Assert.NotNull(offsetField);
+            var offsetTicks = (long)(offsetField!.GetValue(pipeline) ?? 0L);
+            var offsetMs = offsetTicks / (double)TimeSpan.TicksPerMillisecond;
+
+            output.WriteLine(
+                $"latencyError={latencyError:F3}, offsetMs={offsetMs:F3}, avgIntervalMs={averageInterval * 1000:F3}, maxDeviationMs={maxDeviation * 1000:F3}, samples={intervals.Length}");
+
+            Assert.InRange(latencyError, -0.6, 0.6);
+            Assert.InRange(offsetMs, -0.6, 0.6);
+            Assert.InRange(averageInterval, frameIntervalSeconds * 0.95, frameIntervalSeconds * 1.05);
+            Assert.InRange(maxDeviation, 0, 0.004);
+        }
+        finally
+        {
+            cts.Cancel();
+            try
+            {
+                await producerTask;
+            }
+            catch (OperationCanceledException)
+            {
+            }
+
+            pipeline.Dispose();
+            if (buffer != IntPtr.Zero)
+            {
+                Marshal.FreeHGlobal(buffer);
+            }
         }
     }
 
