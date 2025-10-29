@@ -28,6 +28,9 @@ internal sealed class NdiVideoPipeline : IDisposable
     private readonly bool allowLatencyExpansion;
     private readonly TimeSpan frameInterval;
     private readonly long maxPacingAdjustmentTicks;
+    private readonly bool pacedInvalidationOption;
+    private readonly bool captureBackpressureOption;
+    private readonly bool pumpAlignmentOption;
 
     private bool bufferPrimed;
     private bool isWarmingUp = true;
@@ -62,6 +65,10 @@ internal sealed class NdiVideoPipeline : IDisposable
     private readonly bool cadenceTelemetryEnabled;
     private readonly bool cadenceTrackingEnabled;
     private double cadenceAlignmentDeltaFrames;
+    private IChromiumInvalidationScheduler? invalidationScheduler;
+    private int backpressureState;
+    private long backpressurePauses;
+    private long backpressureResumes;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="NdiVideoPipeline"/> class.
@@ -88,6 +95,9 @@ internal sealed class NdiVideoPipeline : IDisposable
         cadenceTrackingEnabled = alignWithCaptureTimestamps || cadenceTelemetryEnabled;
         captureCadenceTracker = new CadenceTracker(frameInterval);
         outputCadenceTracker = new CadenceTracker(frameInterval);
+        pacedInvalidationOption = options.EnablePacedInvalidation;
+        captureBackpressureOption = options.EnableCaptureBackpressure;
+        pumpAlignmentOption = options.EnablePumpAlignment;
 
         if (options.EnableBuffering)
         {
@@ -105,6 +115,8 @@ internal sealed class NdiVideoPipeline : IDisposable
     /// Gets a value indicating whether buffering is enabled.
     /// </summary>
     public bool BufferingEnabled => options.EnableBuffering;
+
+    internal NdiVideoPipelineOptions Options => options;
 
     /// <summary>
     /// Gets the configured frame rate.
@@ -124,6 +136,7 @@ internal sealed class NdiVideoPipeline : IDisposable
         ResetBufferingState();
         pacingResetRequested = true;
         pacingTask = Task.Run(async () => await RunPacedLoopAsync(cancellation.Token));
+        PrimeSchedulerIfNeeded();
     }
 
     /// <summary>
@@ -144,6 +157,7 @@ internal sealed class NdiVideoPipeline : IDisposable
         pacingTask = null;
         bufferPrimed = false;
         isWarmingUp = true;
+        ForceResumeBackpressure("pipeline stop");
     }
 
     /// <summary>
@@ -206,6 +220,7 @@ internal sealed class NdiVideoPipeline : IDisposable
                 RepeatLastFrame();
             }
 
+            PublishSchedulerHints(ringBuffer?.Count ?? 0);
             pacingSequence = nextSequence;
         }
     }
@@ -486,6 +501,7 @@ internal sealed class NdiVideoPipeline : IDisposable
             outputCadenceTracker.Record(Stopwatch.GetTimestamp());
         }
         EmitTelemetryIfNeeded();
+        PublishSchedulerHints(0);
     }
 
     private void SendBufferedFrame(NdiVideoFrame frame)
@@ -581,6 +597,7 @@ internal sealed class NdiVideoPipeline : IDisposable
         pacingResetRequested = true;
         outputCadenceTracker.Reset();
         Interlocked.Exchange(ref cadenceAlignmentDeltaFrames, 0d);
+        ForceResumeBackpressure("warmup entry");
     }
 
     private void ExitWarmup()
@@ -618,6 +635,7 @@ internal sealed class NdiVideoPipeline : IDisposable
             Interlocked.Read(ref latencyExpansionFramesServed));
 
         pacingResetRequested = true;
+        ForceResumeBackpressure("warmup exit");
     }
 
     private void ResetBufferingState()
@@ -643,6 +661,10 @@ internal sealed class NdiVideoPipeline : IDisposable
         Interlocked.Exchange(ref latencyExpansionSessions, 0);
         Interlocked.Exchange(ref latencyExpansionTicks, 0);
         Interlocked.Exchange(ref latencyExpansionFramesServed, 0);
+        ForceResumeBackpressure("reset");
+        Interlocked.Exchange(ref backpressureState, 0);
+        Interlocked.Exchange(ref backpressurePauses, 0);
+        Interlocked.Exchange(ref backpressureResumes, 0);
 
         ringBuffer?.Clear();
         lastSentFrame?.Dispose();
@@ -888,6 +910,138 @@ internal sealed class NdiVideoPipeline : IDisposable
         };
     }
 
+    internal void AttachInvalidationScheduler(IChromiumInvalidationScheduler? scheduler)
+    {
+        Volatile.Write(ref invalidationScheduler, scheduler);
+
+        if (!pacedInvalidationOption)
+        {
+            return;
+        }
+
+        if (scheduler is null)
+        {
+            logger.Warning("Paced invalidation requested but no scheduler was supplied; Chromium will continue free-running.");
+            return;
+        }
+
+        if (captureBackpressureOption && !pacedInvalidationOption)
+        {
+            logger.Warning("Capture backpressure requested without paced invalidation; enable paced invalidation to activate backpressure.");
+        }
+
+        if (pumpAlignmentOption && !pacedInvalidationOption)
+        {
+            logger.Warning("Pump alignment requested without paced invalidation; enable paced invalidation to share cadence telemetry with Chromium.");
+        }
+
+        if (captureBackpressureOption && !BufferingEnabled)
+        {
+            logger.Warning("Capture backpressure requested without buffering; invalidations will still be paced but backpressure cannot engage.");
+        }
+    }
+
+    private void PrimeSchedulerIfNeeded()
+    {
+        var scheduler = Volatile.Read(ref invalidationScheduler);
+        if (scheduler is null || !pacedInvalidationOption)
+        {
+            return;
+        }
+
+        scheduler.ResumeInvalidation();
+        if (pumpAlignmentOption)
+        {
+            var delta = Interlocked.CompareExchange(ref cadenceAlignmentDeltaFrames, 0d, 0d);
+            scheduler.UpdateAlignmentDelta(delta);
+        }
+
+        scheduler.RequestNextInvalidate();
+    }
+
+    private void PublishSchedulerHints(int backlog)
+    {
+        var scheduler = Volatile.Read(ref invalidationScheduler);
+        if (scheduler is null || !pacedInvalidationOption)
+        {
+            return;
+        }
+
+        if (pumpAlignmentOption)
+        {
+            var delta = Interlocked.CompareExchange(ref cadenceAlignmentDeltaFrames, 0d, 0d);
+            scheduler.UpdateAlignmentDelta(delta);
+        }
+
+        if (!captureBackpressureOption)
+        {
+            scheduler.RequestNextInvalidate();
+            return;
+        }
+
+        if (UpdateBackpressureState(backlog))
+        {
+            scheduler.RequestNextInvalidate();
+        }
+    }
+
+    private bool UpdateBackpressureState(int backlog)
+    {
+        var scheduler = Volatile.Read(ref invalidationScheduler);
+        if (scheduler is null || !captureBackpressureOption)
+        {
+            return true;
+        }
+
+        var currentLatency = Volatile.Read(ref latencyError);
+        var isActive = Volatile.Read(ref backpressureState) == 1;
+
+        if (!isActive && (backlog >= highWatermark || currentLatency >= 1d))
+        {
+            if (Interlocked.CompareExchange(ref backpressureState, 1, 0) == 0)
+            {
+                Interlocked.Increment(ref backpressurePauses);
+                logger.Warning("Pausing Chromium invalidation: backlog={Backlog}, latencyError={LatencyError:F2}", backlog, currentLatency);
+                scheduler.PauseInvalidation();
+            }
+
+            return false;
+        }
+
+        if (isActive && (backlog <= targetDepth || currentLatency <= 0d))
+        {
+            if (Interlocked.Exchange(ref backpressureState, 0) == 1)
+            {
+                Interlocked.Increment(ref backpressureResumes);
+                logger.Information("Resuming Chromium invalidation: backlog={Backlog}, latencyError={LatencyError:F2}", backlog, currentLatency);
+                scheduler.ResumeInvalidation();
+                return true;
+            }
+        }
+
+        return !isActive;
+    }
+
+    private void ForceResumeBackpressure(string reason)
+    {
+        var scheduler = Volatile.Read(ref invalidationScheduler);
+        if (scheduler is null)
+        {
+            return;
+        }
+
+        if (Interlocked.Exchange(ref backpressureState, 0) == 1)
+        {
+            Interlocked.Increment(ref backpressureResumes);
+            logger.Information("Resuming Chromium invalidation after {Reason}", reason);
+            scheduler.ResumeInvalidation();
+            if (pacedInvalidationOption)
+            {
+                scheduler.RequestNextInvalidate();
+            }
+        }
+    }
+
     private void EmitTelemetryIfNeeded([CallerMemberName] string? caller = null)
     {
         if (DateTime.UtcNow - lastTelemetry < options.TelemetryInterval)
@@ -903,6 +1057,10 @@ internal sealed class NdiVideoPipeline : IDisposable
         if (BufferingEnabled && ringBuffer is not null)
         {
             bufferStats += $", latencyExpansionSessions={Interlocked.Read(ref latencyExpansionSessions)}, latencyExpansionTicks={Interlocked.Read(ref latencyExpansionTicks)}, latencyExpansionFrames={Interlocked.Read(ref latencyExpansionFramesServed)}";
+        }
+        if (captureBackpressureOption)
+        {
+            bufferStats += $", backpressureActive={Volatile.Read(ref backpressureState) == 1}, backpressurePauses={Interlocked.Read(ref backpressurePauses)}, backpressureResumes={Interlocked.Read(ref backpressureResumes)}";
         }
 
         var cadenceStats = string.Empty;

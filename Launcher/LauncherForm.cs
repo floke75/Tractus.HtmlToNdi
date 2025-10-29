@@ -24,6 +24,9 @@ public sealed class LauncherForm : Form
     private readonly CheckBox _disableFrameRateLimitCheckBox;
     private readonly CheckBox _alignWithCaptureTimestampsCheckBox;
     private readonly CheckBox _enableCadenceTelemetryCheckBox;
+    private readonly CheckBox _enablePacedInvalidationCheckBox;
+    private readonly CheckBox _enableCaptureBackpressureCheckBox;
+    private readonly CheckBox _enablePumpAlignmentCheckBox;
 
     /// <summary>
     /// Gets the selected launch parameters.
@@ -158,6 +161,30 @@ public sealed class LauncherForm : Form
         };
         AddRow(table, "Cadence Telemetry", _enableCadenceTelemetryCheckBox);
 
+        _enablePacedInvalidationCheckBox = new CheckBox
+        {
+            Text = "Throttle Chromium invalidation to paced output",
+            Dock = DockStyle.Fill,
+            AutoSize = true,
+        };
+        AddRow(table, "Paced Invalidation", _enablePacedInvalidationCheckBox);
+
+        _enableCaptureBackpressureCheckBox = new CheckBox
+        {
+            Text = "Pause Chromium when buffer is ahead",
+            Dock = DockStyle.Fill,
+            AutoSize = true,
+        };
+        AddRow(table, "Capture Backpressure", _enableCaptureBackpressureCheckBox);
+
+        _enablePumpAlignmentCheckBox = new CheckBox
+        {
+            Text = "Align Chromium pump with capture cadence",
+            Dock = DockStyle.Fill,
+            AutoSize = true,
+        };
+        AddRow(table, "Pump Alignment", _enablePumpAlignmentCheckBox);
+
         _windowlessFrameRateTextBox = new TextBox { Dock = DockStyle.Fill };
         AddRow(table, "Windowless Frame Rate", _windowlessFrameRateTextBox);
 
@@ -217,6 +244,7 @@ public sealed class LauncherForm : Form
             var enabled = _enableBufferingCheckBox.Checked;
             _bufferDepthNumericUpDown.Enabled = enabled;
             _allowLatencyExpansionCheckBox.Enabled = enabled;
+            _enableCaptureBackpressureCheckBox.Enabled = enabled;
         };
 
         ApplySettings(initialSettings);
@@ -238,10 +266,14 @@ public sealed class LauncherForm : Form
         _bufferDepthNumericUpDown.Enabled = settings.EnableBuffering;
         _allowLatencyExpansionCheckBox.Checked = settings.AllowLatencyExpansion;
         _allowLatencyExpansionCheckBox.Enabled = settings.EnableBuffering;
+        _enableCaptureBackpressureCheckBox.Enabled = settings.EnableBuffering;
         var telemetryValue = (decimal)Math.Clamp(settings.TelemetryIntervalSeconds, (double)_telemetryNumericUpDown.Minimum, (double)_telemetryNumericUpDown.Maximum);
         _telemetryNumericUpDown.Value = telemetryValue;
         _alignWithCaptureTimestampsCheckBox.Checked = settings.AlignWithCaptureTimestamps;
         _enableCadenceTelemetryCheckBox.Checked = settings.EnableCadenceTelemetry;
+        _enablePacedInvalidationCheckBox.Checked = settings.EnablePacedInvalidation;
+        _enableCaptureBackpressureCheckBox.Checked = settings.EnableCaptureBackpressure;
+        _enablePumpAlignmentCheckBox.Checked = settings.EnablePumpAlignment;
         _windowlessFrameRateTextBox.Text = settings.WindowlessFrameRateOverride ?? string.Empty;
         _disableGpuVsyncCheckBox.Checked = settings.DisableGpuVsync;
         _disableFrameRateLimitCheckBox.Checked = settings.DisableFrameRateLimit;
@@ -289,7 +321,10 @@ public sealed class LauncherForm : Form
                 : _windowlessFrameRateTextBox.Text.Trim(),
             DisableGpuVsync = _disableGpuVsyncCheckBox.Checked,
             DisableFrameRateLimit = _disableFrameRateLimitCheckBox.Checked,
-            AllowLatencyExpansion = _allowLatencyExpansionCheckBox.Checked
+            AllowLatencyExpansion = _allowLatencyExpansionCheckBox.Checked,
+            EnablePacedInvalidation = _enablePacedInvalidationCheckBox.Checked,
+            EnableCaptureBackpressure = _enableCaptureBackpressureCheckBox.Checked,
+            EnablePumpAlignment = _enablePumpAlignmentCheckBox.Checked
         };
 
         try

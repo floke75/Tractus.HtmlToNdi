@@ -37,6 +37,9 @@ For the current paced-buffer design direction and recommendations, review `Docs/
 | `--enable-output-buffer` | `--enable-output-buffer` | Convenience flag to enable paced buffering with the default depth (3 frames, ≈`3 / fps` seconds of latency once primed). |
 | `--telemetry-interval=<seconds>` | `--telemetry-interval=10` | Seconds between video pipeline telemetry log entries. Defaults to 10. |
 | `--windowless-frame-rate=<double>` | `--windowless-frame-rate=60` | Overrides Chromium's internal repaint cadence. Defaults to the rounded value of `--fps`. |
+| `--enable-paced-invalidation` | `--enable-paced-invalidation` | Throttles Chromium invalidations so they only occur after each paced send/repeat. Defaults to legacy free-running invalidations. |
+| `--enable-capture-backpressure` | `--enable-capture-backpressure` | Requires paced invalidation. Pauses Chromium invalidations while the buffer is at/above the high watermark and resumes once latency drops back to the target depth. |
+| `--enable-pump-alignment` | `--enable-pump-alignment` | Requires paced invalidation and `--align-with-capture-timestamps`. Applies cadence-alignment telemetry to the Chromium pump so capture cadence converges with output. |
 | `--disable-gpu-vsync` | `--disable-gpu-vsync` | Passes `--disable-gpu-vsync` to Chromium to remove GPU vsync throttling. |
 | `--disable-frame-rate-limit` | `--disable-frame-rate-limit` | Passes `--disable-frame-rate-limit` to Chromium for maximum redraw throughput. |
 | `-debug` | `-debug` | Raises Serilog minimum level to `Debug`. |
@@ -134,7 +137,7 @@ When adding routes, update **both** this table and `Tractus.HtmlToNdi.http` samp
 
 ### CefWrapper (`Chromium/CefWrapper.cs`)
 * `ChromiumWebBrowser` is constructed with `AudioHandler = new CustomAudioHandler()` and a fixed `System.Drawing.Size(width,height)`.
-* A `FramePump` invalidates Chromium on the cadence derived from `--fps` (or `--windowless-frame-rate`) and contains a watchdog to recover if paint events stall.
+* A `FramePump` invalidates Chromium on the cadence derived from `--fps` (or `--windowless-frame-rate`) and contains a watchdog to recover if paint events stall. When paced invalidation is enabled it waits for the NDI pipeline to request the next invalidate and honours pause/alignment hints before touching Chromium.
 * `ScrollBy` always uses `(x=0,y=0)` as the mouse location; complex scrolling (e.g., inside scrolled divs) may require additional API work.
 * `Click` only supports the left mouse button; drag, double-click, or right-click interactions are not implemented.
 * `SendKeystrokes` issues **only** `KeyDown` events with `NativeKeyCode=Convert.ToInt32(char)`. There is no key-up, modifiers, or IME support—uppercase letters require the page to handle them despite missing Shift state.
