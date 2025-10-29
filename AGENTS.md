@@ -12,8 +12,8 @@ For the current paced-buffer design direction and recommendations, review `Docs/
 ## 1. What the current build actually does (net8.0, December 2024 snapshot)
 
 * Entry point: `Program.Main` (`Program.cs`). It sets the working directory, initializes logging via `AppManagement.Initialize`, parses CLI flags (including `--fps`, buffering, and telemetry settings), allocates the NDI sender up front, constructs an `NdiVideoPipeline`, then starts CefSharp OffScreen inside a dedicated synchronization context. After the browser bootstraps the app spins up the ASP.NET Core minimal API.
-* Chromium lifecycle: `AsyncContext.Run` + `SingleThreadSynchronizationContext` keep CefSharp happy on one STA-like thread. `CefWrapper.InitializeWrapperAsync` waits for the first page load, unmutes audio (CEF starts muted), subscribes to the `Paint` event, and starts a `FramePump` that invalidates Chromium at the requested cadence while a watchdog keeps the UI thread alive.
-* Video path: `ChromiumWebBrowser.Paint` forwards frames to the `NdiVideoPipeline`. In zero-copy mode the pipeline sends the GPU buffer directly; when buffering is enabled it copies into a pooled ring buffer, waits until `BufferDepth` frames are queued, then drains the backlog FIFO while repeating the latest frame on underruns so cadence stays constant. Frame-rate metadata is advertised using either the configured target cadence or the measured average.
+* Chromium lifecycle: `AsyncContext.Run` + `SingleThreadSynchronizationContext` keep CefSharp happy on one STA-like thread. `CefWrapper.InitializeWrapperAsync` waits for the first page load, unmutes audio (CEF starts muted), subscribes to the `Paint` event, and starts a `FramePump` invalidator. The pump can now run in periodic mode or accept paced triggers from the video pipeline, applying capture backpressure pauses and cadence-alignment adjustments supplied by telemetry while a watchdog keeps the UI thread alive.
+* Video path: `ChromiumWebBrowser.Paint` forwards frames to the `NdiVideoPipeline`. In zero-copy mode the pipeline sends the GPU buffer directly; when buffering is enabled it copies into a pooled ring buffer, waits until `BufferDepth` frames are queued, then drains the backlog FIFO while repeating the latest frame on underruns so cadence stays constant. Optional latency expansion continues draining queued frames during recovery. When paced invalidation is enabled the pipeline only requests new captures when it is ready and can temporarily pause Chromium after sustained oversupply. Frame-rate metadata is advertised using either the configured target cadence or the measured average.
 * Audio path: `CustomAudioHandler` exposes Cef audio, allocates a float buffer sized for one second, copies each planar channel into contiguous blocks inside that buffer, and sends it with `NDIlib.send_send_audio_v2`. (Note: the code claims “interleaved” but still stores channels sequentially; downstream receivers must cope with planar-like layout.)
 * Control plane: ASP.NET Core minimal API listens on HTTP (no TLS, no auth). Swagger UI is enabled. All endpoints directly call methods on the static `Program.browserWrapper` instance.
 * KVM metadata: the app advertises `<ndi_capabilities ntk_kvm="true" />` and starts a background thread that polls `NDIlib.send_capture` every second. It interprets `<ndi_kvm ...>` metadata frames, caching normalized mouse coordinates on opcode `0x03` and triggering a left click on opcode `0x04`.
@@ -35,6 +35,12 @@ For the current paced-buffer design direction and recommendations, review `Docs/
 | `--fps=<double|fraction>` | `--fps=59.94` | Target NDI frame cadence. Accepts decimal or rational values (e.g. `60000/1001`). Defaults to 60 fps. |
 | `--buffer-depth=<int>` | `--buffer-depth=3` | Enables the paced output buffer with the specified capacity. When enabled the sender waits for `depth` frames before transmitting, adding roughly `depth / fps` seconds of intentional latency. `0` keeps the legacy zero-copy mode. |
 | `--enable-output-buffer` | `--enable-output-buffer` | Convenience flag to enable paced buffering with the default depth (3 frames, ≈`3 / fps` seconds of latency once primed). |
+| `--allow-latency-expansion` | `--allow-latency-expansion` | Keeps draining any buffered frames during recovery instead of immediately repeating the last capture, trading temporary extra latency for smoother catch-up motion. |
+| `--enable-paced-invalidation` | `--enable-paced-invalidation` | Drives Chromium invalidations directly from the paced sender so captures only occur when the pipeline is ready. Falls back to the legacy periodic invalidator when omitted. |
+| `--enable-capture-backpressure` | `--enable-capture-backpressure` | Pauses Chromium invalidations after sustained positive latency or a deep backlog so oversupply does not grow unchecked. Automatically resumes once latency and backlog settle. |
+| `--enable-pump-cadence-alignment` | `--enable-pump-cadence-alignment` | Allows cadence drift measurements from the paced pipeline to influence the frame pump’s periodic cadence as well as the paced sender. |
+| `--disable-capture-alignment` | `--disable-capture-alignment` | Disables paced output alignment that normally nudges send times using capture timestamps. `--align-with-capture-timestamps` explicitly re-enables the behaviour. |
+| `--disable-cadence-telemetry` | `--disable-cadence-telemetry` | Suppresses capture/output cadence jitter metrics in telemetry logs. `--enable-cadence-telemetry` re-enables them for targeted runs. |
 | `--telemetry-interval=<seconds>` | `--telemetry-interval=10` | Seconds between video pipeline telemetry log entries. Defaults to 10. |
 | `--windowless-frame-rate=<double>` | `--windowless-frame-rate=60` | Overrides Chromium's internal repaint cadence. Defaults to the rounded value of `--fps`. |
 | `--disable-gpu-vsync` | `--disable-gpu-vsync` | Passes `--disable-gpu-vsync` to Chromium to remove GPU vsync throttling. |
@@ -61,7 +67,8 @@ Other configuration surfaces:
   SingleThreadSynchronizationContext.cs # BlockingCollection-backed synchronization context
 /Video/
   CapturedFrame.cs                    # Lightweight struct describing pixels passed from Chromium to the pipeline
-  FramePump.cs                        # Periodic Chromium invalidator with watchdog
+  FramePump.cs                        # Chromium invalidator supporting periodic + paced modes with watchdog and pause support
+  IChromiumInvalidator.cs             # Abstraction for invalidators so the pipeline can coordinate cadence/backpressure
   FrameRate.cs                        # Frame-rate parsing helpers (decimal/fraction) and metadata conversion
   FrameRingBuffer.cs                  # Drop-oldest ring buffer used by the paced pipeline
   FrameTimeAverager.cs                # Sliding-window FPS estimator for telemetry metadata
@@ -134,7 +141,7 @@ When adding routes, update **both** this table and `Tractus.HtmlToNdi.http` samp
 
 ### CefWrapper (`Chromium/CefWrapper.cs`)
 * `ChromiumWebBrowser` is constructed with `AudioHandler = new CustomAudioHandler()` and a fixed `System.Drawing.Size(width,height)`.
-* A `FramePump` invalidates Chromium on the cadence derived from `--fps` (or `--windowless-frame-rate`) and contains a watchdog to recover if paint events stall.
+* A `FramePump` invalidates Chromium on the cadence derived from `--fps` (or `--windowless-frame-rate`) and contains a watchdog to recover if paint events stall. When paced invalidation is enabled it waits for the video pipeline to request the next invalidate and honours pause/resume calls triggered by capture backpressure.
 * `ScrollBy` always uses `(x=0,y=0)` as the mouse location; complex scrolling (e.g., inside scrolled divs) may require additional API work.
 * `Click` only supports the left mouse button; drag, double-click, or right-click interactions are not implemented.
 * `SendKeystrokes` issues **only** `KeyDown` events with `NativeKeyCode=Convert.ToInt32(char)`. There is no key-up, modifiers, or IME support—uppercase letters require the page to handle them despite missing Shift state.
@@ -205,4 +212,10 @@ When adding routes, update **both** this table and `Tractus.HtmlToNdi.http` samp
 
 ---
 
+### NdiVideoPipeline (`Video/NdiVideoPipeline.cs`)
+* Supports zero-copy and paced-buffer modes. In paced mode the pipeline primes a ring buffer, optionally expands latency during recovery, and exposes telemetry on backlog/cadence.
+* When paced invalidation is enabled the pipeline requests invalidations only when it is ready to consume the next frame, applies sustained-latency gating before pausing Chromium, and resumes once backlog/latency stabilise.
+* Cadence drift reported by telemetry can adjust both the paced sender’s schedule and (when configured) the frame pump’s periodic interval.
+
 _Last reviewed against repository state in this workspace. Update sections promptly when behaviour changes._
+

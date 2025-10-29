@@ -8,7 +8,7 @@ using System.Threading.Tasks;
 namespace Tractus.HtmlToNdi.Video;
 
 /// <summary>
-/// Periodically invalidates the Chromium browser to trigger paint events.
+/// Invalidates the Chromium browser to trigger paint events, supporting periodic and paced modes with watchdog coverage.
 /// </summary>
 internal sealed class FramePump : IChromiumInvalidator
 {

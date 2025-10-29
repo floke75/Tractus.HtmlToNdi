@@ -8,7 +8,7 @@ using System.Threading;
 namespace Tractus.HtmlToNdi.Video;
 
 /// <summary>
-/// Manages the video pipeline, including buffering and sending frames to NDI.
+/// Manages the video pipeline, including buffering, paced invalidation coordination, and sending frames to NDI.
 /// </summary>
 internal sealed class NdiVideoPipeline : IDisposable
 {
@@ -136,6 +136,10 @@ internal sealed class NdiVideoPipeline : IDisposable
         RequestNextCapture();
     }
 
+    /// <summary>
+    /// Connects the pipeline to a Chromium invalidator so paced invalidation and cadence/backpressure hints can flow to Cef.
+    /// </summary>
+    /// <param name="chromiumInvalidator">The invalidator responsible for issuing Chromium invalidations.</param>
     internal void AttachInvalidator(IChromiumInvalidator chromiumInvalidator)
     {
         invalidator = chromiumInvalidator ?? throw new ArgumentNullException(nameof(chromiumInvalidator));
@@ -302,6 +306,9 @@ internal sealed class NdiVideoPipeline : IDisposable
         return baseline + TimeSpan.FromTicks(adjustmentTicks);
     }
 
+    /// <summary>
+    /// Requests another Chromium capture when paced invalidation is active and the pipeline is ready for more work.
+    /// </summary>
     private void RequestNextCapture()
     {
         if (!options.EnablePacedInvalidation)
@@ -326,6 +333,10 @@ internal sealed class NdiVideoPipeline : IDisposable
         captureRequestPending = false;
     }
 
+    /// <summary>
+    /// Examines backlog and latency integrator state to decide whether Chromium invalidations should pause or resume.
+    /// </summary>
+    /// <param name="backlog">The current number of buffered frames.</param>
     private void EvaluateCaptureBackpressure(int backlog)
     {
         if (!options.EnableCaptureBackpressure || !options.EnablePacedInvalidation)
@@ -780,6 +791,9 @@ internal sealed class NdiVideoPipeline : IDisposable
         pacingResetRequested = true;
     }
 
+    /// <summary>
+    /// Resets paced-buffer state, clears telemetry integrators, and resumes Chromium invalidation if it was paused.
+    /// </summary>
     private void ResetBufferingState()
     {
         captureCadenceTracker.Reset();
