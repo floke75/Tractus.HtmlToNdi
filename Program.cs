@@ -610,38 +610,32 @@ public class Program
             var bundledRuntimeDirectory = Path.Combine(AppContext.BaseDirectory, $"runtimes", $"win-{archSuffix}", "native");
             NdiBundledLibraryPath = Path.Combine(bundledRuntimeDirectory, $"Processing.NDI.Lib.{archSuffix}.dll");
 
-            var excludedLibraries = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-
             if (File.Exists(NdiBundledLibraryPath))
             {
+                NdiSearchDirectories = new[] { bundledRuntimeDirectory };
+                NdiLibraryCandidates = new[] { NdiBundledLibraryPath };
+                Log.Information("Using bundled NDI native runtime from {Library}", NdiBundledLibraryPath);
+
                 try
                 {
-                    NdiSearchDirectories = new[] { bundledRuntimeDirectory };
-                    NdiLibraryCandidates = new[] { NdiBundledLibraryPath };
-                    Log.Information("Using bundled NDI native runtime from {Library}", NdiBundledLibraryPath);
-
                     ConfigureSelectedLibrary(NdiBundledLibraryPath, isBundled: true);
                     return;
                 }
                 catch (DllNotFoundException ex)
                 {
                     Log.Warning(ex, "Failed to load packaged NDI runtime from {Library}; probing system locations", NdiBundledLibraryPath);
-                    excludedLibraries.Add(NdiBundledLibraryPath);
                 }
                 catch (BadImageFormatException ex)
                 {
                     Log.Warning(ex, "Packaged NDI runtime at {Library} is incompatible; probing system locations", NdiBundledLibraryPath);
-                    excludedLibraries.Add(NdiBundledLibraryPath);
                 }
                 catch (FileLoadException ex)
                 {
                     Log.Warning(ex, "Unable to load packaged NDI runtime from {Library}; probing system locations", NdiBundledLibraryPath);
-                    excludedLibraries.Add(NdiBundledLibraryPath);
                 }
                 catch (Exception ex)
                 {
                     Log.Error(ex, "Unexpected failure loading packaged NDI runtime from {Library}; probing system locations", NdiBundledLibraryPath);
-                    excludedLibraries.Add(NdiBundledLibraryPath);
                 }
             }
             else
@@ -654,11 +648,7 @@ public class Program
             Log.Information("NDI probe directories: {Directories}", NdiSearchDirectories);
             Log.Information("NDI library candidates: {Candidates}", NdiLibraryCandidates);
 
-            var effectiveCandidates = NdiLibraryCandidates
-                .Where(path => !excludedLibraries.Contains(path))
-                .ToArray();
-
-            if (effectiveCandidates.Length == 0)
+            if (NdiLibraryCandidates.Length == 0)
             {
                 throw new DllNotFoundException(CreateNdiFailureMessage());
             }
@@ -671,13 +661,13 @@ public class Program
                     || fileName.EndsWith("DotNetCoreBase.dll", StringComparison.OrdinalIgnoreCase);
             }
 
-            var nativeCandidates = effectiveCandidates
+            var nativeCandidates = NdiLibraryCandidates
                 .Where(path => !IsManagedWrapper(path))
                 .ToArray();
 
             if (nativeCandidates.Length == 0)
             {
-                nativeCandidates = effectiveCandidates;
+                nativeCandidates = NdiLibraryCandidates;
             }
 
             var preferredNames = new[]
@@ -730,89 +720,52 @@ public class Program
                 }
 
                 Log.Information("Selected NDI native library {Library}", libraryPath);
-                var previousRedistFolder = Environment.GetEnvironmentVariable("NDILIB_REDIST_FOLDER");
-                var previousPath = Environment.GetEnvironmentVariable("PATH");
-                var success = false;
-                nint handle = nint.Zero;
+                Environment.SetEnvironmentVariable("NDILIB_REDIST_FOLDER", runtimeDirectory);
+
+                TryPrependToPath(runtimeDirectory);
 
                 try
                 {
-                    Environment.SetEnvironmentVariable("NDILIB_REDIST_FOLDER", runtimeDirectory);
-
-                    TryPrependToPath(runtimeDirectory);
-
-                    try
+                    if (!SetDllDirectory(runtimeDirectory))
                     {
-                        if (!SetDllDirectory(runtimeDirectory))
-                        {
-                            var error = Marshal.GetLastWin32Error();
-                            Log.Warning("SetDllDirectory failed for {Path} with error {Error}", runtimeDirectory, error);
-                        }
+                        var error = Marshal.GetLastWin32Error();
+                        Log.Warning("SetDllDirectory failed for {Path} with error {Error}", runtimeDirectory, error);
                     }
-                    catch (EntryPointNotFoundException)
-                    {
-                        // Older Windows versions may not expose SetDllDirectory; ignore.
-                    }
+                }
+                catch (EntryPointNotFoundException)
+                {
+                    // Older Windows versions may not expose SetDllDirectory; ignore.
+                }
 
-                    handle = NativeLibrary.Load(libraryPath);
+                if (NativeLibrary.TryLoad(libraryPath, out var handle))
+                {
                     NdiNativeLibraryHandle = handle;
                     Log.Information("Loaded native NDI library from {Library}", libraryPath);
-
-                    try
-                    {
-                        var versionPtr = NDIlib.version();
-                        var version = Marshal.PtrToStringAnsi(versionPtr);
-                        if (!string.IsNullOrWhiteSpace(version))
-                        {
-                            Log.Information("Detected NDI runtime {Version}", version);
-                        }
-                    }
-                    catch (DllNotFoundException)
-                    {
-                        throw;
-                    }
-                    catch (Exception ex)
-                    {
-                        Log.Debug(ex, "Unable to query NDI runtime version");
-                    }
-
-                    NdiLibraryConfigured = true;
-                    success = true;
                 }
-                finally
+                else
                 {
-                    if (!success)
+                    Log.Warning("NativeLibrary.TryLoad was unable to load {Library}; relying on default probing.", libraryPath);
+                }
+
+                try
+                {
+                    var versionPtr = NDIlib.version();
+                    var version = Marshal.PtrToStringAnsi(versionPtr);
+                    if (!string.IsNullOrWhiteSpace(version))
                     {
-                        if (handle != nint.Zero)
-                        {
-                            try
-                            {
-                                NativeLibrary.Free(handle);
-                            }
-                            catch (Exception ex)
-                            {
-                                Log.Debug(ex, "Failed to free native library handle for {Library}", libraryPath);
-                            }
-
-                            if (NdiNativeLibraryHandle == handle)
-                            {
-                                NdiNativeLibraryHandle = nint.Zero;
-                            }
-                        }
-
-                        Environment.SetEnvironmentVariable("NDILIB_REDIST_FOLDER", previousRedistFolder);
-                        Environment.SetEnvironmentVariable("PATH", previousPath);
-
-                        try
-                        {
-                            SetDllDirectory(string.Empty);
-                        }
-                        catch (EntryPointNotFoundException)
-                        {
-                            // ignore if unavailable
-                        }
+                        Log.Information("Detected NDI runtime {Version}", version);
                     }
                 }
+                catch (DllNotFoundException)
+                {
+                    throw;
+                }
+                catch (Exception ex)
+                {
+                    Log.Debug(ex, "Unable to query NDI runtime version");
+                }
+
+                NdiLibraryConfigured = true;
             }
         }
     }
