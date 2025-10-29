@@ -65,6 +65,7 @@ internal sealed class NdiVideoPipeline : IDisposable
     private IChromiumInvalidator? invalidator;
     private volatile bool captureRequestPending;
     private int capturePauseState;
+    private int consecutivePositiveLatencyTicks;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="NdiVideoPipeline"/> class.
@@ -169,6 +170,7 @@ internal sealed class NdiVideoPipeline : IDisposable
         bufferPrimed = false;
         isWarmingUp = true;
         Interlocked.Exchange(ref capturePauseState, 0);
+        consecutivePositiveLatencyTicks = 0;
         invalidator?.ResumeInvalidation();
         captureRequestPending = options.EnablePacedInvalidation;
     }
@@ -350,9 +352,21 @@ internal sealed class NdiVideoPipeline : IDisposable
         var paused = Volatile.Read(ref capturePauseState) == 1;
         var integrator = Volatile.Read(ref latencyError);
 
+        if (integrator > 0)
+        {
+            if (consecutivePositiveLatencyTicks < int.MaxValue)
+            {
+                consecutivePositiveLatencyTicks++;
+            }
+        }
+        else if (integrator <= 0 && consecutivePositiveLatencyTicks > 0)
+        {
+            consecutivePositiveLatencyTicks = 0;
+        }
+
         if (!paused)
         {
-            if (backlog >= highWatermark || integrator > 0)
+            if (backlog >= highWatermark || consecutivePositiveLatencyTicks >= 3)
             {
                 if (Interlocked.CompareExchange(ref capturePauseState, 1, 0) == 0)
                 {
@@ -368,10 +382,11 @@ internal sealed class NdiVideoPipeline : IDisposable
             return;
         }
 
-        if (backlog <= targetDepth)
+        if (backlog <= targetDepth && integrator <= 0)
         {
             if (Interlocked.CompareExchange(ref capturePauseState, 0, 1) == 1)
             {
+                consecutivePositiveLatencyTicks = 0;
                 logger.Information(
                     "Chromium capture resumed: buffered={Buffered}, latencyError={LatencyError:F2}",
                     backlog,
@@ -706,6 +721,7 @@ internal sealed class NdiVideoPipeline : IDisposable
         isWarmingUp = true;
         warmupStarted = DateTime.UtcNow;
         consecutiveLowBacklogTicks = 0;
+        consecutivePositiveLatencyTicks = 0;
         Interlocked.Exchange(ref currentWarmupRepeatTicks, 0);
 
         latencyExpansionActive = preserving;
@@ -775,6 +791,7 @@ internal sealed class NdiVideoPipeline : IDisposable
         warmupStarted = DateTime.UtcNow;
         latencyError = 0;
         consecutiveLowBacklogTicks = 0;
+        consecutivePositiveLatencyTicks = 0;
         latencyExpansionActive = false;
         Interlocked.Exchange(ref underruns, 0);
         Interlocked.Exchange(ref warmupCycles, 0);
