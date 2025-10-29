@@ -99,13 +99,13 @@ internal sealed class FramePump : IPacedInvalidationScheduler
                 return;
             }
 
-            processingTask = Task.Run(() => ProcessRequestsAsync(cancellation.Token));
+            processingTask = StartDedicatedTask(ProcessRequestsAsync);
             if (mode == FramePumpMode.Periodic)
             {
-                periodicTask = Task.Run(() => RunPeriodicLoopAsync(cancellation.Token));
+                periodicTask = StartDedicatedTask(RunPeriodicLoopAsync);
             }
 
-            watchdogTask = Task.Run(() => RunWatchdogAsync(cancellation.Token));
+            watchdogTask = StartDedicatedTask(RunWatchdogAsync);
             started = true;
         }
     }
@@ -481,6 +481,16 @@ internal sealed class FramePump : IPacedInvalidationScheduler
         {
             throw new ObjectDisposedException(nameof(FramePump));
         }
+    }
+
+    private Task StartDedicatedTask(Func<CancellationToken, Task> worker)
+    {
+        return Task.Factory.StartNew(
+                () => worker(cancellation.Token),
+                CancellationToken.None,
+                TaskCreationOptions.LongRunning | TaskCreationOptions.DenyChildAttach,
+                TaskScheduler.Default)
+            .Unwrap();
     }
 
     private sealed class InvalidationRequest : IDisposable
