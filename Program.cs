@@ -461,6 +461,8 @@ public class Program
                 metadataCancellation?.Dispose();
             }
 
+            NdiVideoPipeline? pipelineToDispose = null;
+
             try
             {
                 if (browserWrapper is not null)
@@ -480,12 +482,13 @@ public class Program
                 if (pipelineAttachedToBrowser)
                 {
                     Log.Warning("Browser wrapper disposal failed; detaching video pipeline to allow cleanup");
-                    pipelineAttachedToBrowser = false;
                 }
+
+                pipelineAttachedToBrowser = false;
 
                 browserWrapper = null!;
 
-                if (Cef.IsInitialized)
+                if (Cef.IsInitialized == true)
                 {
                     try
                     {
@@ -497,6 +500,12 @@ public class Program
                     {
                         Log.Warning(ex, "Cef shutdown encountered an exception");
                     }
+                }
+
+                if (videoPipeline is not null)
+                {
+                    pipelineToDispose = videoPipeline;
+                    videoPipeline = null;
                 }
             }
 
@@ -514,18 +523,18 @@ public class Program
                 Log.Warning(ex, "Failed to delete launch cache {CachePath}", launchCachePath);
             }
 
-            try
+            if (pipelineToDispose is not null)
             {
-                if (videoPipeline is not null && !pipelineAttachedToBrowser)
+                try
                 {
                     Log.Information("Disposing NDI video pipeline");
-                    videoPipeline.Dispose();
+                    pipelineToDispose.Dispose();
                     Log.Information("NDI video pipeline disposed");
                 }
-            }
-            catch (Exception ex)
-            {
-                Log.Warning(ex, "NDI video pipeline disposal encountered an exception");
+                catch (Exception ex)
+                {
+                    Log.Warning(ex, "NDI video pipeline disposal encountered an exception");
+                }
             }
 
             try
@@ -541,25 +550,6 @@ public class Program
             catch (Exception ex)
             {
                 Log.Warning(ex, "Failed to destroy NDI sender instance");
-            }
-
-            try
-            {
-                Log.Information("Destroying NDI send subsystem");
-                NDIlib.destroy_send();
-                Log.Information("NDI send subsystem destroyed");
-            }
-            catch (EntryPointNotFoundException ex)
-            {
-                Log.Warning(ex, "NDIlib.destroy_send is not available in this runtime");
-            }
-            catch (DllNotFoundException ex)
-            {
-                Log.Warning(ex, "NDIlib.destroy_send failed because the native library is unavailable");
-            }
-            catch (Exception ex)
-            {
-                Log.Warning(ex, "Unexpected exception while destroying NDI send subsystem");
             }
 
             try
