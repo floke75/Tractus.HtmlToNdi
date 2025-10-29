@@ -4,8 +4,10 @@ using System.Linq;
 using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Threading;
+using System.Threading.Tasks;
 using Serilog;
 using Serilog.Core;
+using Tractus.HtmlToNdi.Chromium;
 using Tractus.HtmlToNdi.Video;
 using Xunit;
 using NewTek;
@@ -45,6 +47,143 @@ public class NdiVideoPipelineTests
                 }
 
                 frames.Add(new SentFrame(frame, payload));
+            }
+        }
+    }
+
+    private sealed class TestScheduler : IPacedInvalidationScheduler
+    {
+        private readonly object gate = new();
+        private readonly List<TaskCompletionSource<bool>> pending = new();
+        private bool paused;
+        private bool disposed;
+        private int requestCount;
+        private int pauseTransitions;
+        private int resumeTransitions;
+        private double cadenceDelta;
+
+        public int RequestCount => Volatile.Read(ref requestCount);
+
+        public int PauseCount => Volatile.Read(ref pauseTransitions);
+
+        public int ResumeCount => Volatile.Read(ref resumeTransitions);
+
+        public bool IsPaused => Volatile.Read(ref paused);
+
+        public Task RequestInvalidateAsync(CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            if (disposed)
+            {
+                throw new ObjectDisposedException(nameof(TestScheduler));
+            }
+
+            Interlocked.Increment(ref requestCount);
+
+            if (!IsPaused)
+            {
+                return Task.CompletedTask;
+            }
+
+            var tcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            CancellationTokenRegistration ctr = default;
+            if (cancellationToken.CanBeCanceled)
+            {
+                ctr = cancellationToken.Register(() => tcs.TrySetCanceled(cancellationToken));
+            }
+
+            lock (gate)
+            {
+                if (disposed)
+                {
+                    ctr.Dispose();
+                    throw new ObjectDisposedException(nameof(TestScheduler));
+                }
+
+                if (!paused)
+                {
+                    ctr.Dispose();
+                    return Task.CompletedTask;
+                }
+
+                pending.Add(tcs);
+            }
+
+            if (ctr != default)
+            {
+                _ = tcs.Task.ContinueWith(_ => ctr.Dispose(), TaskScheduler.Default);
+            }
+
+            return tcs.Task;
+        }
+
+        public void Pause()
+        {
+            if (disposed)
+            {
+                return;
+            }
+
+            if (!paused)
+            {
+                paused = true;
+                Interlocked.Increment(ref pauseTransitions);
+            }
+        }
+
+        public void Resume()
+        {
+            if (disposed)
+            {
+                return;
+            }
+
+            var toRelease = new List<TaskCompletionSource<bool>>();
+            lock (gate)
+            {
+                if (!paused)
+                {
+                    return;
+                }
+
+                paused = false;
+                Interlocked.Increment(ref resumeTransitions);
+                if (pending.Count > 0)
+                {
+                    toRelease.AddRange(pending);
+                    pending.Clear();
+                }
+            }
+
+            foreach (var tcs in toRelease)
+            {
+                tcs.TrySetResult(true);
+            }
+        }
+
+        public void NotifyPaint()
+        {
+        }
+
+        public void UpdateCadenceAlignment(double deltaFrames)
+        {
+            Volatile.Write(ref cadenceDelta, deltaFrames);
+        }
+
+        public void Dispose()
+        {
+            disposed = true;
+            List<TaskCompletionSource<bool>> toCancel;
+            lock (gate)
+            {
+                toCancel = new List<TaskCompletionSource<bool>>(pending);
+                pending.Clear();
+            }
+
+            foreach (var tcs in toCancel)
+            {
+                tcs.TrySetCanceled();
             }
         }
     }
@@ -409,6 +548,232 @@ public class NdiVideoPipelineTests
         finally
         {
             pipeline.Dispose();
+            foreach (var ptr in buffers)
+            {
+                if (ptr != IntPtr.Zero)
+                {
+                    Marshal.FreeHGlobal(ptr);
+                }
+            }
+        }
+    }
+
+    [Fact]
+    public async Task PacedInvalidationRequestsStayBounded()
+    {
+        var sender = new CollectingSender();
+        var scheduler = new TestScheduler();
+        var options = new NdiVideoPipelineOptions
+        {
+            EnableBuffering = true,
+            BufferDepth = 3,
+            TelemetryInterval = TimeSpan.FromDays(1),
+            EnablePacedInvalidation = true
+        };
+
+        var pipeline = new NdiVideoPipeline(sender, new FrameRate(120, 1), options, CreateNullLogger());
+        pipeline.AttachInvalidationScheduler(scheduler);
+        pipeline.Start();
+
+        var warmupReady = SpinWait.SpinUntil(() => scheduler.RequestCount >= options.BufferDepth, TimeSpan.FromMilliseconds(500));
+        Assert.True(warmupReady);
+
+        var frameSize = 4 * 2 * 2;
+        var buffers = new IntPtr[6];
+        try
+        {
+            for (var i = 0; i < buffers.Length; i++)
+            {
+                buffers[i] = Marshal.AllocHGlobal(frameSize);
+                FillBuffer(buffers[i], frameSize, (byte)(0xD0 + i));
+                pipeline.HandleFrame(CreateCapturedFrame(buffers[i], 2, 2, 8));
+            }
+
+            var sent = SpinWait.SpinUntil(() => sender.Frames.Count >= buffers.Length, TimeSpan.FromMilliseconds(1200));
+            Assert.True(sent);
+
+            await Task.Delay(50);
+        }
+        finally
+        {
+            var framesSent = sender.Frames.Count;
+            pipeline.Dispose();
+            var count = scheduler.RequestCount;
+            scheduler.Dispose();
+            foreach (var ptr in buffers)
+            {
+                if (ptr != IntPtr.Zero)
+                {
+                    Marshal.FreeHGlobal(ptr);
+                }
+            }
+
+            Assert.True(count >= options.BufferDepth);
+            var slotRequests = count - options.BufferDepth;
+            Assert.InRange(slotRequests, framesSent - 1, framesSent + 1);
+        }
+    }
+
+    [Fact]
+    public async Task PacedInvalidationRequestsInDirectMode()
+    {
+        var sender = new CollectingSender();
+        var scheduler = new TestScheduler();
+        var options = new NdiVideoPipelineOptions
+        {
+            EnableBuffering = false,
+            TelemetryInterval = TimeSpan.FromDays(1),
+            EnablePacedInvalidation = true
+        };
+
+        var pipeline = new NdiVideoPipeline(sender, new FrameRate(30, 1), options, CreateNullLogger());
+        pipeline.AttachInvalidationScheduler(scheduler);
+        pipeline.Start();
+
+        try
+        {
+            var initialRequest = SpinWait.SpinUntil(() => scheduler.RequestCount >= 1, TimeSpan.FromMilliseconds(500));
+            Assert.True(initialRequest);
+
+            var frameSize = 4 * 2 * 2;
+            var buffers = new IntPtr[6];
+
+            try
+            {
+                for (var i = 0; i < buffers.Length; i++)
+                {
+                    buffers[i] = Marshal.AllocHGlobal(frameSize);
+                    FillBuffer(buffers[i], frameSize, (byte)(0x90 + i));
+                    pipeline.HandleFrame(CreateCapturedFrame(buffers[i], 2, 2, 8));
+                }
+
+                var sent = SpinWait.SpinUntil(() => sender.Frames.Count >= buffers.Length, TimeSpan.FromMilliseconds(500));
+                Assert.True(sent);
+
+                await Task.Delay(50);
+            }
+            finally
+            {
+                foreach (var ptr in buffers)
+                {
+                    if (ptr != IntPtr.Zero)
+                    {
+                        Marshal.FreeHGlobal(ptr);
+                    }
+                }
+            }
+
+            var requests = scheduler.RequestCount;
+            Assert.True(requests >= sender.Frames.Count);
+            Assert.InRange(requests, sender.Frames.Count, sender.Frames.Count + 2);
+        }
+        finally
+        {
+            pipeline.Dispose();
+            scheduler.Dispose();
+        }
+    }
+
+    [Fact]
+    public void CaptureBackpressurePausesAndResumes()
+    {
+        var sender = new CollectingSender();
+        var scheduler = new TestScheduler();
+        var options = new NdiVideoPipelineOptions
+        {
+            EnableBuffering = true,
+            BufferDepth = 3,
+            TelemetryInterval = TimeSpan.FromDays(1),
+            EnablePacedInvalidation = true,
+            EnableCaptureBackpressure = true
+        };
+
+        var pipeline = new NdiVideoPipeline(sender, new FrameRate(90, 1), options, CreateNullLogger());
+        pipeline.AttachInvalidationScheduler(scheduler);
+        pipeline.Start();
+
+        var primed = SpinWait.SpinUntil(() => pipeline.BufferPrimed, TimeSpan.FromMilliseconds(800));
+        Assert.True(primed);
+
+        var frameSize = 4 * 2 * 2;
+        var buffers = new List<IntPtr>();
+        try
+        {
+            for (var i = 0; i < 12; i++)
+            {
+                var ptr = Marshal.AllocHGlobal(frameSize);
+                buffers.Add(ptr);
+                FillBuffer(ptr, frameSize, (byte)(0xE0 + i));
+                pipeline.HandleFrame(CreateCapturedFrame(ptr, 2, 2, 8));
+            }
+
+            var paused = SpinWait.SpinUntil(() => scheduler.PauseCount >= 1 && pipeline.CaptureGateActive, TimeSpan.FromMilliseconds(1200));
+            Assert.True(paused);
+
+            var drained = SpinWait.SpinUntil(() => scheduler.ResumeCount >= 1 && !pipeline.CaptureGateActive, TimeSpan.FromMilliseconds(2000));
+            Assert.True(drained);
+        }
+        finally
+        {
+            var requestCount = scheduler.RequestCount;
+            pipeline.Dispose();
+            scheduler.Dispose();
+            foreach (var ptr in buffers)
+            {
+                if (ptr != IntPtr.Zero)
+                {
+                    Marshal.FreeHGlobal(ptr);
+                }
+            }
+            Assert.True(requestCount >= options.BufferDepth);
+        }
+    }
+
+    [Fact]
+    public void CaptureBackpressureRequiresPacedInvalidation()
+    {
+        var sender = new CollectingSender();
+        var scheduler = new TestScheduler();
+        var options = new NdiVideoPipelineOptions
+        {
+            EnableBuffering = true,
+            BufferDepth = 3,
+            TelemetryInterval = TimeSpan.FromDays(1),
+            EnableCaptureBackpressure = true,
+            EnablePacedInvalidation = false
+        };
+
+        var pipeline = new NdiVideoPipeline(sender, new FrameRate(60, 1), options, CreateNullLogger());
+        pipeline.AttachInvalidationScheduler(scheduler);
+        pipeline.Start();
+
+        var frameSize = 4 * 2 * 2;
+        var buffers = new List<IntPtr>();
+
+        try
+        {
+            for (var i = 0; i < 12; i++)
+            {
+                var ptr = Marshal.AllocHGlobal(frameSize);
+                buffers.Add(ptr);
+                FillBuffer(ptr, frameSize, (byte)(0xA0 + i));
+                pipeline.HandleFrame(CreateCapturedFrame(ptr, 2, 2, 8));
+            }
+
+            var primed = SpinWait.SpinUntil(() => pipeline.BufferPrimed, TimeSpan.FromMilliseconds(800));
+            Assert.True(primed);
+
+            var sent = SpinWait.SpinUntil(() => sender.Frames.Count >= buffers.Count, TimeSpan.FromMilliseconds(1200));
+            Assert.True(sent);
+
+            Assert.Equal(0, scheduler.PauseCount);
+            Assert.Equal(0, scheduler.ResumeCount);
+            Assert.False(pipeline.CaptureGateActive);
+        }
+        finally
+        {
+            pipeline.Dispose();
+            scheduler.Dispose();
             foreach (var ptr in buffers)
             {
                 if (ptr != IntPtr.Zero)

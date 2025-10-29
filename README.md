@@ -36,6 +36,9 @@ Parameter|Description
 `--allow-latency-expansion`|Let the paced buffer keep playing any queued frames during recovery instead of immediately repeating the last frame. This trades temporary extra latency for smoother motion after underruns.
 `--disable-capture-alignment`|Turns off the paced sender’s capture timestamp alignment (enabled by default). Use `--align-with-capture-timestamps` to explicitly re-enable it for a specific run.
 `--disable-cadence-telemetry`|Suppresses the capture/output cadence jitter metrics in telemetry logs (enabled by default). Use `--enable-cadence-telemetry` to force-enable them when needed.
+`--enable-paced-invalidation` / `--disable-paced-invalidation`|Ties Chromium invalidation to the paced sender so no more than one capture runs per send slot, even when the paced buffer is disabled. Defaults to disabled.
+`--enable-capture-backpressure` / `--disable-capture-backpressure`|Pauses Chromium invalidation while the paced buffer is above its high-water mark, resuming automatically once depth settles. Requires `--enable-paced-invalidation`; when pacing is off the backpressure toggle is ignored. Defaults to disabled.
+`--enable-pump-cadence-adaptation` / `--disable-pump-cadence-adaptation`|Allows the invalidation scheduler to stretch or delay Chromium renders using capture/output drift telemetry. Defaults to disabled.
 `--telemetry-interval=10`|Seconds between video pipeline telemetry log entries. Defaults to 10 seconds.
 `--windowless-frame-rate=60`|Overrides CEF's internal repaint cadence. Defaults to the nearest integer of `--fps`.
 `--disable-gpu-vsync`|Disables Chromium's GPU vsync throttling.
@@ -43,7 +46,13 @@ Parameter|Description
 `--launcher`|Forces the launcher window to appear even when other parameters are supplied.
 `--no-launcher`|Skips the launcher and honours the supplied command-line arguments only.
 
-When the paced buffer is enabled the pipeline repeats the most recently transmitted frame while warming up or recovering from an underrun so receivers continue to see a stable cadence. Passing `--allow-latency-expansion` switches that recovery into a variable-latency mode that keeps playing any queued frames before falling back to repeats, smoothing out motion at the cost of temporary additional delay. The launcher exposes checkboxes for latency expansion, capture alignment, and cadence telemetry so operators can toggle those behaviours without touching the command line. See [`Docs/paced-output-buffer.md`](Docs/paced-output-buffer.md) for a deeper walkthrough of the priming and telemetry behaviour.
+When the paced buffer is enabled the pipeline repeats the most recently transmitted frame while warming up or recovering from an underrun so receivers continue to see a stable cadence. Passing `--allow-latency-expansion` switches that recovery into a variable-latency mode that keeps playing any queued frames before falling back to repeats, smoothing out motion at the cost of temporary additional delay. The launcher exposes checkboxes for latency expansion, paced invalidation, capture backpressure, pump cadence adaptation, capture alignment, and cadence telemetry so operators can toggle those behaviours without touching the command line. See [`Docs/paced-output-buffer.md`](Docs/paced-output-buffer.md) for a deeper walkthrough of the priming and telemetry behaviour.
+
+### Pacing, invalidation, and backpressure
+
+Chromium renders are now driven by a pacing-aware scheduler that coordinates invalidations with the paced output buffer. When `--enable-paced-invalidation` is set the scheduler runs Chromium in on-demand mode so each send slot triggers at most one capture. The same scheduler feeds cadence adaptation (when `--enable-pump-cadence-adaptation` is active), allowing Chromium to stretch or delay invalidations slightly so capture stays aligned with the paced sender. Capture backpressure (`--enable-capture-backpressure`) piggybacks on this scheduler: the capture gate pauses invalidations while the buffer sits above its high-water mark and resumes them automatically once depth settles. Because backpressure depends on paced invalidation, the pipeline ignores the toggle (and the launcher clears the checkbox) whenever pacing is off.
+
+Telemetry reflects the pacing state. Buffer health logs now include `captureGateActive`, `captureGatePauses`, and `captureGateResumes` so operators can see when backpressure engaged. Additional fields such as `pacedPaused`, `pacedOffsetMs`, and `cadenceAdaptation` describe how the scheduler is steering Chromium, while `resyncDrops` shows when stale frames were trimmed to get latency back under control.
 
 #### Example Launch
 

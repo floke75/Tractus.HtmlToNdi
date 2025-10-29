@@ -1,14 +1,16 @@
-using NewTek;
-using NewTek.NDI;
-using Serilog;
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using System.Threading;
+using System.Threading.Tasks;
+using NewTek;
+using NewTek.NDI;
+using Serilog;
+using Tractus.HtmlToNdi.Chromium;
 
 namespace Tractus.HtmlToNdi.Video;
 
 /// <summary>
-/// Manages the video pipeline, including buffering and sending frames to NDI.
+/// Manages the paced video pipeline, including the output buffer, Chromium invalidation scheduler, and capture backpressure.
 /// </summary>
 internal sealed class NdiVideoPipeline : IDisposable
 {
@@ -47,6 +49,8 @@ internal sealed class NdiVideoPipeline : IDisposable
     private long latencyExpansionSessions;
     private long latencyExpansionTicks;
     private long latencyExpansionFramesServed;
+    private long captureGatePauses;
+    private long captureGateResumes;
 
     private volatile bool pacingResetRequested;
 
@@ -62,6 +66,16 @@ internal sealed class NdiVideoPipeline : IDisposable
     private readonly bool cadenceTelemetryEnabled;
     private readonly bool cadenceTrackingEnabled;
     private double cadenceAlignmentDeltaFrames;
+    private readonly bool pacedInvalidationEnabled;
+    private readonly bool captureBackpressureEnabled;
+    private readonly bool directPacedInvalidationEnabled;
+    private readonly bool pumpCadenceAdaptationEnabled;
+
+    private IPacedInvalidationScheduler? invalidationScheduler;
+    private bool captureGateActive;
+    private int consecutivePositiveLatencyTicks;
+    private long lastPacingOffsetTicks;
+    private int directInvalidationPending;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="NdiVideoPipeline"/> class.
@@ -86,6 +100,17 @@ internal sealed class NdiVideoPipeline : IDisposable
         alignWithCaptureTimestamps = options.AlignWithCaptureTimestamps;
         cadenceTelemetryEnabled = options.EnableCadenceTelemetry;
         cadenceTrackingEnabled = alignWithCaptureTimestamps || cadenceTelemetryEnabled;
+        pacedInvalidationEnabled = options.EnablePacedInvalidation;
+        captureBackpressureEnabled = options.EnableBuffering
+            && options.EnableCaptureBackpressure
+            && options.EnablePacedInvalidation;
+        directPacedInvalidationEnabled = !options.EnableBuffering && options.EnablePacedInvalidation;
+        if (options.EnableBuffering && options.EnableCaptureBackpressure && !options.EnablePacedInvalidation)
+        {
+            logger.Warning(
+                "Capture backpressure requires paced invalidation; disabling backpressure until paced invalidation is enabled.");
+        }
+        pumpCadenceAdaptationEnabled = options.EnablePumpCadenceAdaptation;
         captureCadenceTracker = new CadenceTracker(frameInterval);
         outputCadenceTracker = new CadenceTracker(frameInterval);
 
@@ -111,8 +136,40 @@ internal sealed class NdiVideoPipeline : IDisposable
     /// </summary>
     public FrameRate FrameRate => configuredFrameRate;
 
+    internal NdiVideoPipelineOptions Options => options;
+
     /// <summary>
-    /// Starts the video pipeline.
+    /// Attaches the pacing-aware invalidation scheduler and resets gating state so telemetry stays in sync.
+    /// </summary>
+    /// <param name="scheduler">The scheduler responsible for coordinating Chromium invalidations.</param>
+    internal void AttachInvalidationScheduler(IPacedInvalidationScheduler? scheduler)
+    {
+        invalidationScheduler = scheduler;
+        captureGateActive = false;
+        consecutivePositiveLatencyTicks = 0;
+
+        if (scheduler is null)
+        {
+            return;
+        }
+
+        scheduler.UpdateCadenceAlignment(0);
+
+        if (directPacedInvalidationEnabled)
+        {
+            Interlocked.Exchange(ref directInvalidationPending, 0);
+            RequestDirectInvalidation();
+            return;
+        }
+
+        if (BufferingEnabled && pacedInvalidationEnabled)
+        {
+            ScheduleWarmupInvalidations(targetDepth);
+        }
+    }
+
+    /// <summary>
+    /// Starts the paced sender loop when buffering is enabled and primes the scheduler for warm-up.
     /// </summary>
     public void Start()
     {
@@ -144,10 +201,11 @@ internal sealed class NdiVideoPipeline : IDisposable
         pacingTask = null;
         bufferPrimed = false;
         isWarmingUp = true;
+        Interlocked.Exchange(ref directInvalidationPending, 0);
     }
 
     /// <summary>
-    /// Handles a captured video frame.
+    /// Handles a captured video frame, either sending it immediately (direct mode) or queueing it for paced delivery.
     /// </summary>
     /// <param name="frame">The captured video frame.</param>
     public void HandleFrame(CapturedFrame frame)
@@ -160,7 +218,13 @@ internal sealed class NdiVideoPipeline : IDisposable
 
         if (!BufferingEnabled)
         {
+            if (directPacedInvalidationEnabled)
+            {
+                Interlocked.Exchange(ref directInvalidationPending, 0);
+            }
+
             SendDirect(frame);
+            RequestDirectInvalidation();
             return;
         }
 
@@ -207,11 +271,14 @@ internal sealed class NdiVideoPipeline : IDisposable
             }
 
             pacingSequence = nextSequence;
+
+            await RequestNextInvalidationAsync(token).ConfigureAwait(false);
         }
     }
 
     private TimeSpan CalculateNextDeadline(TimeSpan origin, long nextSequence)
     {
+        Volatile.Write(ref lastPacingOffsetTicks, 0);
         var baseline = origin + TimeSpan.FromTicks(frameInterval.Ticks * nextSequence);
 
         if (!BufferingEnabled || ringBuffer is null)
@@ -256,7 +323,175 @@ internal sealed class NdiVideoPipeline : IDisposable
             }
         }
 
+        Volatile.Write(ref lastPacingOffsetTicks, adjustmentTicks);
         return baseline + TimeSpan.FromTicks(adjustmentTicks);
+    }
+
+    private async Task RequestNextInvalidationAsync(CancellationToken token)
+    {
+        if (!BufferingEnabled || !pacedInvalidationEnabled)
+        {
+            return;
+        }
+
+        var scheduler = invalidationScheduler;
+        if (scheduler is null || captureGateActive || scheduler.IsPaused)
+        {
+            return;
+        }
+
+        try
+        {
+            await scheduler.RequestInvalidateAsync(token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        catch (ObjectDisposedException)
+        {
+        }
+        catch (Exception ex)
+        {
+            logger.Warning(ex, "Failed to request Chromium invalidation from pacing loop");
+        }
+    }
+
+    /// <summary>
+    /// Primes Chromium with a burst of invalidation requests so the paced buffer can warm up quickly after (re)start.
+    /// </summary>
+    /// <param name="count">The number of invalidations to queue.</param>
+    private void ScheduleWarmupInvalidations(int count)
+    {
+        if (!BufferingEnabled || !pacedInvalidationEnabled || count <= 0)
+        {
+            return;
+        }
+
+        var scheduler = invalidationScheduler;
+        if (scheduler is null)
+        {
+            return;
+        }
+
+        _ = Task.Run(async () =>
+        {
+            for (var i = 0; i < count && !cancellation.IsCancellationRequested; i++)
+            {
+                try
+                {
+                    await scheduler.RequestInvalidateAsync(cancellation.Token).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException)
+                {
+                    break;
+                }
+                catch (ObjectDisposedException)
+                {
+                    break;
+                }
+                catch (Exception ex)
+                {
+                    logger.Debug(ex, "Warmup invalidate request failed");
+                    break;
+                }
+            }
+        });
+    }
+
+    /// <summary>
+    /// Ensures the next direct-send capture is queued once the current frame has been transmitted.
+    /// </summary>
+    private void RequestDirectInvalidation()
+    {
+        if (!directPacedInvalidationEnabled)
+        {
+            return;
+        }
+
+        if (Interlocked.CompareExchange(ref directInvalidationPending, 1, 0) != 0)
+        {
+            return;
+        }
+
+        var scheduler = invalidationScheduler;
+        if (scheduler is null)
+        {
+            Interlocked.Exchange(ref directInvalidationPending, 0);
+            return;
+        }
+
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await scheduler.RequestInvalidateAsync(cancellation.Token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                Interlocked.Exchange(ref directInvalidationPending, 0);
+            }
+            catch (ObjectDisposedException)
+            {
+                Interlocked.Exchange(ref directInvalidationPending, 0);
+            }
+            catch (Exception ex)
+            {
+                logger.Warning(ex, "Failed to request Chromium invalidation for direct pacing");
+                Interlocked.Exchange(ref directInvalidationPending, 0);
+            }
+        });
+    }
+
+    private void UpdateCaptureBackpressure(int backlog)
+    {
+        if (!captureBackpressureEnabled)
+        {
+            return;
+        }
+
+        var scheduler = invalidationScheduler;
+        if (scheduler is null)
+        {
+            return;
+        }
+
+        if (latencyError > 0.5d)
+        {
+            if (consecutivePositiveLatencyTicks < int.MaxValue)
+            {
+                consecutivePositiveLatencyTicks++;
+            }
+        }
+        else if (latencyError <= 0)
+        {
+            consecutivePositiveLatencyTicks = 0;
+        }
+
+        var highBacklog = backlog >= highWatermark;
+        if (!captureGateActive && (highBacklog || consecutivePositiveLatencyTicks >= 3))
+        {
+            captureGateActive = true;
+            scheduler.Pause();
+            Interlocked.Increment(ref captureGatePauses);
+            logger.Information(
+                "Chromium capture paused due to oversupply: backlog={Backlog}, latencyError={LatencyError:F2}",
+                backlog,
+                latencyError);
+            return;
+        }
+
+        if (captureGateActive && backlog <= targetDepth && latencyError <= 0)
+        {
+            captureGateActive = false;
+            consecutivePositiveLatencyTicks = 0;
+            scheduler.Resume();
+            Interlocked.Increment(ref captureGateResumes);
+            logger.Information(
+                "Chromium capture resumed after oversupply: backlog={Backlog}, latencyError={LatencyError:F2}",
+                backlog,
+                latencyError);
+            ScheduleWarmupInvalidations(targetDepth);
+        }
     }
 
     private double CalculateCadenceAlignmentOffset()
@@ -271,6 +506,11 @@ internal sealed class NdiVideoPipeline : IDisposable
         var outputDrift = outputCadenceTracker.GetDriftFrames();
         var delta = captureDrift - outputDrift;
         Interlocked.Exchange(ref cadenceAlignmentDeltaFrames, delta);
+
+        if (pumpCadenceAdaptationEnabled && invalidationScheduler is not null)
+        {
+            invalidationScheduler.UpdateCadenceAlignment(delta);
+        }
 
         if (double.IsNaN(delta) || Math.Abs(delta) < 0.01d)
         {
@@ -454,6 +694,8 @@ internal sealed class NdiVideoPipeline : IDisposable
             }
         }
 
+        UpdateCaptureBackpressure(backlog);
+
         if (ringBuffer.TryDequeue(out var frame) && frame is not null)
         {
             SendBufferedFrame(frame);
@@ -581,6 +823,7 @@ internal sealed class NdiVideoPipeline : IDisposable
         pacingResetRequested = true;
         outputCadenceTracker.Reset();
         Interlocked.Exchange(ref cadenceAlignmentDeltaFrames, 0d);
+        invalidationScheduler?.UpdateCadenceAlignment(0);
     }
 
     private void ExitWarmup()
@@ -618,6 +861,10 @@ internal sealed class NdiVideoPipeline : IDisposable
             Interlocked.Read(ref latencyExpansionFramesServed));
 
         pacingResetRequested = true;
+        if (BufferingEnabled && pacedInvalidationEnabled)
+        {
+            ScheduleWarmupInvalidations(targetDepth);
+        }
     }
 
     private void ResetBufferingState()
@@ -643,10 +890,16 @@ internal sealed class NdiVideoPipeline : IDisposable
         Interlocked.Exchange(ref latencyExpansionSessions, 0);
         Interlocked.Exchange(ref latencyExpansionTicks, 0);
         Interlocked.Exchange(ref latencyExpansionFramesServed, 0);
+        Interlocked.Exchange(ref captureGatePauses, 0);
+        Interlocked.Exchange(ref captureGateResumes, 0);
+        Interlocked.Exchange(ref lastPacingOffsetTicks, 0);
 
         ringBuffer?.Clear();
         lastSentFrame?.Dispose();
         lastSentFrame = null;
+        captureGateActive = false;
+        consecutivePositiveLatencyTicks = 0;
+        invalidationScheduler?.Resume();
     }
 
     private double ComputeLastWarmupMilliseconds()
@@ -670,6 +923,8 @@ internal sealed class NdiVideoPipeline : IDisposable
     internal long LatencyExpansionTicks => Interlocked.Read(ref latencyExpansionTicks);
 
     internal long LatencyExpansionFramesServed => Interlocked.Read(ref latencyExpansionFramesServed);
+
+    internal bool CaptureGateActive => captureBackpressureEnabled && captureGateActive;
 
     private (int numerator, int denominator) ResolveFrameRate(DateTime timestamp)
     {
@@ -903,6 +1158,22 @@ internal sealed class NdiVideoPipeline : IDisposable
         if (BufferingEnabled && ringBuffer is not null)
         {
             bufferStats += $", latencyExpansionSessions={Interlocked.Read(ref latencyExpansionSessions)}, latencyExpansionTicks={Interlocked.Read(ref latencyExpansionTicks)}, latencyExpansionFrames={Interlocked.Read(ref latencyExpansionFramesServed)}";
+        }
+        if (captureBackpressureEnabled)
+        {
+            bufferStats += $", captureGateActive={captureGateActive}, captureGatePauses={Interlocked.Read(ref captureGatePauses)}, captureGateResumes={Interlocked.Read(ref captureGateResumes)}";
+        }
+        if (BufferingEnabled && pacedInvalidationEnabled)
+        {
+            var scheduler = invalidationScheduler;
+            if (scheduler is not null)
+            {
+                var pausedSnapshot = scheduler.IsPaused;
+                var offsetTicks = Interlocked.Read(ref lastPacingOffsetTicks);
+                var offsetMs = offsetTicks / (double)TimeSpan.TicksPerMillisecond;
+                bufferStats += System.FormattableString.Invariant(
+                    $", pacedInvalidation=true, pacedPaused={pausedSnapshot}, pacedOffsetMs={offsetMs:F4}, cadenceAdaptation={pumpCadenceAdaptationEnabled}");
+            }
         }
 
         var cadenceStats = string.Empty;

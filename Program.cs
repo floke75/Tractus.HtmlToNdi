@@ -157,6 +157,9 @@ public class Program
             AllowLatencyExpansion = parameters.AllowLatencyExpansion,
             AlignWithCaptureTimestamps = parameters.AlignWithCaptureTimestamps,
             EnableCadenceTelemetry = parameters.EnableCadenceTelemetry,
+            EnablePacedInvalidation = parameters.EnablePacedInvalidation,
+            EnableCaptureBackpressure = parameters.EnableCaptureBackpressure,
+            EnablePumpCadenceAdaptation = parameters.EnablePumpCadenceAdaptation,
         };
 
         Log.Information("Ensuring NDI native runtime is available...");
@@ -774,6 +777,16 @@ public class Program
         "--buffer-depth",
         "--telemetry-interval",
         "--allow-latency-expansion",
+        "--disable-capture-alignment",
+        "--align-with-capture-timestamps",
+        "--disable-cadence-telemetry",
+        "--enable-cadence-telemetry",
+        "--enable-paced-invalidation",
+        "--disable-paced-invalidation",
+        "--enable-capture-backpressure",
+        "--disable-capture-backpressure",
+        "--enable-pump-cadence-adaptation",
+        "--disable-pump-cadence-adaptation",
         "--windowless-frame-rate",
         "--enable-output-buffer",
         "--disable-gpu-vsync",
