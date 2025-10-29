@@ -35,6 +35,7 @@ internal sealed class NdiVideoPipeline : IDisposable
     private bool hasPrimedOnce;
     private double latencyError;
     private int consecutiveLowBacklogTicks;
+    private int consecutivePositiveLatencyTicks;
     private DateTime warmupStarted;
     private long underruns;
     private long warmupCycles;
@@ -325,7 +326,8 @@ internal sealed class NdiVideoPipeline : IDisposable
 
         var backlog = ringBuffer.Count;
         var latency = Volatile.Read(ref latencyError);
-        var shouldPause = backlog >= highWatermark || latency > 0;
+        var positiveLatencyTicks = Volatile.Read(ref consecutivePositiveLatencyTicks);
+        var shouldPause = backlog >= highWatermark || positiveLatencyTicks >= 3;
 
         lock (invalidationLock)
         {
@@ -342,10 +344,11 @@ internal sealed class NdiVideoPipeline : IDisposable
                 {
                     invalidationPaused = true;
                     logger.Information(
-                        "Chromium paced invalidation paused ({Context}); backlog={Backlog}, latencyError={LatencyError:F2}",
+                        "Chromium paced invalidation paused ({Context}); backlog={Backlog}, latencyError={LatencyError:F2}, positiveLatencyTicks={PositiveLatencyTicks}",
                         context,
                         backlog,
-                        latency);
+                        latency,
+                        positiveLatencyTicks);
                 }
 
                 return;
@@ -355,15 +358,22 @@ internal sealed class NdiVideoPipeline : IDisposable
             {
                 invalidationPaused = false;
                 logger.Information(
-                    "Chromium paced invalidation resumed ({Context}); backlog={Backlog}, latencyError={LatencyError:F2}",
+                    "Chromium paced invalidation resumed ({Context}); backlog={Backlog}, latencyError={LatencyError:F2}, positiveLatencyTicks={PositiveLatencyTicks}",
                     context,
                     backlog,
-                    latency);
+                    latency,
+                    positiveLatencyTicks);
             }
 
             if (!scheduleRequest)
             {
                 return;
+            }
+
+            if (positiveLatencyTicks > 0 && latency <= 0)
+            {
+                Interlocked.Exchange(ref consecutivePositiveLatencyTicks, 0);
+                positiveLatencyTicks = 0;
             }
 
             var cadenceOffset = CalculatePacedInvalidationOffset();
@@ -572,6 +582,19 @@ internal sealed class NdiVideoPipeline : IDisposable
             }
         }
 
+        var currentLatencyError = latencyError;
+        if (currentLatencyError > 0.5d)
+        {
+            if (Volatile.Read(ref consecutivePositiveLatencyTicks) < int.MaxValue)
+            {
+                Interlocked.Increment(ref consecutivePositiveLatencyTicks);
+            }
+        }
+        else if (currentLatencyError <= 0d)
+        {
+            Interlocked.Exchange(ref consecutivePositiveLatencyTicks, 0);
+        }
+
         if (ringBuffer.TryDequeue(out var frame) && frame is not null)
         {
             SendBufferedFrame(frame);
@@ -682,6 +705,7 @@ internal sealed class NdiVideoPipeline : IDisposable
         isWarmingUp = true;
         warmupStarted = DateTime.UtcNow;
         consecutiveLowBacklogTicks = 0;
+        Interlocked.Exchange(ref consecutivePositiveLatencyTicks, 0);
         Interlocked.Exchange(ref currentWarmupRepeatTicks, 0);
 
         latencyExpansionActive = preserving;
@@ -712,6 +736,7 @@ internal sealed class NdiVideoPipeline : IDisposable
         bufferPrimed = true;
         hasPrimedOnce = true;
         consecutiveLowBacklogTicks = 0;
+        Interlocked.Exchange(ref consecutivePositiveLatencyTicks, 0);
         latencyExpansionActive = false;
 
         var now = DateTime.UtcNow;
@@ -759,6 +784,7 @@ internal sealed class NdiVideoPipeline : IDisposable
         warmupStarted = DateTime.UtcNow;
         latencyError = 0;
         consecutiveLowBacklogTicks = 0;
+        Interlocked.Exchange(ref consecutivePositiveLatencyTicks, 0);
         latencyExpansionActive = false;
         Interlocked.Exchange(ref underruns, 0);
         Interlocked.Exchange(ref warmupCycles, 0);
