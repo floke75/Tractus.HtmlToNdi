@@ -180,7 +180,12 @@ internal sealed class NdiVideoPipeline : IDisposable
 
         ResetBufferingState();
         Volatile.Write(ref pacingResetRequested, true);
-        pacingTask = Task.Run(async () => await RunPacedLoopAsync(cancellation.Token));
+        pacingTask = Task.Factory.StartNew(
+                () => RunPacedLoopAsync(cancellation.Token),
+                CancellationToken.None,
+                TaskCreationOptions.LongRunning | TaskCreationOptions.DenyChildAttach,
+                TaskScheduler.Default)
+            .Unwrap();
     }
 
     /// <summary>
