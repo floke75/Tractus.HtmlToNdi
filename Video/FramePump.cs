@@ -258,6 +258,11 @@ internal sealed class FramePump : IChromiumInvalidator
     {
         try
         {
+            if (cancellation.IsCancellationRequested)
+            {
+                return;
+            }
+
             var host = browser.GetBrowserHost();
             if (host is null)
             {
@@ -266,6 +271,11 @@ internal sealed class FramePump : IChromiumInvalidator
 
             await Cef.UIThreadTaskFactory.StartNew(() =>
             {
+                if (cancellation.IsCancellationRequested)
+                {
+                    return;
+                }
+
                 if (Volatile.Read(ref isPaused))
                 {
                     return;
@@ -273,6 +283,10 @@ internal sealed class FramePump : IChromiumInvalidator
 
                 host.Invalidate(PaintElementType.View);
             }).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            // Cancellation is expected during shutdown or when invalidation is paused.
         }
         catch (Exception ex)
         {
