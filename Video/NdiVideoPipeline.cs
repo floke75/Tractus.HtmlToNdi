@@ -49,6 +49,8 @@ internal sealed class NdiVideoPipeline : IDisposable
     private long latencyExpansionSessions;
     private long latencyExpansionTicks;
     private long latencyExpansionFramesServed;
+    private long captureGatePauses;
+    private long captureGateResumes;
 
     private volatile bool pacingResetRequested;
 
@@ -391,6 +393,7 @@ internal sealed class NdiVideoPipeline : IDisposable
         {
             captureGateActive = true;
             scheduler.Pause();
+            Interlocked.Increment(ref captureGatePauses);
             logger.Information(
                 "Chromium capture paused due to oversupply: backlog={Backlog}, latencyError={LatencyError:F2}",
                 backlog,
@@ -403,6 +406,7 @@ internal sealed class NdiVideoPipeline : IDisposable
             captureGateActive = false;
             consecutivePositiveLatencyTicks = 0;
             scheduler.Resume();
+            Interlocked.Increment(ref captureGateResumes);
             logger.Information(
                 "Chromium capture resumed after oversupply: backlog={Backlog}, latencyError={LatencyError:F2}",
                 backlog,
@@ -807,6 +811,8 @@ internal sealed class NdiVideoPipeline : IDisposable
         Interlocked.Exchange(ref latencyExpansionSessions, 0);
         Interlocked.Exchange(ref latencyExpansionTicks, 0);
         Interlocked.Exchange(ref latencyExpansionFramesServed, 0);
+        Interlocked.Exchange(ref captureGatePauses, 0);
+        Interlocked.Exchange(ref captureGateResumes, 0);
 
         ringBuffer?.Clear();
         lastSentFrame?.Dispose();
@@ -1072,6 +1078,10 @@ internal sealed class NdiVideoPipeline : IDisposable
         if (BufferingEnabled && ringBuffer is not null)
         {
             bufferStats += $", latencyExpansionSessions={Interlocked.Read(ref latencyExpansionSessions)}, latencyExpansionTicks={Interlocked.Read(ref latencyExpansionTicks)}, latencyExpansionFrames={Interlocked.Read(ref latencyExpansionFramesServed)}";
+        }
+        if (captureBackpressureEnabled)
+        {
+            bufferStats += $", captureGateActive={captureGateActive}, captureGatePauses={Interlocked.Read(ref captureGatePauses)}, captureGateResumes={Interlocked.Read(ref captureGateResumes)}";
         }
 
         var cadenceStats = string.Empty;
