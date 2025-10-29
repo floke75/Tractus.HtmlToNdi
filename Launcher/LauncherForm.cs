@@ -19,6 +19,7 @@ public sealed class LauncherForm : Form
     private readonly NumericUpDown _bufferDepthNumericUpDown;
     private readonly CheckBox _allowLatencyExpansionCheckBox;
     private readonly NumericUpDown _telemetryNumericUpDown;
+    private readonly CheckBox _usePacedInvalidationCheckBox;
     private readonly TextBox _windowlessFrameRateTextBox;
     private readonly CheckBox _disableGpuVsyncCheckBox;
     private readonly CheckBox _disableFrameRateLimitCheckBox;
@@ -132,6 +133,14 @@ public sealed class LauncherForm : Form
         };
         AddRow(table, "Latency Expansion", _allowLatencyExpansionCheckBox);
 
+        _usePacedInvalidationCheckBox = new CheckBox
+        {
+            Text = "Pace Chromium invalidation using buffer telemetry",
+            Dock = DockStyle.Fill,
+            AutoSize = true,
+        };
+        AddRow(table, "Chromium Invalidation", _usePacedInvalidationCheckBox);
+
         _telemetryNumericUpDown = new NumericUpDown
         {
             Minimum = 1,
@@ -217,6 +226,11 @@ public sealed class LauncherForm : Form
             var enabled = _enableBufferingCheckBox.Checked;
             _bufferDepthNumericUpDown.Enabled = enabled;
             _allowLatencyExpansionCheckBox.Enabled = enabled;
+            _usePacedInvalidationCheckBox.Enabled = enabled;
+            if (!enabled)
+            {
+                _usePacedInvalidationCheckBox.Checked = false;
+            }
         };
 
         ApplySettings(initialSettings);
@@ -238,6 +252,8 @@ public sealed class LauncherForm : Form
         _bufferDepthNumericUpDown.Enabled = settings.EnableBuffering;
         _allowLatencyExpansionCheckBox.Checked = settings.AllowLatencyExpansion;
         _allowLatencyExpansionCheckBox.Enabled = settings.EnableBuffering;
+        _usePacedInvalidationCheckBox.Checked = settings.EnableBuffering && settings.UsePacedInvalidation;
+        _usePacedInvalidationCheckBox.Enabled = settings.EnableBuffering;
         var telemetryValue = (decimal)Math.Clamp(settings.TelemetryIntervalSeconds, (double)_telemetryNumericUpDown.Minimum, (double)_telemetryNumericUpDown.Maximum);
         _telemetryNumericUpDown.Value = telemetryValue;
         _alignWithCaptureTimestampsCheckBox.Checked = settings.AlignWithCaptureTimestamps;
@@ -289,7 +305,8 @@ public sealed class LauncherForm : Form
                 : _windowlessFrameRateTextBox.Text.Trim(),
             DisableGpuVsync = _disableGpuVsyncCheckBox.Checked,
             DisableFrameRateLimit = _disableFrameRateLimitCheckBox.Checked,
-            AllowLatencyExpansion = _allowLatencyExpansionCheckBox.Checked
+            AllowLatencyExpansion = _allowLatencyExpansionCheckBox.Checked,
+            UsePacedInvalidation = _usePacedInvalidationCheckBox.Checked && _enableBufferingCheckBox.Checked
         };
 
         try

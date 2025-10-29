@@ -26,7 +26,8 @@ public sealed class LaunchParameters
         bool disableFrameRateLimit,
         bool allowLatencyExpansion,
         bool alignWithCaptureTimestamps,
-        bool enableCadenceTelemetry)
+        bool enableCadenceTelemetry,
+        bool usePacedInvalidation)
     {
         NdiName = ndiName;
         Port = port;
@@ -43,6 +44,7 @@ public sealed class LaunchParameters
         AllowLatencyExpansion = allowLatencyExpansion;
         AlignWithCaptureTimestamps = alignWithCaptureTimestamps;
         EnableCadenceTelemetry = enableCadenceTelemetry;
+        UsePacedInvalidation = usePacedInvalidation;
     }
 
     /// <summary>
@@ -119,6 +121,11 @@ public sealed class LaunchParameters
     /// Gets a value indicating whether telemetry should include capture/output cadence metrics.
     /// </summary>
     public bool EnableCadenceTelemetry { get; }
+
+    /// <summary>
+    /// Gets a value indicating whether Chromium invalidation should be paced by the video pipeline.
+    /// </summary>
+    public bool UsePacedInvalidation { get; }
 
     /// <summary>
     /// Attempts to create a <see cref="LaunchParameters"/> instance from command-line arguments.
@@ -252,6 +259,12 @@ public sealed class LaunchParameters
             }
         }
 
+        var pacedInvalidation = enableBuffering && HasFlag("--use-paced-invalidation");
+        if (pacedInvalidation && HasFlag("--disable-paced-invalidation"))
+        {
+            pacedInvalidation = false;
+        }
+
         parameters = new LaunchParameters(
             ndiName,
             port,
@@ -267,7 +280,8 @@ public sealed class LaunchParameters
             HasFlag("--disable-frame-rate-limit"),
             HasFlag("--allow-latency-expansion"),
             alignWithCaptureTimestamps,
-            enableCadenceTelemetry);
+            enableCadenceTelemetry,
+            pacedInvalidation);
 
         return true;
     }
@@ -354,6 +368,7 @@ public sealed class LaunchParameters
             settings.DisableFrameRateLimit,
             settings.AllowLatencyExpansion,
             settings.AlignWithCaptureTimestamps,
-            settings.EnableCadenceTelemetry);
+            settings.EnableCadenceTelemetry,
+            settings.EnableBuffering && settings.UsePacedInvalidation);
     }
 }

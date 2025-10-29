@@ -49,6 +49,62 @@ public class NdiVideoPipelineTests
         }
     }
 
+    private sealed class RecordingPump : IChromiumInvalidationPump
+    {
+        private readonly List<(TimeSpan Delay, TimeSpan? Offset)> requests = new();
+        private readonly object gate = new();
+        private int cancelCount;
+
+        public RecordingPump(TimeSpan interval)
+        {
+            Interval = interval;
+        }
+
+        public TimeSpan Interval { get; }
+
+        public IReadOnlyList<(TimeSpan Delay, TimeSpan? Offset)> Requests
+        {
+            get
+            {
+                lock (gate)
+                {
+                    return requests.ToList();
+                }
+            }
+        }
+
+        public int CancelCount
+        {
+            get
+            {
+                lock (gate)
+                {
+                    return cancelCount;
+                }
+            }
+        }
+
+        public bool RequestNextInvalidate(TimeSpan? delay = null, TimeSpan? cadenceOffset = null)
+        {
+            lock (gate)
+            {
+                requests.Add((delay ?? Interval, cadenceOffset));
+            }
+
+            return true;
+        }
+
+        public bool CancelPendingInvalidate()
+        {
+            lock (gate)
+            {
+                cancelCount++;
+            }
+
+            return true;
+        }
+    }
+
     private static ILogger CreateNullLogger() => new LoggerConfiguration().WriteTo.Sink(new NullSink()).CreateLogger();
 
     private static CapturedFrame CreateCapturedFrame(IntPtr buffer, int width, int height, int stride)
@@ -405,6 +461,192 @@ public class NdiVideoPipelineTests
 
             var drops = (long)(latencyResyncDropsField!.GetValue(pipeline) ?? 0L);
             Assert.True(drops > 0, "Expected latency resync drops after oversupply");
+        }
+        finally
+        {
+            pipeline.Dispose();
+            foreach (var ptr in buffers)
+            {
+                if (ptr != IntPtr.Zero)
+                {
+                    Marshal.FreeHGlobal(ptr);
+                }
+            }
+        }
+    }
+
+    [Fact]
+    public async Task PacedInvalidationPausesWhenBacklogIsHigh()
+    {
+        var sender = new CollectingSender();
+        var options = new NdiVideoPipelineOptions
+        {
+            EnableBuffering = true,
+            BufferDepth = 3,
+            TelemetryInterval = TimeSpan.FromDays(1),
+            UsePacedInvalidation = true,
+            AlignWithCaptureTimestamps = false,
+            EnableCadenceTelemetry = false,
+        };
+
+        var pipeline = new NdiVideoPipeline(sender, new FrameRate(30, 1), options, CreateNullLogger());
+        var pump = new RecordingPump(TimeSpan.FromSeconds(1d / 30d));
+        pipeline.AttachInvalidationPump(pump);
+        pipeline.Start();
+
+        var initialRequestObserved = SpinWait.SpinUntil(() => pump.Requests.Count > 0, TimeSpan.FromMilliseconds(500));
+        Assert.True(initialRequestObserved);
+
+        var frameSize = 4 * 2 * 2;
+        var buffers = new IntPtr[4];
+        try
+        {
+            for (var i = 0; i < buffers.Length; i++)
+            {
+                buffers[i] = Marshal.AllocHGlobal(frameSize);
+                FillBuffer(buffers[i], frameSize, (byte)(0x10 + i));
+                pipeline.HandleFrame(CreateCapturedFrame(buffers[i], 2, 2, 8));
+            }
+
+            var paused = SpinWait.SpinUntil(() => pump.CancelCount > 0, TimeSpan.FromMilliseconds(500));
+            Assert.True(paused);
+            var requestsAtPause = pump.Requests.Count;
+
+            await Task.Delay(300);
+
+            var resumed = SpinWait.SpinUntil(() => pump.Requests.Count > requestsAtPause, TimeSpan.FromMilliseconds(1000));
+            Assert.True(resumed);
+        }
+        finally
+        {
+            pipeline.Dispose();
+            for (var i = 0; i < buffers.Length; i++)
+            {
+                if (buffers[i] != IntPtr.Zero)
+                {
+                    Marshal.FreeHGlobal(buffers[i]);
+                }
+            }
+        }
+    }
+
+    [Fact]
+    public void LegacyInvalidationIgnoresPacedPump()
+    {
+        var sender = new CollectingSender();
+        var options = new NdiVideoPipelineOptions
+        {
+            EnableBuffering = true,
+            BufferDepth = 3,
+            TelemetryInterval = TimeSpan.FromDays(1),
+            UsePacedInvalidation = false,
+        };
+
+        var pipeline = new NdiVideoPipeline(sender, new FrameRate(30, 1), options, CreateNullLogger());
+        var pump = new RecordingPump(TimeSpan.FromSeconds(1d / 30d));
+        pipeline.AttachInvalidationPump(pump);
+        pipeline.Start();
+
+        var frameSize = 4 * 2 * 2;
+        var buffer = Marshal.AllocHGlobal(frameSize);
+        try
+        {
+            FillBuffer(buffer, frameSize, 0x55);
+            pipeline.HandleFrame(CreateCapturedFrame(buffer, 2, 2, 8));
+            pipeline.HandleFrame(CreateCapturedFrame(buffer, 2, 2, 8));
+
+            Assert.Empty(pump.Requests);
+            Assert.Equal(0, pump.CancelCount);
+        }
+        finally
+        {
+            pipeline.Dispose();
+            Marshal.FreeHGlobal(buffer);
+        }
+    }
+
+    [Fact]
+    public void CadenceAlignmentOffsetsDrivePacedInvalidation()
+    {
+        var sender = new CollectingSender();
+        var options = new NdiVideoPipelineOptions
+        {
+            EnableBuffering = true,
+            BufferDepth = 3,
+            TelemetryInterval = TimeSpan.FromDays(1),
+            UsePacedInvalidation = true,
+            AlignWithCaptureTimestamps = true,
+        };
+
+        var pipeline = new NdiVideoPipeline(sender, new FrameRate(30, 1), options, CreateNullLogger());
+        var pump = new RecordingPump(TimeSpan.FromSeconds(1d / 30d));
+        pipeline.AttachInvalidationPump(pump);
+        pipeline.Start();
+
+        var alignmentField = typeof(NdiVideoPipeline).GetField("cadenceAlignmentDeltaFrames", BindingFlags.Instance | BindingFlags.NonPublic);
+        Assert.NotNull(alignmentField);
+
+        var frameSize = 4 * 2 * 2;
+        var buffers = new List<IntPtr>();
+        try
+        {
+            var observedInitial = SpinWait.SpinUntil(() => pump.Requests.Count > 0, TimeSpan.FromMilliseconds(500));
+            Assert.True(observedInitial);
+
+            for (var i = 0; i < 2; i++)
+            {
+                var ptr = Marshal.AllocHGlobal(frameSize);
+                buffers.Add(ptr);
+                FillBuffer(ptr, frameSize, (byte)(0x70 + i));
+                pipeline.HandleFrame(CreateCapturedFrame(ptr, 2, 2, 8));
+            }
+
+            alignmentField!.SetValue(pipeline, 2d);
+            var ptrPositive = Marshal.AllocHGlobal(frameSize);
+            buffers.Add(ptrPositive);
+            FillBuffer(ptrPositive, frameSize, 0x80);
+            pipeline.HandleFrame(CreateCapturedFrame(ptrPositive, 2, 2, 8));
+
+            var positiveOffset = pump.Requests.Last().Offset;
+            Assert.True(positiveOffset.HasValue && positiveOffset.Value > TimeSpan.Zero);
+
+            alignmentField.SetValue(pipeline, -2d);
+            var ptrNegative = Marshal.AllocHGlobal(frameSize);
+            buffers.Add(ptrNegative);
+            FillBuffer(ptrNegative, frameSize, 0x81);
+            pipeline.HandleFrame(CreateCapturedFrame(ptrNegative, 2, 2, 8));
+
+            var negativeOffset = pump.Requests.Last().Offset;
+            Assert.True(negativeOffset.HasValue && negativeOffset.Value < TimeSpan.Zero);
+
+            var optionsDisabled = new NdiVideoPipelineOptions
+            {
+                EnableBuffering = true,
+                BufferDepth = 3,
+                TelemetryInterval = TimeSpan.FromDays(1),
+                UsePacedInvalidation = true,
+                AlignWithCaptureTimestamps = false,
+            };
+
+            var disabledSender = new CollectingSender();
+            var disabledPipeline = new NdiVideoPipeline(disabledSender, new FrameRate(30, 1), optionsDisabled, CreateNullLogger());
+            var disabledPump = new RecordingPump(TimeSpan.FromSeconds(1d / 30d));
+            disabledPipeline.AttachInvalidationPump(disabledPump);
+            disabledPipeline.Start();
+
+            var disabledObserved = SpinWait.SpinUntil(() => disabledPump.Requests.Count > 0, TimeSpan.FromMilliseconds(500));
+            Assert.True(disabledObserved);
+
+            alignmentField.SetValue(disabledPipeline, 2d);
+            var ptrDisabled = Marshal.AllocHGlobal(frameSize);
+            buffers.Add(ptrDisabled);
+            FillBuffer(ptrDisabled, frameSize, 0x82);
+            disabledPipeline.HandleFrame(CreateCapturedFrame(ptrDisabled, 2, 2, 8));
+
+            var disabledOffset = disabledPump.Requests.Last().Offset;
+            Assert.True(!disabledOffset.HasValue || disabledOffset.Value == TimeSpan.Zero);
+
+            disabledPipeline.Dispose();
         }
         finally
         {
