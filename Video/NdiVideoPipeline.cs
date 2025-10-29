@@ -10,7 +10,7 @@ using Tractus.HtmlToNdi.Chromium;
 namespace Tractus.HtmlToNdi.Video;
 
 /// <summary>
-/// Manages the video pipeline, including buffering and sending frames to NDI.
+/// Manages the paced video pipeline, including the output buffer, Chromium invalidation scheduler, and capture backpressure.
 /// </summary>
 internal sealed class NdiVideoPipeline : IDisposable
 {
@@ -138,6 +138,10 @@ internal sealed class NdiVideoPipeline : IDisposable
 
     internal NdiVideoPipelineOptions Options => options;
 
+    /// <summary>
+    /// Attaches the pacing-aware invalidation scheduler and resets gating state so telemetry stays in sync.
+    /// </summary>
+    /// <param name="scheduler">The scheduler responsible for coordinating Chromium invalidations.</param>
     internal void AttachInvalidationScheduler(IPacedInvalidationScheduler? scheduler)
     {
         invalidationScheduler = scheduler;
@@ -165,7 +169,7 @@ internal sealed class NdiVideoPipeline : IDisposable
     }
 
     /// <summary>
-    /// Starts the video pipeline.
+    /// Starts the paced sender loop when buffering is enabled and primes the scheduler for warm-up.
     /// </summary>
     public void Start()
     {
@@ -201,7 +205,7 @@ internal sealed class NdiVideoPipeline : IDisposable
     }
 
     /// <summary>
-    /// Handles a captured video frame.
+    /// Handles a captured video frame, either sending it immediately (direct mode) or queueing it for paced delivery.
     /// </summary>
     /// <param name="frame">The captured video frame.</param>
     public void HandleFrame(CapturedFrame frame)
@@ -352,6 +356,10 @@ internal sealed class NdiVideoPipeline : IDisposable
         }
     }
 
+    /// <summary>
+    /// Primes Chromium with a burst of invalidation requests so the paced buffer can warm up quickly after (re)start.
+    /// </summary>
+    /// <param name="count">The number of invalidations to queue.</param>
     private void ScheduleWarmupInvalidations(int count)
     {
         if (!BufferingEnabled || !pacedInvalidationEnabled || count <= 0)
@@ -390,6 +398,9 @@ internal sealed class NdiVideoPipeline : IDisposable
         });
     }
 
+    /// <summary>
+    /// Ensures the next direct-send capture is queued once the current frame has been transmitted.
+    /// </summary>
     private void RequestDirectInvalidation()
     {
         if (!directPacedInvalidationEnabled)

@@ -48,6 +48,12 @@ Parameter|Description
 
 When the paced buffer is enabled the pipeline repeats the most recently transmitted frame while warming up or recovering from an underrun so receivers continue to see a stable cadence. Passing `--allow-latency-expansion` switches that recovery into a variable-latency mode that keeps playing any queued frames before falling back to repeats, smoothing out motion at the cost of temporary additional delay. The launcher exposes checkboxes for latency expansion, paced invalidation, capture backpressure, pump cadence adaptation, capture alignment, and cadence telemetry so operators can toggle those behaviours without touching the command line. See [`Docs/paced-output-buffer.md`](Docs/paced-output-buffer.md) for a deeper walkthrough of the priming and telemetry behaviour.
 
+### Pacing, invalidation, and backpressure
+
+Chromium renders are now driven by a pacing-aware scheduler that coordinates invalidations with the paced output buffer. When `--enable-paced-invalidation` is set the scheduler runs Chromium in on-demand mode so each send slot triggers at most one capture. The same scheduler feeds cadence adaptation (when `--enable-pump-cadence-adaptation` is active), allowing Chromium to stretch or delay invalidations slightly so capture stays aligned with the paced sender. Capture backpressure (`--enable-capture-backpressure`) piggybacks on this scheduler: the capture gate pauses invalidations while the buffer sits above its high-water mark and resumes them automatically once depth settles. Because backpressure depends on paced invalidation, the pipeline ignores the toggle (and the launcher clears the checkbox) whenever pacing is off.
+
+Telemetry reflects the pacing state. Buffer health logs now include `captureGateActive`, `captureGatePauses`, and `captureGateResumes` so operators can see when backpressure engaged. Additional fields such as `pacedPaused`, `pacedOffsetMs`, and `cadenceAdaptation` describe how the scheduler is steering Chromium, while `resyncDrops` shows when stale frames were trimmed to get latency back under control.
+
 #### Example Launch
 
 `.\Tractus.HtmlToNdi.exe --ndiname="HTML 5 Test" --w=1080 --h=1080 --url="https://testpattern.tractusevents.com"`
