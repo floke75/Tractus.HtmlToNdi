@@ -9,7 +9,7 @@ using System.Threading;
 namespace Tractus.HtmlToNdi.Video;
 
 /// <summary>
-/// Manages the video pipeline, including buffering and sending frames to NDI.
+/// Manages the video pipeline, including buffering, sending frames to NDI, and (optionally) pacing Chromium invalidation using telemetry.
 /// </summary>
 internal sealed class NdiVideoPipeline : IDisposable
 {

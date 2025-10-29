@@ -123,7 +123,7 @@ public sealed class LaunchParameters
     public bool EnableCadenceTelemetry { get; }
 
     /// <summary>
-    /// Gets a value indicating whether Chromium invalidation should be paced by the video pipeline.
+    /// Gets a value indicating whether Chromium invalidation should be scheduled on-demand by the video pipeline using backlog/latency telemetry.
     /// </summary>
     public bool UsePacedInvalidation { get; }
 

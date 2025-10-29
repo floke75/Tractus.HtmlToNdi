@@ -33,6 +33,8 @@ Parameter|Description
 `--fps=59.94`|Target NDI frame rate. Accepts integer, decimal or rational values (e.g. `60000/1001`). Defaults to `60`.
 `--buffer-depth=3`|Enable the paced output buffer with the specified frame capacity. When enabled the sender waits for the queue to hold `depth` frames before transmitting, adding roughly `depth / fps` seconds of intentional latency. Set to `0` (default) to run zero-copy.
 `--enable-output-buffer`|Shortcut to turn on paced buffering with the default depth of 3 frames (≈`3 / fps` seconds of latency once primed).
+`--use-paced-invalidation`|When buffering is enabled, lets the pipeline gate Chromium invalidation on backlog, latency, and cadence alignment telemetry instead of running a free-running timer.
+`--disable-paced-invalidation`|Explicitly opt out of the paced invalidation path even if the launcher or other defaults have enabled it.
 `--allow-latency-expansion`|Let the paced buffer keep playing any queued frames during recovery instead of immediately repeating the last frame. This trades temporary extra latency for smoother motion after underruns.
 `--disable-capture-alignment`|Turns off the paced sender’s capture timestamp alignment (enabled by default). Use `--align-with-capture-timestamps` to explicitly re-enable it for a specific run.
 `--disable-cadence-telemetry`|Suppresses the capture/output cadence jitter metrics in telemetry logs (enabled by default). Use `--enable-cadence-telemetry` to force-enable them when needed.
@@ -43,7 +45,7 @@ Parameter|Description
 `--launcher`|Forces the launcher window to appear even when other parameters are supplied.
 `--no-launcher`|Skips the launcher and honours the supplied command-line arguments only.
 
-When the paced buffer is enabled the pipeline repeats the most recently transmitted frame while warming up or recovering from an underrun so receivers continue to see a stable cadence. Passing `--allow-latency-expansion` switches that recovery into a variable-latency mode that keeps playing any queued frames before falling back to repeats, smoothing out motion at the cost of temporary additional delay. The launcher exposes checkboxes for latency expansion, capture alignment, and cadence telemetry so operators can toggle those behaviours without touching the command line. See [`Docs/paced-output-buffer.md`](Docs/paced-output-buffer.md) for a deeper walkthrough of the priming and telemetry behaviour.
+When the paced buffer is enabled the pipeline repeats the most recently transmitted frame while warming up or recovering from an underrun so receivers continue to see a stable cadence. Passing `--allow-latency-expansion` switches that recovery into a variable-latency mode that keeps playing any queued frames before falling back to repeats, smoothing out motion at the cost of temporary additional delay. `--use-paced-invalidation` extends that pacing upstream: the Chromium invalidator is only scheduled when backlog, latency, and cadence offset telemetry report that the pipeline is ready. The pipeline logs when pacing pauses or resumes and only pauses after sustained positive latency readings, making the log stream a quick indicator of why Chromium work is being throttled. The launcher exposes checkboxes for latency expansion, capture alignment, cadence telemetry, and paced invalidation so operators can toggle those behaviours without touching the command line. See [`Docs/paced-output-buffer.md`](Docs/paced-output-buffer.md) for a deeper walkthrough of the priming and telemetry behaviour.
 
 #### Example Launch
 
