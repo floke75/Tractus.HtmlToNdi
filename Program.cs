@@ -157,6 +157,7 @@ public class Program
             AllowLatencyExpansion = parameters.AllowLatencyExpansion,
             AlignWithCaptureTimestamps = parameters.AlignWithCaptureTimestamps,
             EnableCadenceTelemetry = parameters.EnableCadenceTelemetry,
+            UsePacedInvalidation = enableBuffering && parameters.UsePacedInvalidation,
         };
 
         Log.Information("Ensuring NDI native runtime is available...");

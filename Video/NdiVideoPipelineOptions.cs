@@ -34,4 +34,9 @@ internal sealed record NdiVideoPipelineOptions
     /// Gets or sets a value indicating whether capture/output cadence metrics are logged with telemetry.
     /// </summary>
     public bool EnableCadenceTelemetry { get; init; } = true;
+
+    /// <summary>
+    /// Gets or sets a value indicating whether Chromium invalidation should be paced by the pipeline.
+    /// </summary>
+    public bool UsePacedInvalidation { get; init; }
 }

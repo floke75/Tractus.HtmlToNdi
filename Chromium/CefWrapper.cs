@@ -83,7 +83,13 @@ internal class CefWrapper : IDisposable
 
         this.browser.Paint += this.OnBrowserPaint;
 
-        this.framePump = new FramePump(this.browser, this.frameRate.FrameDuration, TimeSpan.FromSeconds(1), this.logger);
+        var usePacedInvalidation = this.videoPipeline.Options.UsePacedInvalidation;
+        this.framePump = new FramePump(this.browser, this.frameRate.FrameDuration, TimeSpan.FromSeconds(1), this.logger, usePacedInvalidation);
+        if (usePacedInvalidation)
+        {
+            this.videoPipeline.AttachInvalidationPump(this.framePump);
+        }
+
         this.framePump.Start();
         this.videoPipeline.Start();
     }
