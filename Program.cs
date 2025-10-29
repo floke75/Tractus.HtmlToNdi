@@ -10,6 +10,7 @@ using NewTek.NDI;
 using Serilog;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.IO;
 using System.Linq;
 using System.Globalization;
 using System.Runtime.CompilerServices;
@@ -614,11 +615,33 @@ public class Program
                 NdiSearchDirectories = new[] { bundledRuntimeDirectory };
                 NdiLibraryCandidates = new[] { NdiBundledLibraryPath };
                 Log.Information("Using bundled NDI native runtime from {Library}", NdiBundledLibraryPath);
-                ConfigureSelectedLibrary(NdiBundledLibraryPath, isBundled: true);
-                return;
-            }
 
-            Log.Information("Bundled NDI native runtime not found at {Library}; probing known locations", NdiBundledLibraryPath);
+                try
+                {
+                    ConfigureSelectedLibrary(NdiBundledLibraryPath, isBundled: true);
+                    return;
+                }
+                catch (DllNotFoundException ex)
+                {
+                    Log.Warning(ex, "Failed to load packaged NDI runtime from {Library}; probing system locations", NdiBundledLibraryPath);
+                }
+                catch (BadImageFormatException ex)
+                {
+                    Log.Warning(ex, "Packaged NDI runtime at {Library} is incompatible; probing system locations", NdiBundledLibraryPath);
+                }
+                catch (FileLoadException ex)
+                {
+                    Log.Warning(ex, "Unable to load packaged NDI runtime from {Library}; probing system locations", NdiBundledLibraryPath);
+                }
+                catch (Exception ex)
+                {
+                    Log.Error(ex, "Unexpected failure loading packaged NDI runtime from {Library}; probing system locations", NdiBundledLibraryPath);
+                }
+            }
+            else
+            {
+                Log.Information("Bundled NDI native runtime not found at {Library}; probing known locations", NdiBundledLibraryPath);
+            }
 
             NdiSearchDirectories = BuildNdiProbeDirectories();
             NdiLibraryCandidates = BuildNdiCandidateFiles(NdiSearchDirectories);
