@@ -392,6 +392,53 @@ public class NdiVideoPipelineTests
     }
 
     [Fact]
+    public void BufferedPacedInvalidationDropsUnrequestedFrames()
+    {
+        var sender = new CollectingSender();
+        var options = new NdiVideoPipelineOptions
+        {
+            EnableBuffering = true,
+            BufferDepth = 2,
+            EnablePacedInvalidation = true,
+            TelemetryInterval = TimeSpan.FromDays(1),
+        };
+
+        var pipeline = new NdiVideoPipeline(sender, new FrameRate(60, 1), options, CreateNullLogger());
+        var scheduler = new TestScheduler();
+        pipeline.AttachInvalidationScheduler(scheduler);
+
+        var warmed = SpinWait.SpinUntil(() => scheduler.RequestCount >= 2, TimeSpan.FromMilliseconds(200));
+        Assert.True(warmed);
+
+        var frameSize = 4 * 2 * 2;
+        var buffers = new IntPtr[3];
+
+        try
+        {
+            for (var i = 0; i < buffers.Length; i++)
+            {
+                buffers[i] = Marshal.AllocHGlobal(frameSize);
+                FillBuffer(buffers[i], frameSize, (byte)(0x60 + i));
+                pipeline.HandleFrame(CreateCapturedFrame(buffers[i], 2, 2, 8));
+            }
+
+            Assert.Equal(0, pipeline.PendingInvalidations);
+            Assert.Equal(1, pipeline.SpuriousCaptureCount);
+        }
+        finally
+        {
+            pipeline.Dispose();
+            foreach (var ptr in buffers)
+            {
+                if (ptr != IntPtr.Zero)
+                {
+                    Marshal.FreeHGlobal(ptr);
+                }
+            }
+        }
+    }
+
+    [Fact]
     public void LatencyExpansionPlaysQueuedFramesBeforeRepeats()
     {
         var sender = new CollectingSender();

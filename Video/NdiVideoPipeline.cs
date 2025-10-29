@@ -76,6 +76,8 @@ internal sealed class NdiVideoPipeline : IDisposable
     private int consecutivePositiveLatencyTicks;
     private long lastPacingOffsetTicks;
     private int directInvalidationPending;
+    private long pendingInvalidations;
+    private long spuriousCaptureCount;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="NdiVideoPipeline"/> class.
@@ -147,6 +149,8 @@ internal sealed class NdiVideoPipeline : IDisposable
         invalidationScheduler = scheduler;
         captureGateActive = false;
         consecutivePositiveLatencyTicks = 0;
+        Interlocked.Exchange(ref pendingInvalidations, 0);
+        Interlocked.Exchange(ref spuriousCaptureCount, 0);
 
         if (scheduler is null)
         {
@@ -216,6 +220,12 @@ internal sealed class NdiVideoPipeline : IDisposable
     public void HandleFrame(CapturedFrame frame)
     {
         Interlocked.Increment(ref capturedFrames);
+        if (!TryConsumePendingInvalidationTicket())
+        {
+            Interlocked.Increment(ref spuriousCaptureCount);
+            return;
+        }
+
         if (cadenceTrackingEnabled)
         {
             captureCadenceTracker.Record(frame.MonotonicTimestamp);
@@ -347,7 +357,7 @@ internal sealed class NdiVideoPipeline : IDisposable
 
         try
         {
-            await scheduler.RequestInvalidateAsync(token).ConfigureAwait(false);
+            await RequestInvalidateWithTicketAsync(scheduler, token).ConfigureAwait(false);
         }
         catch (OperationCanceledException)
         {
@@ -384,7 +394,7 @@ internal sealed class NdiVideoPipeline : IDisposable
             {
                 try
                 {
-                    await scheduler.RequestInvalidateAsync(cancellation.Token).ConfigureAwait(false);
+                    await RequestInvalidateWithTicketAsync(scheduler, cancellation.Token).ConfigureAwait(false);
                 }
                 catch (OperationCanceledException)
                 {
@@ -401,6 +411,61 @@ internal sealed class NdiVideoPipeline : IDisposable
                 }
             }
         });
+    }
+
+    private bool CaptureTicketsEnabled => directPacedInvalidationEnabled || (BufferingEnabled && pacedInvalidationEnabled);
+
+    private async Task RequestInvalidateWithTicketAsync(IPacedInvalidationScheduler scheduler, CancellationToken token)
+    {
+        Interlocked.Increment(ref pendingInvalidations);
+        try
+        {
+            await scheduler.RequestInvalidateAsync(token).ConfigureAwait(false);
+        }
+        catch
+        {
+            ReturnInvalidationTicket();
+            throw;
+        }
+    }
+
+    private bool TryConsumePendingInvalidationTicket()
+    {
+        if (!CaptureTicketsEnabled)
+        {
+            return true;
+        }
+
+        while (true)
+        {
+            var pending = Volatile.Read(ref pendingInvalidations);
+            if (pending <= 0)
+            {
+                return false;
+            }
+
+            if (Interlocked.CompareExchange(ref pendingInvalidations, pending - 1, pending) == pending)
+            {
+                return true;
+            }
+        }
+    }
+
+    private void ReturnInvalidationTicket()
+    {
+        while (true)
+        {
+            var pending = Volatile.Read(ref pendingInvalidations);
+            if (pending <= 0)
+            {
+                return;
+            }
+
+            if (Interlocked.CompareExchange(ref pendingInvalidations, pending - 1, pending) == pending)
+            {
+                return;
+            }
+        }
     }
 
     /// <summary>
@@ -429,7 +494,7 @@ internal sealed class NdiVideoPipeline : IDisposable
         {
             try
             {
-                await scheduler.RequestInvalidateAsync(cancellation.Token).ConfigureAwait(false);
+                await RequestInvalidateWithTicketAsync(scheduler, cancellation.Token).ConfigureAwait(false);
             }
             catch (OperationCanceledException)
             {
@@ -877,6 +942,8 @@ internal sealed class NdiVideoPipeline : IDisposable
         captureCadenceTracker.Reset();
         outputCadenceTracker.Reset();
         Interlocked.Exchange(ref cadenceAlignmentDeltaFrames, 0d);
+        Interlocked.Exchange(ref pendingInvalidations, 0);
+        Interlocked.Exchange(ref spuriousCaptureCount, 0);
         bufferPrimed = false;
         isWarmingUp = true;
         hasPrimedOnce = false;
@@ -930,6 +997,10 @@ internal sealed class NdiVideoPipeline : IDisposable
     internal long LatencyExpansionFramesServed => Interlocked.Read(ref latencyExpansionFramesServed);
 
     internal bool CaptureGateActive => captureBackpressureEnabled && captureGateActive;
+
+    internal long PendingInvalidations => Volatile.Read(ref pendingInvalidations);
+
+    internal long SpuriousCaptureCount => Interlocked.Read(ref spuriousCaptureCount);
 
     private (int numerator, int denominator) ResolveFrameRate(DateTime timestamp)
     {
@@ -1181,6 +1252,14 @@ internal sealed class NdiVideoPipeline : IDisposable
             }
         }
 
+        var pacingStats = string.Empty;
+        if (directPacedInvalidationEnabled || pacedInvalidationEnabled)
+        {
+            var pending = Volatile.Read(ref pendingInvalidations);
+            var spurious = Interlocked.Read(ref spuriousCaptureCount);
+            pacingStats = $", pendingInvalidations={pending}, spuriousCaptures={spurious}";
+        }
+
         var cadenceStats = string.Empty;
         if (cadenceTelemetryEnabled)
         {
@@ -1197,11 +1276,12 @@ internal sealed class NdiVideoPipeline : IDisposable
         }
 
         logger.Information(
-            "NDI video pipeline stats: captured={Captured}, sent={Sent}, repeated={Repeated}{BufferStats}{CadenceStats} (caller={Caller})",
+            "NDI video pipeline stats: captured={Captured}, sent={Sent}, repeated={Repeated}{BufferStats}{PacingStats}{CadenceStats} (caller={Caller})",
             Interlocked.Read(ref capturedFrames),
             Interlocked.Read(ref sentFrames),
             Interlocked.Read(ref repeatedFrames),
             bufferStats,
+            pacingStats,
             cadenceStats,
             caller);
     }
