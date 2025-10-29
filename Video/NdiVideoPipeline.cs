@@ -99,7 +99,14 @@ internal sealed class NdiVideoPipeline : IDisposable
         cadenceTelemetryEnabled = options.EnableCadenceTelemetry;
         cadenceTrackingEnabled = alignWithCaptureTimestamps || cadenceTelemetryEnabled;
         pacedInvalidationEnabled = options.EnableBuffering && options.EnablePacedInvalidation;
-        captureBackpressureEnabled = options.EnableBuffering && options.EnableCaptureBackpressure;
+        captureBackpressureEnabled = options.EnableBuffering
+            && options.EnableCaptureBackpressure
+            && options.EnablePacedInvalidation;
+        if (options.EnableBuffering && options.EnableCaptureBackpressure && !options.EnablePacedInvalidation)
+        {
+            logger.Warning(
+                "Capture backpressure requires paced invalidation; disabling backpressure until paced invalidation is enabled.");
+        }
         pumpCadenceAdaptationEnabled = options.EnablePumpCadenceAdaptation;
         captureCadenceTracker = new CadenceTracker(frameInterval);
         outputCadenceTracker = new CadenceTracker(frameInterval);
