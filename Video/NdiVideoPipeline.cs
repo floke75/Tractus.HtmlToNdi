@@ -73,6 +73,7 @@ internal sealed class NdiVideoPipeline : IDisposable
     private IPacedInvalidationScheduler? invalidationScheduler;
     private bool captureGateActive;
     private int consecutivePositiveLatencyTicks;
+    private long lastPacingOffsetTicks;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="NdiVideoPipeline"/> class.
@@ -249,6 +250,7 @@ internal sealed class NdiVideoPipeline : IDisposable
 
     private TimeSpan CalculateNextDeadline(TimeSpan origin, long nextSequence)
     {
+        Volatile.Write(ref lastPacingOffsetTicks, 0);
         var baseline = origin + TimeSpan.FromTicks(frameInterval.Ticks * nextSequence);
 
         if (!BufferingEnabled || ringBuffer is null)
@@ -293,6 +295,7 @@ internal sealed class NdiVideoPipeline : IDisposable
             }
         }
 
+        Volatile.Write(ref lastPacingOffsetTicks, adjustmentTicks);
         return baseline + TimeSpan.FromTicks(adjustmentTicks);
     }
 
@@ -813,6 +816,7 @@ internal sealed class NdiVideoPipeline : IDisposable
         Interlocked.Exchange(ref latencyExpansionFramesServed, 0);
         Interlocked.Exchange(ref captureGatePauses, 0);
         Interlocked.Exchange(ref captureGateResumes, 0);
+        Interlocked.Exchange(ref lastPacingOffsetTicks, 0);
 
         ringBuffer?.Clear();
         lastSentFrame?.Dispose();
@@ -1082,6 +1086,18 @@ internal sealed class NdiVideoPipeline : IDisposable
         if (captureBackpressureEnabled)
         {
             bufferStats += $", captureGateActive={captureGateActive}, captureGatePauses={Interlocked.Read(ref captureGatePauses)}, captureGateResumes={Interlocked.Read(ref captureGateResumes)}";
+        }
+        if (BufferingEnabled && pacedInvalidationEnabled)
+        {
+            var scheduler = invalidationScheduler;
+            if (scheduler is not null)
+            {
+                var pausedSnapshot = scheduler.IsPaused;
+                var offsetTicks = Interlocked.Read(ref lastPacingOffsetTicks);
+                var offsetMs = offsetTicks / (double)TimeSpan.TicksPerMillisecond;
+                bufferStats += System.FormattableString.Invariant(
+                    $", pacedInvalidation=true, pacedPaused={pausedSnapshot}, pacedOffsetMs={offsetMs:F4}, cadenceAdaptation={pumpCadenceAdaptationEnabled}");
+            }
         }
 
         var cadenceStats = string.Empty;
