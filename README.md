@@ -34,6 +34,9 @@ Parameter|Description
 `--buffer-depth=3`|Enable the paced output buffer with the specified frame capacity. When enabled the sender waits for the queue to hold `depth` frames before transmitting, adding roughly `depth / fps` seconds of intentional latency. Set to `0` (default) to run zero-copy.
 `--enable-output-buffer`|Shortcut to turn on paced buffering with the default depth of 3 frames (≈`3 / fps` seconds of latency once primed).
 `--allow-latency-expansion`|Let the paced buffer keep playing any queued frames during recovery instead of immediately repeating the last frame. This trades temporary extra latency for smoother motion after underruns.
+`--enable-paced-invalidation`|Drive Chromium invalidations directly from the paced sender so new captures are only requested when the pipeline is ready. Defaults to the legacy periodic invalidator.
+`--enable-capture-backpressure`|Pause Chromium invalidation after sustained positive latency or when the backlog grows beyond the high watermark. Automatically resumes once latency and backlog settle. Intended for use with the paced buffer.
+`--enable-pump-cadence-alignment`|Allow cadence telemetry to adjust the frame pump’s periodic cadence in addition to the paced sender’s own alignment logic. Disabled by default.
 `--disable-capture-alignment`|Turns off the paced sender’s capture timestamp alignment (enabled by default). Use `--align-with-capture-timestamps` to explicitly re-enable it for a specific run.
 `--disable-cadence-telemetry`|Suppresses the capture/output cadence jitter metrics in telemetry logs (enabled by default). Use `--enable-cadence-telemetry` to force-enable them when needed.
 `--telemetry-interval=10`|Seconds between video pipeline telemetry log entries. Defaults to 10 seconds.
@@ -43,7 +46,11 @@ Parameter|Description
 `--launcher`|Forces the launcher window to appear even when other parameters are supplied.
 `--no-launcher`|Skips the launcher and honours the supplied command-line arguments only.
 
-When the paced buffer is enabled the pipeline repeats the most recently transmitted frame while warming up or recovering from an underrun so receivers continue to see a stable cadence. Passing `--allow-latency-expansion` switches that recovery into a variable-latency mode that keeps playing any queued frames before falling back to repeats, smoothing out motion at the cost of temporary additional delay. The launcher exposes checkboxes for latency expansion, capture alignment, and cadence telemetry so operators can toggle those behaviours without touching the command line. See [`Docs/paced-output-buffer.md`](Docs/paced-output-buffer.md) for a deeper walkthrough of the priming and telemetry behaviour.
+When the paced buffer is enabled the pipeline repeats the most recently transmitted frame while warming up or recovering from an underrun so receivers continue to see a stable cadence. Passing `--allow-latency-expansion` switches that recovery into a variable-latency mode that keeps playing any queued frames before falling back to repeats, smoothing out motion at the cost of temporary additional delay. The launcher exposes checkboxes for latency expansion, paced invalidation, capture backpressure, capture alignment, cadence telemetry, and pump cadence alignment so operators can toggle those behaviours without touching the command line. See [`Docs/paced-output-buffer.md`](Docs/paced-output-buffer.md) for a deeper walkthrough of the priming and telemetry behaviour.
+
+### Understanding paced invalidation and backpressure
+
+Paced invalidation lets the video pipeline become the source of truth for when Chromium should render the next frame. Instead of the frame pump invalidating on a fixed cadence, the pipeline issues `RequestInvalidate` calls only after it has handed off the prior frame and is ready for another capture. Enabling capture backpressure layers on safeguards so Chromium pauses after sustained positive capture latency or when the queued backlog breaches a high watermark, preventing oversupply from growing unbounded. The invalidator resumes automatically once both backlog and latency settle, keeping cadence stable without manual intervention.
 
 #### Example Launch
 

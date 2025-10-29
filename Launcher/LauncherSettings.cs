@@ -84,4 +84,22 @@ public class LauncherSettings
     /// Gets or sets a value indicating whether to include capture/output cadence metrics in telemetry logs.
     /// </summary>
     public bool EnableCadenceTelemetry { get; set; } = true;
+
+    /// <summary>
+    /// Gets or sets a value indicating whether paced invalidation is driven by the paced pipeline.
+    /// </summary>
+    public bool EnablePacedInvalidation { get; set; }
+        = false;
+
+    /// <summary>
+    /// Gets or sets a value indicating whether capture invalidation pauses when the buffer is ahead.
+    /// </summary>
+    public bool EnableCaptureBackpressure { get; set; }
+        = false;
+
+    /// <summary>
+    /// Gets or sets a value indicating whether cadence alignment telemetry influences the frame pump.
+    /// </summary>
+    public bool EnablePumpCadenceAlignment { get; set; }
+        = false;
 }

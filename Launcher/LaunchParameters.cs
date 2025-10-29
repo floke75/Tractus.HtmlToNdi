@@ -26,7 +26,10 @@ public sealed class LaunchParameters
         bool disableFrameRateLimit,
         bool allowLatencyExpansion,
         bool alignWithCaptureTimestamps,
-        bool enableCadenceTelemetry)
+        bool enableCadenceTelemetry,
+        bool enablePacedInvalidation,
+        bool enableCaptureBackpressure,
+        bool enablePumpCadenceAlignment)
     {
         NdiName = ndiName;
         Port = port;
@@ -43,6 +46,9 @@ public sealed class LaunchParameters
         AllowLatencyExpansion = allowLatencyExpansion;
         AlignWithCaptureTimestamps = alignWithCaptureTimestamps;
         EnableCadenceTelemetry = enableCadenceTelemetry;
+        EnablePacedInvalidation = enablePacedInvalidation;
+        EnableCaptureBackpressure = enableCaptureBackpressure;
+        EnablePumpCadenceAlignment = enablePumpCadenceAlignment;
     }
 
     /// <summary>
@@ -119,6 +125,21 @@ public sealed class LaunchParameters
     /// Gets a value indicating whether telemetry should include capture/output cadence metrics.
     /// </summary>
     public bool EnableCadenceTelemetry { get; }
+
+    /// <summary>
+    /// Gets a value indicating whether paced invalidation should be driven by the paced pipeline.
+    /// </summary>
+    public bool EnablePacedInvalidation { get; }
+
+    /// <summary>
+    /// Gets a value indicating whether Chromium invalidation should pause when the buffer is ahead.
+    /// </summary>
+    public bool EnableCaptureBackpressure { get; }
+
+    /// <summary>
+    /// Gets a value indicating whether cadence alignment telemetry should influence the frame pump.
+    /// </summary>
+    public bool EnablePumpCadenceAlignment { get; }
 
     /// <summary>
     /// Attempts to create a <see cref="LaunchParameters"/> instance from command-line arguments.
@@ -237,6 +258,10 @@ public sealed class LaunchParameters
             enableCadenceTelemetry = true;
         }
 
+        var enablePacedInvalidation = HasFlag("--enable-paced-invalidation");
+        var enableCaptureBackpressure = HasFlag("--enable-capture-backpressure");
+        var enablePumpCadenceAlignment = HasFlag("--enable-pump-cadence-alignment");
+
         int? windowlessFrameRateOverride = null;
         var windowlessRateArg = GetArgValue("--windowless-frame-rate");
         if (windowlessRateArg is not null)
@@ -267,7 +292,10 @@ public sealed class LaunchParameters
             HasFlag("--disable-frame-rate-limit"),
             HasFlag("--allow-latency-expansion"),
             alignWithCaptureTimestamps,
-            enableCadenceTelemetry);
+            enableCadenceTelemetry,
+            enablePacedInvalidation,
+            enableCaptureBackpressure,
+            enablePumpCadenceAlignment);
 
         return true;
     }
@@ -354,6 +382,9 @@ public sealed class LaunchParameters
             settings.DisableFrameRateLimit,
             settings.AllowLatencyExpansion,
             settings.AlignWithCaptureTimestamps,
-            settings.EnableCadenceTelemetry);
+            settings.EnableCadenceTelemetry,
+            settings.EnablePacedInvalidation,
+            settings.EnableCaptureBackpressure,
+            settings.EnablePumpCadenceAlignment);
     }
 }
