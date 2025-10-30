@@ -48,6 +48,8 @@ Parameter|Description
 `--launcher`|Forces the launcher window to appear even when other parameters are supplied.
 `--no-launcher`|Skips the launcher and honours the supplied command-line arguments only.
 
+> **Experimental parallel path:** `--enable-compositor-capture` (and the matching launcher checkbox) opt into an alternative capture pipeline that relies on Chromium's compositor rather than UI-thread invalidations. It is intentionally isolated behind this flag; the legacy path remains the default and continues to run unchanged when the flag is left off. Treat this mode as preview-only while we evaluate performance and stability—do not enable it for shows unless you are actively testing it.
+
 When the paced buffer is enabled the pipeline repeats the most recently transmitted frame while warming up or recovering from an underrun so receivers continue to see a stable cadence. Passing `--allow-latency-expansion` switches that recovery into a variable-latency mode that keeps playing any queued frames before falling back to repeats, smoothing out motion at the cost of temporary additional delay. The launcher exposes checkboxes for latency expansion, paced invalidation, a force-disable option for paced invalidation, capture backpressure, pump cadence adaptation, capture alignment, and cadence telemetry so operators can toggle those behaviours without touching the command line. See [`Docs/paced-output-buffer.md`](Docs/paced-output-buffer.md) for a deeper walkthrough of the priming and telemetry behaviour.
 
 ### Pacing, invalidation, and backpressure

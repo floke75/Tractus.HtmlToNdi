@@ -198,11 +198,11 @@ public sealed class LauncherForm : Form
 
         _enableCompositorCaptureCheckBox = new CheckBox
         {
-            Text = "Capture frames from Chromium compositor",
+            Text = "Capture frames from Chromium compositor (experimental)",
             Dock = DockStyle.Fill,
             AutoSize = true,
         };
-        AddRow(table, "Compositor Capture", _enableCompositorCaptureCheckBox);
+        AddRow(table, "Compositor Capture (Experimental)", _enableCompositorCaptureCheckBox);
 
         _windowlessFrameRateTextBox = new TextBox { Dock = DockStyle.Fill };
         AddRow(table, "Windowless Frame Rate", _windowlessFrameRateTextBox);
