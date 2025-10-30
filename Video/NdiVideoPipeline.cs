@@ -1,4 +1,4 @@
-using System.Collections.Concurrent;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using System.Threading;
@@ -33,7 +33,8 @@ internal sealed class NdiVideoPipeline : IDisposable
     private readonly long maxPacingAdjustmentTicks;
     private readonly TimeSpan invalidationTicketTimeout;
     private readonly TimeSpan captureDemandCheckInterval;
-    private readonly ConcurrentQueue<InvalidationTicket> invalidationTickets = new();
+    private readonly Queue<InvalidationTicket> invalidationTickets = new();
+    private readonly object invalidationTicketGate = new();
 
     private bool bufferPrimed;
     private bool isWarmingUp = true;
@@ -741,7 +742,10 @@ internal sealed class NdiVideoPipeline : IDisposable
             }
 
             var newTicket = new InvalidationTicket(this);
-            invalidationTickets.Enqueue(newTicket);
+            lock (invalidationTicketGate)
+            {
+                invalidationTickets.Enqueue(newTicket);
+            }
             ScheduleTicketExpiration(newTicket);
             ticket = newTicket;
             return true;
@@ -784,15 +788,36 @@ internal sealed class NdiVideoPipeline : IDisposable
             return true;
         }
 
-        while (invalidationTickets.TryDequeue(out var ticket))
+        while (true)
         {
+            InvalidationTicket? ticket = null;
+
+            lock (invalidationTicketGate)
+            {
+                while (invalidationTickets.Count > 0)
+                {
+                    var head = invalidationTickets.Peek();
+                    if (head.IsStale)
+                    {
+                        invalidationTickets.Dequeue();
+                        continue;
+                    }
+
+                    ticket = invalidationTickets.Dequeue();
+                    break;
+                }
+            }
+
+            if (ticket is null)
+            {
+                return false;
+            }
+
             if (ticket.TryComplete())
             {
                 return true;
             }
         }
-
-        return false;
     }
 
     private void ReturnInvalidationTicket(InvalidationTicket? ticket)
@@ -876,7 +901,7 @@ internal sealed class NdiVideoPipeline : IDisposable
             }
         }
 
-        CullStaleInvalidationTickets();
+        RemoveInvalidationTicket(ticket);
 
         if (outcome == InvalidationTicketOutcome.Expired)
         {
@@ -885,21 +910,55 @@ internal sealed class NdiVideoPipeline : IDisposable
         }
     }
 
-    private void CullStaleInvalidationTickets()
+    private void RemoveInvalidationTicket(InvalidationTicket ticket)
     {
         if (!CaptureTicketsEnabled)
         {
             return;
         }
 
-        while (invalidationTickets.TryPeek(out var head))
+        lock (invalidationTicketGate)
         {
-            if (!head.IsStale)
+            if (invalidationTickets.Count == 0)
             {
                 return;
             }
 
-            invalidationTickets.TryDequeue(out _);
+            if (ReferenceEquals(invalidationTickets.Peek(), ticket))
+            {
+                _ = invalidationTickets.Dequeue();
+            }
+            else
+            {
+                List<InvalidationTicket>? survivors = null;
+
+                while (invalidationTickets.Count > 0)
+                {
+                    var current = invalidationTickets.Dequeue();
+                    if (ReferenceEquals(current, ticket) || current.IsStale)
+                    {
+                        continue;
+                    }
+
+                    survivors ??= new List<InvalidationTicket>(invalidationTickets.Count + 1);
+                    survivors.Add(current);
+                }
+
+                if (survivors is null)
+                {
+                    return;
+                }
+
+                foreach (var survivor in survivors)
+                {
+                    invalidationTickets.Enqueue(survivor);
+                }
+            }
+
+            while (invalidationTickets.Count > 0 && invalidationTickets.Peek().IsStale)
+            {
+                invalidationTickets.Dequeue();
+            }
         }
     }
 
@@ -928,7 +987,33 @@ internal sealed class NdiVideoPipeline : IDisposable
 
     private void ResetInvalidationTickets()
     {
-        while (invalidationTickets.TryDequeue(out var ticket))
+        if (!CaptureTicketsEnabled)
+        {
+            return;
+        }
+
+        List<InvalidationTicket>? snapshot = null;
+
+        lock (invalidationTicketGate)
+        {
+            if (invalidationTickets.Count == 0)
+            {
+                return;
+            }
+
+            snapshot = new List<InvalidationTicket>(invalidationTickets.Count);
+            while (invalidationTickets.Count > 0)
+            {
+                snapshot.Add(invalidationTickets.Dequeue());
+            }
+        }
+
+        if (snapshot is null)
+        {
+            return;
+        }
+
+        foreach (var ticket in snapshot)
         {
             ticket.TryReturn();
         }
