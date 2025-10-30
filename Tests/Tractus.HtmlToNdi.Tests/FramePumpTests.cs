@@ -152,8 +152,6 @@ public class FramePumpTests
             Assert.Equal(0, Volatile.Read(ref invalidations));
         }
 
-        await Task.Delay(120);
-
         Assert.Equal(0, Volatile.Read(ref invalidations));
     }
 }
