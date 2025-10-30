@@ -77,6 +77,35 @@ public class FramePumpTests
     }
 
     [Fact]
+    public async Task RequestCompletionDoesNotAwaitUiThread()
+    {
+        var invalidateInvocations = 0;
+        var invalidateTask = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        using var pump = new FramePump(
+            CreateBrowserStub(),
+            TimeSpan.FromMilliseconds(5),
+            TimeSpan.FromMilliseconds(50),
+            CreateNullLogger(),
+            FramePumpMode.OnDemand,
+            cadenceAdaptationEnabled: false,
+            (_, _, _) =>
+            {
+                Interlocked.Increment(ref invalidateInvocations);
+                return invalidateTask.Task;
+            });
+
+        pump.Start();
+
+        await pump.RequestInvalidateAsync().WaitAsync(TimeSpan.FromSeconds(1));
+
+        Assert.Equal(1, Volatile.Read(ref invalidateInvocations));
+        Assert.False(invalidateTask.Task.IsCompleted);
+
+        invalidateTask.SetResult(true);
+    }
+
+    [Fact]
     public async Task WatchdogTriggersInvalidateAfterIdle()
     {
         var tcs = new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);
