@@ -1339,6 +1339,120 @@ public class NdiVideoPipelineTests
         }
     }
 
+    [Fact]
+    public async Task BufferedModeTracksRepeatedFramesDuringStalls()
+    {
+        var sender = new CollectingSender();
+        var options = new NdiVideoPipelineOptions
+        {
+            EnableBuffering = true,
+            BufferDepth = 2,
+            TelemetryInterval = TimeSpan.FromDays(1)
+        };
+
+        var pipeline = new NdiVideoPipeline(sender, new FrameRate(30, 1), options, CreateNullLogger());
+        pipeline.Start();
+
+        var frameSize = 4 * 2 * 2;
+        var buffers = new IntPtr[2];
+
+        try
+        {
+            for (var i = 0; i < buffers.Length; i++)
+            {
+                buffers[i] = Marshal.AllocHGlobal(frameSize);
+                FillBuffer(buffers[i], frameSize, (byte)(0x30 + i));
+                pipeline.HandleFrame(CreateCapturedFrame(buffers[i], 2, 2, 8));
+            }
+
+            var primed = SpinWait.SpinUntil(
+                () => pipeline.BufferPrimed && sender.Frames.Count >= buffers.Length,
+                TimeSpan.FromMilliseconds(600));
+            Assert.True(primed);
+
+            await Task.Delay(400);
+
+            var repeatedField = typeof(NdiVideoPipeline)
+                .GetField("repeatedFrames", BindingFlags.Instance | BindingFlags.NonPublic);
+            Assert.NotNull(repeatedField);
+
+            var repeats = (long)(repeatedField!.GetValue(pipeline) ?? 0L);
+            Assert.True(repeats > 0, "Expected repeated frame counter to increase after stall.");
+        }
+        finally
+        {
+            pipeline.Dispose();
+            foreach (var ptr in buffers)
+            {
+                if (ptr != IntPtr.Zero)
+                {
+                    Marshal.FreeHGlobal(ptr);
+                }
+            }
+        }
+    }
+
+    [Fact]
+    public async Task LatencyExpansionPreservesBufferedFramesDuringBacklogDrop()
+    {
+        var sender = new CollectingSender();
+        var scheduler = new TestScheduler();
+        var options = new NdiVideoPipelineOptions
+        {
+            EnableBuffering = true,
+            BufferDepth = 3,
+            AllowLatencyExpansion = true,
+            EnablePacedInvalidation = true,
+            TelemetryInterval = TimeSpan.FromDays(1)
+        };
+
+        var pipeline = new NdiVideoPipeline(sender, new FrameRate(60, 1), options, CreateNullLogger());
+        pipeline.AttachInvalidationScheduler(scheduler);
+        pipeline.Start();
+
+        var warmupRequested = SpinWait.SpinUntil(
+            () => scheduler.RequestCount >= options.BufferDepth,
+            TimeSpan.FromMilliseconds(500));
+        Assert.True(warmupRequested);
+
+        var frameSize = 4 * 2 * 2;
+        var buffers = new List<IntPtr>();
+
+        try
+        {
+            for (var i = 0; i < options.BufferDepth + 1; i++)
+            {
+                var ptr = Marshal.AllocHGlobal(frameSize);
+                buffers.Add(ptr);
+                FillBuffer(ptr, frameSize, (byte)(0x40 + i));
+                pipeline.HandleFrame(CreateCapturedFrame(ptr, 2, 2, 8));
+            }
+
+            var primed = SpinWait.SpinUntil(() => pipeline.BufferPrimed, TimeSpan.FromMilliseconds(800));
+            Assert.True(primed);
+
+            var expansionActivated = SpinWait.SpinUntil(
+                () => pipeline.LatencyExpansionSessions > 0,
+                TimeSpan.FromMilliseconds(800));
+            Assert.True(expansionActivated, "Latency expansion did not activate after backlog drop.");
+
+            var framesServed = pipeline.LatencyExpansionFramesServed;
+            Assert.True(framesServed > 0, "Latency expansion should serve preserved frames while warming.");
+        }
+        finally
+        {
+            pipeline.Dispose();
+            scheduler.Dispose();
+            foreach (var ptr in buffers)
+            {
+                if (ptr != IntPtr.Zero)
+                {
+                    Marshal.FreeHGlobal(ptr);
+                }
+            }
+        }
+    }
+
     private static void FillBuffer(IntPtr buffer, int size, byte value)
     {
         var data = new byte[size];

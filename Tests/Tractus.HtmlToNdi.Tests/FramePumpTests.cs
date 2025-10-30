@@ -124,4 +124,36 @@ public class FramePumpTests
 
         Assert.True(elapsed >= TimeSpan.FromMilliseconds(15), $"Expected at least 15ms delay, saw {elapsed.TotalMilliseconds:F2}ms");
     }
+
+    [Fact]
+    public async Task WatchdogRemainsIdleWhenPaintsArrive()
+    {
+        var invalidations = 0;
+        using var pump = new FramePump(
+            CreateBrowserStub(),
+            TimeSpan.FromMilliseconds(10),
+            TimeSpan.FromMilliseconds(80),
+            CreateNullLogger(),
+            FramePumpMode.OnDemand,
+            cadenceAdaptationEnabled: false,
+            (browser, logger, token) =>
+            {
+                Interlocked.Increment(ref invalidations);
+                return Task.CompletedTask;
+            });
+
+        pump.Start();
+
+        var deadline = DateTime.UtcNow + TimeSpan.FromMilliseconds(280);
+        while (DateTime.UtcNow < deadline)
+        {
+            pump.NotifyPaint();
+            await Task.Delay(30);
+            Assert.Equal(0, Volatile.Read(ref invalidations));
+        }
+
+        await Task.Delay(120);
+
+        Assert.Equal(0, Volatile.Read(ref invalidations));
+    }
 }
