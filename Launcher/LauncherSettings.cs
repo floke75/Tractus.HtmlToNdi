@@ -114,4 +114,28 @@ public class LauncherSettings
     /// </summary>
     public bool EnableCompositorCapture { get; set; }
         = false;
+
+    /// <summary>
+    /// Gets or sets a value indicating whether Chromium should force GPU rasterization.
+    /// </summary>
+    public bool EnableGpuRasterization { get; set; }
+        = false;
+
+    /// <summary>
+    /// Gets or sets a value indicating whether Chromium should enable zero-copy raster uploads.
+    /// </summary>
+    public bool EnableZeroCopy { get; set; }
+        = false;
+
+    /// <summary>
+    /// Gets or sets a value indicating whether Chromium should use the out-of-process rasterizer.
+    /// </summary>
+    public bool EnableOutOfProcessRasterization { get; set; }
+        = false;
+
+    /// <summary>
+    /// Gets or sets a value indicating whether Chromium should keep timers and renderers active while hidden.
+    /// </summary>
+    public bool DisableBackgroundThrottling { get; set; }
+        = false;
 }
