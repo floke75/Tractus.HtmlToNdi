@@ -216,10 +216,18 @@ internal class CefWrapper : IDisposable
         {
             if (disposing)
             {
+                IBrowserHost? host = null;
+
                 if (this.browser is not null)
                 {
-                    this.browser.Paint -= this.OnBrowserPaint;
-                    this.browser.Dispose();
+                    try
+                    {
+                        host = this.browser.GetBrowserHost();
+                    }
+                    catch (Exception ex)
+                    {
+                        this.logger.Debug(ex, "Failed to retrieve browser host during dispose");
+                    }
                 }
 
                 if (this.compositorCaptureBridge is not null)
@@ -227,6 +235,17 @@ internal class CefWrapper : IDisposable
                     this.compositorCaptureBridge.FrameArrived -= this.OnCompositorFrame;
                     this.compositorCaptureBridge.Dispose();
                     this.compositorCaptureBridge = null;
+
+                    if (host is not null)
+                    {
+                        this.TryRestoreAutoBeginFrame(host);
+                    }
+                }
+
+                if (this.browser is not null)
+                {
+                    this.browser.Paint -= this.OnBrowserPaint;
+                    this.browser.Dispose();
                 }
 
                 this.browser = null;
