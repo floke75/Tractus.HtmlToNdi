@@ -750,6 +750,11 @@ internal sealed class NdiVideoPipeline : IDisposable
             TaskScheduler.Default);
     }
 
+    /// <summary>
+    /// Gets a value indicating whether paced invalidation tickets should be tracked for the
+    /// current configuration. Direct pacing always uses a single ticket, while buffered pacing
+    /// only enables tickets when Chromium invalidations are coordinated with the output queue.
+    /// </summary>
     private bool CaptureTicketsEnabled => directPacedInvalidationEnabled || (BufferingEnabled && pacedInvalidationEnabled);
 
     /// <summary>
