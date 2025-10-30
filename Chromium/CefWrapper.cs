@@ -2,6 +2,7 @@ using CefSharp;
 using CefSharp.OffScreen;
 using Serilog;
 using System.Diagnostics;
+using Tractus.HtmlToNdi.Native;
 using Tractus.HtmlToNdi.Video;
 
 namespace Tractus.HtmlToNdi.Chromium;
@@ -34,6 +35,8 @@ internal class CefWrapper : IDisposable
     private readonly int? windowlessFrameRateOverride;
     private FramePump? framePump;
     private readonly ILogger logger;
+    private readonly bool compositorCaptureRequested;
+    private CompositorCaptureBridge? compositorCaptureBridge;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="CefWrapper"/> class.
@@ -54,6 +57,7 @@ internal class CefWrapper : IDisposable
         this.frameRate = frameRate;
         this.logger = logger;
         this.windowlessFrameRateOverride = windowlessFrameRateOverride;
+        this.compositorCaptureRequested = pipeline.Options.EnableCompositorCapture;
 
         this.browser = new ChromiumWebBrowser(initialUrl)
         {
@@ -77,9 +81,17 @@ internal class CefWrapper : IDisposable
 
         await this.browser.WaitForInitialLoadAsync();
 
+        var host = this.browser.GetBrowserHost();
         var targetWindowlessRate = this.windowlessFrameRateOverride ?? Math.Clamp((int)Math.Round(this.frameRate.Value), 1, 240);
-        this.browser.GetBrowserHost().WindowlessFrameRate = targetWindowlessRate;
+        host.WindowlessFrameRate = targetWindowlessRate;
         this.browser.ToggleAudioMute();
+
+        if (this.compositorCaptureRequested && this.TryActivateCompositorCapture(host))
+        {
+            this.videoPipeline.AttachInvalidationScheduler(null);
+            this.videoPipeline.Start();
+            return;
+        }
 
         this.browser.Paint += this.OnBrowserPaint;
 
@@ -126,6 +138,78 @@ internal class CefWrapper : IDisposable
         this.videoPipeline.HandleFrame(capturedFrame);
     }
 
+    private bool TryActivateCompositorCapture(IBrowserHost host)
+    {
+        this.logger.Information("Attempting compositor-driven capture");
+
+        try
+        {
+            host.SetAutoBeginFrameEnabled(false);
+        }
+        catch (NotSupportedException ex)
+        {
+            this.logger.Warning(ex, "Browser host does not support manual begin-frame control");
+            return false;
+        }
+        catch (Exception ex)
+        {
+            this.logger.Warning(ex, "Failed to disable Chromium auto begin frames");
+            return false;
+        }
+
+        var bridge = new CompositorCaptureBridge(this.logger);
+        bridge.FrameArrived += this.OnCompositorFrame;
+
+        if (!bridge.TryStart(host, this.Width, this.Height, this.frameRate, out var error))
+        {
+            bridge.FrameArrived -= this.OnCompositorFrame;
+            bridge.Dispose();
+            this.TryRestoreAutoBeginFrame(host);
+
+            if (!string.IsNullOrWhiteSpace(error))
+            {
+                this.logger.Warning("Compositor capture unavailable: {Error}", error);
+            }
+
+            return false;
+        }
+
+        this.logger.Information("Compositor capture enabled; FramePump disabled");
+        this.compositorCaptureBridge = bridge;
+        return true;
+    }
+
+    private void OnCompositorFrame(object? sender, CapturedFrame frame)
+    {
+        if (Program.NdiSenderPtr == nint.Zero)
+        {
+            frame.Dispose();
+            return;
+        }
+
+        try
+        {
+            this.videoPipeline.HandleCompositorFrame(frame);
+        }
+        catch (Exception ex)
+        {
+            this.logger.Warning(ex, "Unhandled exception while forwarding compositor frame");
+            frame.Dispose();
+        }
+    }
+
+    private void TryRestoreAutoBeginFrame(IBrowserHost host)
+    {
+        try
+        {
+            host.SetAutoBeginFrameEnabled(true);
+        }
+        catch (Exception ex)
+        {
+            this.logger.Debug(ex, "Failed to restore Chromium auto begin frame state");
+        }
+    }
+
     protected virtual void Dispose(bool disposing)
     {
         if (!this.disposedValue)
@@ -136,6 +220,13 @@ internal class CefWrapper : IDisposable
                 {
                     this.browser.Paint -= this.OnBrowserPaint;
                     this.browser.Dispose();
+                }
+
+                if (this.compositorCaptureBridge is not null)
+                {
+                    this.compositorCaptureBridge.FrameArrived -= this.OnCompositorFrame;
+                    this.compositorCaptureBridge.Dispose();
+                    this.compositorCaptureBridge = null;
                 }
 
                 this.browser = null;

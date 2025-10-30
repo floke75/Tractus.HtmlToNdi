@@ -173,6 +173,7 @@ public class Program
             DisablePacedInvalidation = parameters.DisablePacedInvalidation,
             EnableCaptureBackpressure = parameters.EnableCaptureBackpressure,
             EnablePumpCadenceAdaptation = parameters.EnablePumpCadenceAdaptation,
+            EnableCompositorCapture = parameters.EnableCompositorCapture,
         };
 
         NativeNdiVideoSender? ndiSender = null;

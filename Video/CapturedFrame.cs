@@ -1,9 +1,11 @@
+using System;
+
 namespace Tractus.HtmlToNdi.Video;
 
 /// <summary>
 /// Represents a captured video frame from the browser.
 /// </summary>
-internal readonly struct CapturedFrame
+internal readonly struct CapturedFrame : IDisposable
 {
     /// <summary>
     /// Initializes a new instance of the <see cref="CapturedFrame"/> struct.
@@ -12,7 +14,7 @@ internal readonly struct CapturedFrame
     /// <param name="width">The width of the frame.</param>
     /// <param name="height">The height of the frame.</param>
     /// <param name="stride">The stride of the frame.</param>
-    public CapturedFrame(IntPtr buffer, int width, int height, int stride, long monotonicTimestamp, DateTime timestampUtc)
+    public CapturedFrame(IntPtr buffer, int width, int height, int stride, long monotonicTimestamp, DateTime timestampUtc, Action? releaseAction = null, CapturedFrameStorageKind storageKind = CapturedFrameStorageKind.CpuMemory)
     {
         Buffer = buffer;
         Width = width;
@@ -20,6 +22,8 @@ internal readonly struct CapturedFrame
         Stride = stride;
         MonotonicTimestamp = monotonicTimestamp;
         TimestampUtc = timestampUtc;
+        ReleaseAction = releaseAction;
+        StorageKind = storageKind;
     }
 
     /// <summary>
@@ -53,7 +57,25 @@ internal readonly struct CapturedFrame
     public DateTime TimestampUtc { get; }
 
     /// <summary>
+    /// Gets the storage kind that describes how the pixel buffer should be interpreted.
+    /// </summary>
+    public CapturedFrameStorageKind StorageKind { get; }
+
+    /// <summary>
+    /// Gets an optional action that releases the frame resources once the pipeline finishes using it.
+    /// </summary>
+    public Action? ReleaseAction { get; }
+
+    /// <summary>
     /// Gets the size of the frame in bytes.
     /// </summary>
     public int SizeInBytes => Height * Stride;
+
+    /// <summary>
+    /// Releases any native resources associated with the frame.
+    /// </summary>
+    public void Dispose()
+    {
+        ReleaseAction?.Invoke();
+    }
 }
