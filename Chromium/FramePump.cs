@@ -301,7 +301,7 @@ internal sealed class FramePump : IPacedInvalidationScheduler
         }
     }
 
-    private static async Task DefaultInvalidateBrowserAsync(
+    private static Task DefaultInvalidateBrowserAsync(
         ChromiumWebBrowser browser,
         ILogger logger,
         CancellationToken token)
@@ -309,20 +309,55 @@ internal sealed class FramePump : IPacedInvalidationScheduler
         var host = browser.GetBrowserHost();
         if (host is null)
         {
-            return;
+            return Task.CompletedTask;
         }
 
-        await Cef.UIThreadTaskFactory.StartNew(() =>
+        token.ThrowIfCancellationRequested();
+
+        Task uiTask;
+
+        try
         {
-            try
+            uiTask = Cef.UIThreadTaskFactory.StartNew(() =>
             {
-                host.Invalidate(PaintElementType.View);
-            }
-            catch (Exception ex)
-            {
-                logger.Warning(ex, "FramePump invalidate threw on UI thread");
-            }
-        }).WaitAsync(token).ConfigureAwait(false);
+                try
+                {
+                    host.Invalidate(PaintElementType.View);
+                }
+                catch (Exception ex)
+                {
+                    logger.Warning(ex, "FramePump invalidate threw on UI thread");
+                }
+            });
+        }
+        catch (Exception ex)
+        {
+            logger.Warning(ex, "FramePump failed to queue invalidate on UI thread");
+            throw;
+        }
+
+        if (uiTask.IsFaulted)
+        {
+            logger.Warning(uiTask.Exception, "FramePump invalidate task faulted");
+            return Task.CompletedTask;
+        }
+
+        if (!uiTask.IsCompleted)
+        {
+            _ = uiTask.ContinueWith(
+                t =>
+                {
+                    if (t.IsFaulted)
+                    {
+                        logger.Warning(t.Exception, "FramePump invalidate task faulted");
+                    }
+                },
+                CancellationToken.None,
+                TaskContinuationOptions.ExecuteSynchronously,
+                TaskScheduler.Default);
+        }
+
+        return Task.CompletedTask;
     }
 
     private async Task RunPeriodicLoopAsync(CancellationToken token)

@@ -392,7 +392,7 @@ public class NdiVideoPipelineTests
     }
 
     [Fact]
-    public void BufferedPacedInvalidationDropsUnrequestedFrames()
+    public void BufferedPacedInvalidationMaintainsDemand()
     {
         var sender = new CollectingSender();
         var options = new NdiVideoPipelineOptions
@@ -422,8 +422,8 @@ public class NdiVideoPipelineTests
                 pipeline.HandleFrame(CreateCapturedFrame(buffers[i], 2, 2, 8));
             }
 
-            Assert.Equal(0, pipeline.PendingInvalidations);
-            Assert.Equal(1, pipeline.SpuriousCaptureCount);
+            Assert.Equal(0, pipeline.SpuriousCaptureCount);
+            Assert.Equal(1, pipeline.PendingInvalidations);
         }
         finally
         {
@@ -434,6 +434,97 @@ public class NdiVideoPipelineTests
                 {
                     Marshal.FreeHGlobal(ptr);
                 }
+            }
+        }
+    }
+
+    [Fact]
+    public void BufferedPacedInvalidationDropsFramesWithoutScheduler()
+    {
+        var sender = new CollectingSender();
+        var options = new NdiVideoPipelineOptions
+        {
+            EnableBuffering = true,
+            BufferDepth = 2,
+            EnablePacedInvalidation = true,
+            TelemetryInterval = TimeSpan.FromDays(1),
+        };
+
+        var pipeline = new NdiVideoPipeline(sender, new FrameRate(60, 1), options, CreateNullLogger());
+
+        var frameSize = 4 * 2 * 2;
+        var buffers = new IntPtr[2];
+
+        try
+        {
+            for (var i = 0; i < buffers.Length; i++)
+            {
+                buffers[i] = Marshal.AllocHGlobal(frameSize);
+                FillBuffer(buffers[i], frameSize, (byte)(0x50 + i));
+                pipeline.HandleFrame(CreateCapturedFrame(buffers[i], 2, 2, 8));
+            }
+
+            Assert.Equal(0, pipeline.PendingInvalidations);
+            Assert.Equal(buffers.Length, pipeline.SpuriousCaptureCount);
+        }
+        finally
+        {
+            pipeline.Dispose();
+            foreach (var ptr in buffers)
+            {
+                if (ptr != IntPtr.Zero)
+                {
+                    Marshal.FreeHGlobal(ptr);
+                }
+            }
+        }
+    }
+
+    [Fact]
+    public void BufferedCaptureRequestsFollowUpInvalidation()
+    {
+        var sender = new CollectingSender();
+        var options = new NdiVideoPipelineOptions
+        {
+            EnableBuffering = true,
+            BufferDepth = 3,
+            EnablePacedInvalidation = true,
+            TelemetryInterval = TimeSpan.FromDays(1),
+        };
+
+        var pipeline = new NdiVideoPipeline(sender, new FrameRate(60, 1), options, CreateNullLogger());
+        var scheduler = new TestScheduler();
+        pipeline.AttachInvalidationScheduler(scheduler);
+
+        var warmed = SpinWait.SpinUntil(
+            () => scheduler.RequestCount >= options.BufferDepth,
+            TimeSpan.FromMilliseconds(500));
+        Assert.True(warmed, "Warmup invalidations did not reach expected depth");
+
+        var baseline = scheduler.RequestCount;
+        var frameSize = 4 * 2 * 2;
+        var buffer = Marshal.AllocHGlobal(frameSize);
+
+        try
+        {
+            FillBuffer(buffer, frameSize, 0x33);
+            pipeline.HandleFrame(CreateCapturedFrame(buffer, 2, 2, 8));
+
+            var followUp = SpinWait.SpinUntil(
+                () => scheduler.RequestCount >= baseline + 1,
+                TimeSpan.FromMilliseconds(500));
+
+            Assert.True(
+                followUp,
+                $"Scheduler did not receive follow-up invalidation request. Baseline={baseline}, Actual={scheduler.RequestCount}");
+        }
+        finally
+        {
+            pipeline.Dispose();
+            scheduler.Dispose();
+            if (buffer != IntPtr.Zero)
+            {
+                Marshal.FreeHGlobal(buffer);
             }
         }
     }
@@ -666,6 +757,154 @@ public class NdiVideoPipelineTests
             Assert.True(count >= options.BufferDepth);
             var slotRequests = count - options.BufferDepth;
             Assert.InRange(slotRequests, framesSent - 1, framesSent + 1);
+        }
+    }
+
+    [Fact]
+    public async Task PendingInvalidationsClampWhenSchedulerStalls()
+    {
+        var sender = new CollectingSender();
+        var scheduler = new TestScheduler();
+        var options = new NdiVideoPipelineOptions
+        {
+            EnableBuffering = true,
+            BufferDepth = 4,
+            TelemetryInterval = TimeSpan.FromDays(1),
+            EnablePacedInvalidation = true
+        };
+
+        scheduler.Pause();
+
+        var pipeline = new NdiVideoPipeline(sender, new FrameRate(60, 1), options, CreateNullLogger());
+        pipeline.AttachInvalidationScheduler(scheduler);
+        pipeline.Start();
+
+        try
+        {
+            var observed = SpinWait.SpinUntil(() => pipeline.PendingInvalidations > 0, TimeSpan.FromMilliseconds(500));
+            Assert.True(observed);
+
+            var limit = options.BufferDepth + 1;
+            Assert.InRange(pipeline.PendingInvalidations, 1, limit);
+
+            var initialRequests = scheduler.RequestCount;
+            await Task.Delay(200);
+            var subsequentRequests = scheduler.RequestCount;
+
+            Assert.Equal(initialRequests, subsequentRequests);
+            Assert.InRange(pipeline.PendingInvalidations, 1, limit);
+        }
+        finally
+        {
+            scheduler.Resume();
+            pipeline.Dispose();
+            scheduler.Dispose();
+        }
+    }
+
+    [Fact]
+    public void BufferedInvalidationsRecoverAfterDroppedPaint()
+    {
+        var sender = new CollectingSender();
+        var scheduler = new TestScheduler();
+        var options = new NdiVideoPipelineOptions
+        {
+            EnableBuffering = true,
+            BufferDepth = 3,
+            TelemetryInterval = TimeSpan.FromDays(1),
+            EnablePacedInvalidation = true,
+        };
+
+        var pipeline = new NdiVideoPipeline(sender, new FrameRate(60, 1), options, CreateNullLogger());
+        pipeline.AttachInvalidationScheduler(scheduler);
+        pipeline.Start();
+
+        try
+        {
+            var warmed = SpinWait.SpinUntil(
+                () => scheduler.RequestCount >= options.BufferDepth,
+                TimeSpan.FromMilliseconds(500));
+            Assert.True(warmed, "Warm-up invalidation requests not observed");
+
+            var baseline = scheduler.RequestCount;
+
+            var reissued = SpinWait.SpinUntil(
+                () => scheduler.RequestCount >= baseline + options.BufferDepth,
+                TimeSpan.FromMilliseconds(2000));
+
+            Assert.True(
+                reissued,
+                $"Scheduler did not reissue invalidations after dropped paint timeout. Baseline={baseline}, Current={scheduler.RequestCount}");
+
+            var expiredField = typeof(NdiVideoPipeline)
+                .GetField("expiredInvalidationTickets", BindingFlags.Instance | BindingFlags.NonPublic);
+            Assert.NotNull(expiredField);
+            var expired = (long)(expiredField!.GetValue(pipeline) ?? 0L);
+
+            Assert.True(expired > 0, "Expired invalidation ticket counter did not advance");
+            Assert.True(pipeline.PendingInvalidations > 0);
+        }
+        finally
+        {
+            pipeline.Dispose();
+            scheduler.Dispose();
+        }
+    }
+
+    [Fact]
+    public void DirectInvalidationsRecoverAfterDroppedPaint()
+    {
+        var sender = new CollectingSender();
+        var scheduler = new TestScheduler();
+        var options = new NdiVideoPipelineOptions
+        {
+            EnableBuffering = false,
+            TelemetryInterval = TimeSpan.FromDays(1),
+            EnablePacedInvalidation = true,
+        };
+
+        var pipeline = new NdiVideoPipeline(sender, new FrameRate(60, 1), options, CreateNullLogger());
+        pipeline.AttachInvalidationScheduler(scheduler);
+
+        try
+        {
+            var initial = SpinWait.SpinUntil(
+                () => scheduler.RequestCount >= 1,
+                TimeSpan.FromMilliseconds(500));
+            Assert.True(initial, "Initial paced invalidation request not observed.");
+
+            var baseline = scheduler.RequestCount;
+            var reissued = SpinWait.SpinUntil(
+                () => scheduler.RequestCount >= baseline + 1,
+                TimeSpan.FromMilliseconds(1000));
+
+            Assert.True(
+                reissued,
+                $"Direct paced invalidation did not reissue after timeout. Baseline={baseline}, Current={scheduler.RequestCount}");
+
+            var requestAfterTimeout = scheduler.RequestCount;
+            var frameSize = 4 * 2 * 2;
+            var buffer = Marshal.AllocHGlobal(frameSize);
+
+            try
+            {
+                FillBuffer(buffer, frameSize, 0x42);
+                pipeline.HandleFrame(CreateCapturedFrame(buffer, 2, 2, 8));
+            }
+            finally
+            {
+                Marshal.FreeHGlobal(buffer);
+            }
+
+            var followUp = SpinWait.SpinUntil(
+                () => scheduler.RequestCount >= requestAfterTimeout + 1,
+                TimeSpan.FromMilliseconds(500));
+            Assert.True(followUp, "Pipeline did not request a follow-up invalidation after sending direct frame.");
+        }
+        finally
+        {
+            pipeline.Dispose();
+            scheduler.Dispose();
         }
     }
 

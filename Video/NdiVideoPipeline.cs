@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using System.Threading;
@@ -30,6 +31,10 @@ internal sealed class NdiVideoPipeline : IDisposable
     private readonly bool allowLatencyExpansion;
     private readonly TimeSpan frameInterval;
     private readonly long maxPacingAdjustmentTicks;
+    private readonly TimeSpan invalidationTicketTimeout;
+    private readonly TimeSpan captureDemandCheckInterval;
+    private readonly Queue<InvalidationTicket> invalidationTickets = new();
+    private readonly object invalidationTicketGate = new();
 
     private bool bufferPrimed;
     private bool isWarmingUp = true;
@@ -78,6 +83,121 @@ internal sealed class NdiVideoPipeline : IDisposable
     private int directInvalidationPending;
     private long pendingInvalidations;
     private long spuriousCaptureCount;
+    private long expiredInvalidationTickets;
+    private readonly object captureDemandMaintenanceGate = new();
+    private CancellationTokenSource? captureDemandMaintenanceCts;
+    private Task? captureDemandMaintenanceTask;
+
+    private enum InvalidationTicketOutcome
+    {
+        Consumed,
+        Returned,
+        Expired,
+    }
+
+    /// <summary>
+    /// Represents a single paced invalidation request that tracks whether the slot
+    /// was consumed, returned, or expired so the pending request counters remain
+    /// accurate.
+    /// </summary>
+    private sealed class InvalidationTicket
+    {
+        private const int StateIssued = 0;
+        private const int StateConsumed = 1;
+        private const int StateReturned = 2;
+        private const int StateExpired = 3;
+
+        private readonly NdiVideoPipeline owner;
+        private int state;
+        private CancellationTokenSource? timeoutCts;
+
+        internal InvalidationTicket(NdiVideoPipeline owner)
+        {
+            this.owner = owner;
+        }
+
+        /// <summary>
+        /// Associates a timeout cancellation source so the ticket can expire if it
+        /// outlives the configured request window.
+        /// </summary>
+        internal void ArmTimeout(CancellationTokenSource cts)
+        {
+            Interlocked.Exchange(ref timeoutCts, cts);
+        }
+
+        /// <summary>
+        /// Marks the ticket as consumed and notifies the owning pipeline to release
+        /// the pending slot.
+        /// </summary>
+        internal bool TryComplete()
+        {
+            if (!TryTransition(StateConsumed))
+            {
+                return false;
+            }
+
+            owner.FinalizeTicket(this, InvalidationTicketOutcome.Consumed);
+            return true;
+        }
+
+        /// <summary>
+        /// Returns the ticket to the pool when a request is cancelled before the
+        /// scheduler consumes it.
+        /// </summary>
+        internal bool TryReturn()
+        {
+            if (!TryTransition(StateReturned))
+            {
+                return false;
+            }
+
+            owner.FinalizeTicket(this, InvalidationTicketOutcome.Returned);
+            return true;
+        }
+
+        /// <summary>
+        /// Expires the ticket after the timeout elapses so stale entries are removed
+        /// from the queue.
+        /// </summary>
+        internal bool TryExpire()
+        {
+            if (!TryTransition(StateExpired))
+            {
+                return false;
+            }
+
+            owner.FinalizeTicket(this, InvalidationTicketOutcome.Expired);
+            return true;
+        }
+
+        internal void CancelTimeout()
+        {
+            var cts = Interlocked.Exchange(ref timeoutCts, null);
+            if (cts is null)
+            {
+                return;
+            }
+
+            try
+            {
+                cts.Cancel();
+            }
+            catch (ObjectDisposedException)
+            {
+            }
+            finally
+            {
+                cts.Dispose();
+            }
+        }
+
+        internal bool IsStale => Volatile.Read(ref state) != StateIssued;
+
+        private bool TryTransition(int targetState)
+        {
+            return Interlocked.CompareExchange(ref state, targetState, StateIssued) == StateIssued;
+        }
+    }
 
     /// <summary>
     /// Initializes a new instance of the <see cref="NdiVideoPipeline"/> class.
@@ -99,6 +219,8 @@ internal sealed class NdiVideoPipeline : IDisposable
         allowLatencyExpansion = options.AllowLatencyExpansion && options.EnableBuffering;
         frameInterval = frameRate.FrameDuration;
         maxPacingAdjustmentTicks = Math.Max(1, frameInterval.Ticks / 2);
+        invalidationTicketTimeout = CalculateInvalidationTicketTimeout(frameInterval);
+        captureDemandCheckInterval = CalculateCaptureDemandCheckInterval(frameInterval, invalidationTicketTimeout);
         alignWithCaptureTimestamps = options.AlignWithCaptureTimestamps;
         cadenceTelemetryEnabled = options.EnableCadenceTelemetry;
         cadenceTrackingEnabled = alignWithCaptureTimestamps || cadenceTelemetryEnabled;
@@ -149,15 +271,19 @@ internal sealed class NdiVideoPipeline : IDisposable
         invalidationScheduler = scheduler;
         captureGateActive = false;
         consecutivePositiveLatencyTicks = 0;
+        ResetInvalidationTickets();
         Interlocked.Exchange(ref pendingInvalidations, 0);
         Interlocked.Exchange(ref spuriousCaptureCount, 0);
+        Interlocked.Exchange(ref expiredInvalidationTickets, 0);
 
         if (scheduler is null)
         {
+            StopCaptureDemandMaintenance();
             return;
         }
 
         scheduler.UpdateCadenceAlignment(0);
+        StartCaptureDemandMaintenance();
 
         if (directPacedInvalidationEnabled)
         {
@@ -168,7 +294,7 @@ internal sealed class NdiVideoPipeline : IDisposable
 
         if (BufferingEnabled && pacedInvalidationEnabled)
         {
-            ScheduleWarmupInvalidations(targetDepth);
+            EnsureCaptureDemand();
         }
     }
 
@@ -198,6 +324,7 @@ internal sealed class NdiVideoPipeline : IDisposable
     public void Stop()
     {
         cancellation.Cancel();
+        StopCaptureDemandMaintenance();
         try
         {
             pacingTask?.Wait();
@@ -211,6 +338,8 @@ internal sealed class NdiVideoPipeline : IDisposable
         bufferPrimed = false;
         isWarmingUp = true;
         Interlocked.Exchange(ref directInvalidationPending, 0);
+        ResetInvalidationTickets();
+        Interlocked.Exchange(ref pendingInvalidations, 0);
     }
 
     /// <summary>
@@ -252,6 +381,7 @@ internal sealed class NdiVideoPipeline : IDisposable
         ringBuffer.Enqueue(copy, out var dropped);
         dropped?.Dispose();
         EmitTelemetryIfNeeded();
+        EnsureCaptureDemand(ringBuffer.Count);
     }
 
     private async Task RunPacedLoopAsync(CancellationToken token)
@@ -262,6 +392,8 @@ internal sealed class NdiVideoPipeline : IDisposable
 
         while (!token.IsCancellationRequested)
         {
+            EnsureCaptureDemand();
+
             if (Volatile.Read(ref pacingResetRequested))
             {
                 pacingOrigin = pacingClock.Elapsed;
@@ -286,8 +418,6 @@ internal sealed class NdiVideoPipeline : IDisposable
             }
 
             pacingSequence = nextSequence;
-
-            await RequestNextInvalidationAsync(token).ConfigureAwait(false);
         }
     }
 
@@ -342,9 +472,52 @@ internal sealed class NdiVideoPipeline : IDisposable
         return baseline + TimeSpan.FromTicks(adjustmentTicks);
     }
 
-    private async Task RequestNextInvalidationAsync(CancellationToken token)
+    private static TimeSpan CalculateInvalidationTicketTimeout(TimeSpan frameDuration)
     {
-        if (!BufferingEnabled || !pacedInvalidationEnabled)
+        var minTimeout = TimeSpan.FromMilliseconds(40);
+        var maxTimeout = TimeSpan.FromMilliseconds(200);
+        var desiredTicks = frameDuration.Ticks * 3L;
+        desiredTicks = Math.Max(minTimeout.Ticks, desiredTicks);
+        desiredTicks = Math.Min(maxTimeout.Ticks, desiredTicks);
+        return TimeSpan.FromTicks(desiredTicks);
+    }
+
+    private static TimeSpan CalculateCaptureDemandCheckInterval(TimeSpan frameDuration, TimeSpan ticketTimeout)
+    {
+        var minIntervalTicks = TimeSpan.FromMilliseconds(5).Ticks;
+        var maxIntervalTicks = TimeSpan.FromMilliseconds(100).Ticks;
+        var frameTicks = Math.Max(1L, frameDuration.Ticks);
+        var timeoutTicks = Math.Max(1L, ticketTimeout.Ticks / 2);
+        var candidateTicks = Math.Min(frameTicks, timeoutTicks);
+        candidateTicks = Math.Max(minIntervalTicks, candidateTicks);
+        candidateTicks = Math.Min(maxIntervalTicks, candidateTicks);
+        return TimeSpan.FromTicks(candidateTicks);
+    }
+
+    /// <summary>
+    /// Refills Chromium invalidation demand using the latest buffer depth so pending
+    /// ticket counts stay aligned with the paced sender.
+    /// </summary>
+    private void EnsureCaptureDemand()
+    {
+        EnsureCaptureDemandInternal(ringBuffer?.Count);
+    }
+
+    /// <summary>
+    /// Refills Chromium invalidation demand using the supplied backlog value.
+    /// </summary>
+    private void EnsureCaptureDemand(int backlog)
+    {
+        EnsureCaptureDemandInternal(backlog);
+    }
+
+    /// <summary>
+    /// Issues enough invalidation requests to match the desired pending ticket count
+    /// while respecting capture gates and scheduler state.
+    /// </summary>
+    private void EnsureCaptureDemandInternal(int? backlog)
+    {
+        if (!pacedInvalidationEnabled)
         {
             return;
         }
@@ -355,46 +528,133 @@ internal sealed class NdiVideoPipeline : IDisposable
             return;
         }
 
-        try
+        if (!BufferingEnabled || backlog is null || ringBuffer is null)
         {
-            await RequestInvalidateWithTicketAsync(scheduler, token).ConfigureAwait(false);
+            return;
         }
-        catch (OperationCanceledException)
+
+        var desired = CalculateDesiredPendingInvalidations(backlog.Value);
+        var current = Volatile.Read(ref pendingInvalidations);
+        while (current < desired)
         {
-        }
-        catch (ObjectDisposedException)
-        {
-        }
-        catch (Exception ex)
-        {
-            logger.Warning(ex, "Failed to request Chromium invalidation from pacing loop");
+            var request = RequestInvalidateWithTicketAsync(scheduler, cancellation.Token);
+            ObserveInvalidationRequest(request, "Failed to request Chromium invalidation while refilling demand");
+
+            var updated = Volatile.Read(ref pendingInvalidations);
+            if (updated <= current)
+            {
+                break;
+            }
+
+            current = updated;
         }
     }
 
     /// <summary>
-    /// Primes Chromium with a burst of invalidation requests so the paced buffer can warm up quickly after (re)start.
+    /// Starts the watchdog that periodically replenishes direct pacing demand so the
+    /// scheduler keeps driving Chromium even if sends stall.
     /// </summary>
-    /// <param name="count">The number of invalidations to queue.</param>
-    private void ScheduleWarmupInvalidations(int count)
+    private void StartCaptureDemandMaintenance()
     {
-        if (!BufferingEnabled || !pacedInvalidationEnabled || count <= 0)
+        if (!directPacedInvalidationEnabled || !CaptureTicketsEnabled)
         {
             return;
         }
 
-        var scheduler = invalidationScheduler;
-        if (scheduler is null)
+        lock (captureDemandMaintenanceGate)
         {
-            return;
-        }
-
-        _ = Task.Run(async () =>
-        {
-            for (var i = 0; i < count && !cancellation.IsCancellationRequested; i++)
+            if (captureDemandMaintenanceTask is not null && !captureDemandMaintenanceTask.IsCompleted)
             {
+                return;
+            }
+
+            captureDemandMaintenanceCts?.Cancel();
+            captureDemandMaintenanceCts?.Dispose();
+
+            var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellation.Token);
+            captureDemandMaintenanceCts = linked;
+            captureDemandMaintenanceTask = Task.Run(() => RunCaptureDemandMaintenanceAsync(linked.Token));
+        }
+    }
+
+    /// <summary>
+    /// Stops the capture demand watchdog, cancelling the maintenance loop and wiring fault logging for any outstanding task.
+    /// </summary>
+    private void StopCaptureDemandMaintenance()
+    {
+        CancellationTokenSource? cts;
+        Task? task;
+
+        lock (captureDemandMaintenanceGate)
+        {
+            cts = captureDemandMaintenanceCts;
+            task = captureDemandMaintenanceTask;
+            captureDemandMaintenanceCts = null;
+            captureDemandMaintenanceTask = null;
+        }
+
+        if (cts is not null)
+        {
+            try
+            {
+                cts.Cancel();
+            }
+            catch (ObjectDisposedException)
+            {
+            }
+            finally
+            {
+                cts.Dispose();
+            }
+        }
+
+        if (task is not null)
+        {
+            _ = task.ContinueWith(
+                t =>
+                {
+                    if (!t.IsFaulted || t.Exception is null)
+                    {
+                        return;
+                    }
+
+                    var root = t.Exception.GetBaseException() ?? t.Exception;
+                    if (root is OperationCanceledException || root is ObjectDisposedException)
+                    {
+                        return;
+                    }
+
+                    logger.Warning(root, "Capture demand maintenance task faulted");
+                },
+                CancellationToken.None,
+                TaskContinuationOptions.ExecuteSynchronously,
+                TaskScheduler.Default);
+        }
+    }
+
+    /// <summary>
+    /// Periodically re-checks pending invalidation demand while direct pacing is active
+    /// so Chromium continues to receive capture requests.
+    /// </summary>
+    private async Task RunCaptureDemandMaintenanceAsync(CancellationToken token)
+    {
+        var interval = captureDemandCheckInterval > TimeSpan.Zero
+            ? captureDemandCheckInterval
+            : TimeSpan.FromMilliseconds(10);
+
+        try
+        {
+            using var timer = new PeriodicTimer(interval);
+            while (await timer.WaitForNextTickAsync(token).ConfigureAwait(false))
+            {
+                if (token.IsCancellationRequested)
+                {
+                    break;
+                }
+
                 try
                 {
-                    await RequestInvalidateWithTicketAsync(scheduler, cancellation.Token).ConfigureAwait(false);
+                    EnsureCaptureDemand();
                 }
                 catch (OperationCanceledException)
                 {
@@ -406,29 +666,197 @@ internal sealed class NdiVideoPipeline : IDisposable
                 }
                 catch (Exception ex)
                 {
-                    logger.Debug(ex, "Warmup invalidate request failed");
-                    break;
+                    logger.Warning(ex, "Capture demand maintenance tick failed");
                 }
             }
-        });
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        catch (ObjectDisposedException)
+        {
+        }
     }
 
+    /// <summary>
+    /// Computes the number of invalidation requests that should remain outstanding for
+    /// the current backlog and pacing mode.
+    /// </summary>
+    private int CalculateDesiredPendingInvalidations(int backlog)
+    {
+        var desired = targetDepth - backlog;
+        if (desired < 1)
+        {
+            desired = 1;
+        }
+
+        if (!bufferPrimed || isWarmingUp || latencyExpansionActive)
+        {
+            if (desired < targetDepth)
+            {
+                desired = targetDepth;
+            }
+        }
+
+        var limit = GetPendingInvalidationLimit();
+        if (desired > limit)
+        {
+            desired = limit;
+        }
+
+        return desired;
+    }
+
+    /// <summary>
+    /// Hooks continuations to report unexpected failures from asynchronous invalidation
+    /// requests without throwing on the pacing path.
+    /// </summary>
+    private void ObserveInvalidationRequest(Task request, string warningMessage)
+    {
+        if (request.IsCompleted)
+        {
+            if (request.IsFaulted)
+            {
+                var ex = request.Exception?.GetBaseException() ?? request.Exception;
+                if (ex is not OperationCanceledException && ex is not ObjectDisposedException)
+                {
+                    logger.Warning(ex, warningMessage);
+                }
+            }
+
+            return;
+        }
+
+        _ = request.ContinueWith(
+            static (task, state) =>
+            {
+                if (!task.IsFaulted)
+                {
+                    return;
+                }
+
+                var (logger, message) = ((ILogger Logger, string Message))state!;
+                var root = task.Exception?.GetBaseException() ?? task.Exception;
+                if (root is OperationCanceledException || root is ObjectDisposedException)
+                {
+                    return;
+                }
+
+                logger.Warning(root, message);
+            },
+            (logger, warningMessage),
+            CancellationToken.None,
+            TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default);
+    }
+
+    /// <summary>
+    /// Gets a value indicating whether paced invalidation tickets should be tracked for the
+    /// current configuration. Direct pacing always uses a single ticket, while buffered pacing
+    /// only enables tickets when Chromium invalidations are coordinated with the output queue.
+    /// </summary>
     private bool CaptureTicketsEnabled => directPacedInvalidationEnabled || (BufferingEnabled && pacedInvalidationEnabled);
 
-    private async Task RequestInvalidateWithTicketAsync(IPacedInvalidationScheduler scheduler, CancellationToken token)
+    /// <summary>
+    /// Requests an invalidation from the scheduler while holding an invalidation
+    /// ticket so pending counters stay in sync even if the request faults.
+    /// </summary>
+    private Task RequestInvalidateWithTicketAsync(IPacedInvalidationScheduler scheduler, CancellationToken token)
     {
-        Interlocked.Increment(ref pendingInvalidations);
+        if (!TryAcquireInvalidationSlot(out var ticket) || ticket is null)
+        {
+            return Task.CompletedTask;
+        }
+
+        return RequestInvalidateWithTicketAsync(scheduler, ticket, token);
+    }
+
+    private async Task RequestInvalidateWithTicketAsync(IPacedInvalidationScheduler scheduler, InvalidationTicket ticket, CancellationToken token)
+    {
         try
         {
             await scheduler.RequestInvalidateAsync(token).ConfigureAwait(false);
         }
         catch
         {
-            ReturnInvalidationTicket();
+            ReturnInvalidationTicket(ticket);
             throw;
         }
     }
 
+    /// <summary>
+    /// Attempts to reserve a pacing slot for an upcoming invalidation request.
+    /// </summary>
+    private bool TryAcquireInvalidationSlot(out InvalidationTicket? ticket)
+    {
+        ticket = null;
+        if (!CaptureTicketsEnabled)
+        {
+            return true;
+        }
+
+        var limit = GetPendingInvalidationLimit();
+        while (true)
+        {
+            var pending = Volatile.Read(ref pendingInvalidations);
+            if (pending >= limit)
+            {
+                return false;
+            }
+
+            if (Interlocked.CompareExchange(ref pendingInvalidations, pending + 1, pending) != pending)
+            {
+                continue;
+            }
+
+            var newTicket = new InvalidationTicket(this);
+            lock (invalidationTicketGate)
+            {
+                invalidationTickets.Enqueue(newTicket);
+            }
+            ScheduleTicketExpiration(newTicket);
+            ticket = newTicket;
+            return true;
+        }
+    }
+
+    /// <summary>
+    /// Calculates how many invalidation requests may be outstanding based on the
+    /// current buffering state.
+    /// </summary>
+    private int GetPendingInvalidationLimit()
+    {
+        if (!CaptureTicketsEnabled)
+        {
+            return int.MaxValue;
+        }
+
+        if (directPacedInvalidationEnabled)
+        {
+            return 1;
+        }
+
+        if (!BufferingEnabled)
+        {
+            return 1;
+        }
+
+        var primed = Volatile.Read(ref bufferPrimed);
+        var warming = Volatile.Read(ref isWarmingUp);
+        var expanding = Volatile.Read(ref latencyExpansionActive);
+
+        if (!primed || warming || expanding)
+        {
+            return Math.Max(2, targetDepth + 1);
+        }
+
+        return Math.Max(1, targetDepth);
+    }
+
+    /// <summary>
+    /// Consumes the next non-stale invalidation ticket, ensuring expired entries
+    /// are discarded before a new capture proceeds.
+    /// </summary>
     private bool TryConsumePendingInvalidationTicket()
     {
         if (!CaptureTicketsEnabled)
@@ -438,33 +866,255 @@ internal sealed class NdiVideoPipeline : IDisposable
 
         while (true)
         {
-            var pending = Volatile.Read(ref pendingInvalidations);
-            if (pending <= 0)
+            InvalidationTicket? ticket = null;
+
+            lock (invalidationTicketGate)
+            {
+                while (invalidationTickets.Count > 0)
+                {
+                    var head = invalidationTickets.Peek();
+                    if (head.IsStale)
+                    {
+                        invalidationTickets.Dequeue();
+                        continue;
+                    }
+
+                    ticket = invalidationTickets.Dequeue();
+                    break;
+                }
+            }
+
+            if (ticket is null)
             {
                 return false;
             }
 
-            if (Interlocked.CompareExchange(ref pendingInvalidations, pending - 1, pending) == pending)
+            if (ticket.TryComplete())
             {
                 return true;
             }
         }
     }
 
-    private void ReturnInvalidationTicket()
+    /// <summary>
+    /// Returns a ticket to the pool when an invalidation fails before completion.
+    /// </summary>
+    private void ReturnInvalidationTicket(InvalidationTicket? ticket)
     {
+        if (!CaptureTicketsEnabled || ticket is null)
+        {
+            return;
+        }
+
+        ticket.TryReturn();
+    }
+
+    /// <summary>
+    /// Arms a timeout for the ticket so stalled invalidation requests are expired
+    /// and removed from the queue.
+    /// </summary>
+    private void ScheduleTicketExpiration(InvalidationTicket ticket)
+    {
+        if (!CaptureTicketsEnabled)
+        {
+            return;
+        }
+
+        var timeout = invalidationTicketTimeout;
+        if (timeout <= TimeSpan.Zero)
+        {
+            return;
+        }
+
+        var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellation.Token);
+        ticket.ArmTimeout(linkedCts);
+
+        _ = Task.Run(async () =>
+        {
+            var shouldExpire = true;
+            try
+            {
+                await Task.Delay(timeout, linkedCts.Token).ConfigureAwait(false);
+            }
+            catch (TaskCanceledException)
+            {
+                shouldExpire = false;
+            }
+            catch (OperationCanceledException)
+            {
+                shouldExpire = false;
+            }
+            catch (ObjectDisposedException)
+            {
+                shouldExpire = false;
+            }
+            finally
+            {
+                try
+                {
+                    linkedCts.Dispose();
+                }
+                catch (ObjectDisposedException)
+                {
+                }
+            }
+
+            if (shouldExpire)
+            {
+                _ = ticket.TryExpire();
+            }
+        });
+    }
+
+    /// <summary>
+    /// Releases the ticket, updates bookkeeping counters, and removes stale entries
+    /// from the queue based on the final outcome.
+    /// </summary>
+    private void FinalizeTicket(InvalidationTicket ticket, InvalidationTicketOutcome outcome)
+    {
+        ticket.CancelTimeout();
+
         while (true)
         {
             var pending = Volatile.Read(ref pendingInvalidations);
             if (pending <= 0)
             {
-                return;
+                break;
             }
 
             if (Interlocked.CompareExchange(ref pendingInvalidations, pending - 1, pending) == pending)
             {
+                break;
+            }
+        }
+
+        RemoveInvalidationTicket(ticket);
+
+        if (outcome == InvalidationTicketOutcome.Expired)
+        {
+            Interlocked.Increment(ref expiredInvalidationTickets);
+            HandleExpiredTicket();
+        }
+    }
+
+    /// <summary>
+    /// Removes the specified ticket from the pending queue, trimming any stale entries
+    /// so subsequent dequeues see only live requests.
+    /// </summary>
+    private void RemoveInvalidationTicket(InvalidationTicket ticket)
+    {
+        if (!CaptureTicketsEnabled)
+        {
+            return;
+        }
+
+        lock (invalidationTicketGate)
+        {
+            if (invalidationTickets.Count == 0)
+            {
                 return;
             }
+
+            if (ReferenceEquals(invalidationTickets.Peek(), ticket))
+            {
+                _ = invalidationTickets.Dequeue();
+            }
+            else
+            {
+                List<InvalidationTicket>? survivors = null;
+
+                while (invalidationTickets.Count > 0)
+                {
+                    var current = invalidationTickets.Dequeue();
+                    if (ReferenceEquals(current, ticket) || current.IsStale)
+                    {
+                        continue;
+                    }
+
+                    survivors ??= new List<InvalidationTicket>(invalidationTickets.Count + 1);
+                    survivors.Add(current);
+                }
+
+                if (survivors is null)
+                {
+                    return;
+                }
+
+                foreach (var survivor in survivors)
+                {
+                    invalidationTickets.Enqueue(survivor);
+                }
+            }
+
+            while (invalidationTickets.Count > 0 && invalidationTickets.Peek().IsStale)
+            {
+                invalidationTickets.Dequeue();
+            }
+        }
+    }
+
+    /// <summary>
+    /// Restores capture demand when a pending invalidation exceeds the timeout,
+    /// ensuring the pipeline keeps driving Chromium after stalls.
+    /// </summary>
+    private void HandleExpiredTicket()
+    {
+        if (!pacedInvalidationEnabled || cancellation.IsCancellationRequested)
+        {
+            return;
+        }
+
+        if (directPacedInvalidationEnabled)
+        {
+            Interlocked.Exchange(ref directInvalidationPending, 0);
+            RequestDirectInvalidation();
+            return;
+        }
+
+        if (BufferingEnabled && pacedInvalidationEnabled)
+        {
+            EnsureCaptureDemand(ringBuffer?.Count ?? 0);
+            return;
+        }
+
+        EnsureCaptureDemand();
+    }
+
+    /// <summary>
+    /// Drains and returns all outstanding tickets when the pipeline resets so no
+    /// stale entries linger in the queue.
+    /// </summary>
+    private void ResetInvalidationTickets()
+    {
+        if (!CaptureTicketsEnabled)
+        {
+            return;
+        }
+
+        List<InvalidationTicket>? snapshot = null;
+
+        lock (invalidationTicketGate)
+        {
+            if (invalidationTickets.Count == 0)
+            {
+                return;
+            }
+
+            snapshot = new List<InvalidationTicket>(invalidationTickets.Count);
+            while (invalidationTickets.Count > 0)
+            {
+                snapshot.Add(invalidationTickets.Dequeue());
+            }
+        }
+
+        if (snapshot is null)
+        {
+            return;
+        }
+
+        foreach (var ticket in snapshot)
+        {
+            ticket.TryReturn();
         }
     }
 
@@ -490,26 +1140,28 @@ internal sealed class NdiVideoPipeline : IDisposable
             return;
         }
 
-        _ = Task.Run(async () =>
+        if (!TryAcquireInvalidationSlot(out var ticket) || ticket is null)
         {
-            try
+            Interlocked.Exchange(ref directInvalidationPending, 0);
+            return;
+        }
+
+        var request = RequestInvalidateWithTicketAsync(scheduler, ticket, cancellation.Token);
+        ObserveInvalidationRequest(request, "Failed to request Chromium invalidation for direct pacing");
+
+        _ = request.ContinueWith(
+            static (task, state) =>
             {
-                await RequestInvalidateWithTicketAsync(scheduler, cancellation.Token).ConfigureAwait(false);
-            }
-            catch (OperationCanceledException)
-            {
-                Interlocked.Exchange(ref directInvalidationPending, 0);
-            }
-            catch (ObjectDisposedException)
-            {
-                Interlocked.Exchange(ref directInvalidationPending, 0);
-            }
-            catch (Exception ex)
-            {
-                logger.Warning(ex, "Failed to request Chromium invalidation for direct pacing");
-                Interlocked.Exchange(ref directInvalidationPending, 0);
-            }
-        });
+                var pipeline = (NdiVideoPipeline)state!;
+                if (task.IsCanceled || task.IsFaulted)
+                {
+                    Interlocked.Exchange(ref pipeline.directInvalidationPending, 0);
+                }
+            },
+            this,
+            CancellationToken.None,
+            TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default);
     }
 
     private void UpdateCaptureBackpressure(int backlog)
@@ -560,7 +1212,7 @@ internal sealed class NdiVideoPipeline : IDisposable
                 "Chromium capture resumed after oversupply: backlog={Backlog}, latencyError={LatencyError:F2}",
                 backlog,
                 latencyError);
-            ScheduleWarmupInvalidations(targetDepth);
+            EnsureCaptureDemand();
         }
     }
 
@@ -769,6 +1421,7 @@ internal sealed class NdiVideoPipeline : IDisposable
         if (ringBuffer.TryDequeue(out var frame) && frame is not null)
         {
             SendBufferedFrame(frame);
+            EnsureCaptureDemand(ringBuffer.Count);
             if (latencyExpansionActive || allowSendWhileWarming)
             {
                 Interlocked.Increment(ref latencyExpansionFramesServed);
@@ -894,6 +1547,7 @@ internal sealed class NdiVideoPipeline : IDisposable
         outputCadenceTracker.Reset();
         Interlocked.Exchange(ref cadenceAlignmentDeltaFrames, 0d);
         invalidationScheduler?.UpdateCadenceAlignment(0);
+        EnsureCaptureDemand();
     }
 
     private void ExitWarmup()
@@ -933,7 +1587,7 @@ internal sealed class NdiVideoPipeline : IDisposable
         Volatile.Write(ref pacingResetRequested, true);
         if (BufferingEnabled && pacedInvalidationEnabled)
         {
-            ScheduleWarmupInvalidations(targetDepth);
+            EnsureCaptureDemand();
         }
     }
 
@@ -942,8 +1596,10 @@ internal sealed class NdiVideoPipeline : IDisposable
         captureCadenceTracker.Reset();
         outputCadenceTracker.Reset();
         Interlocked.Exchange(ref cadenceAlignmentDeltaFrames, 0d);
+        ResetInvalidationTickets();
         Interlocked.Exchange(ref pendingInvalidations, 0);
         Interlocked.Exchange(ref spuriousCaptureCount, 0);
+        Interlocked.Exchange(ref expiredInvalidationTickets, 0);
         bufferPrimed = false;
         isWarmingUp = true;
         hasPrimedOnce = false;
@@ -1257,7 +1913,8 @@ internal sealed class NdiVideoPipeline : IDisposable
         {
             var pending = Volatile.Read(ref pendingInvalidations);
             var spurious = Interlocked.Read(ref spuriousCaptureCount);
-            pacingStats = $", pendingInvalidations={pending}, spuriousCaptures={spurious}";
+            var expired = Interlocked.Read(ref expiredInvalidationTickets);
+            pacingStats = $", pendingInvalidations={pending}, spuriousCaptures={spurious}, expiredInvalidationTickets={expired}";
         }
 
         var cadenceStats = string.Empty;
