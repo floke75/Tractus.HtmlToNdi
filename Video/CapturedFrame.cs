@@ -14,6 +14,10 @@ internal readonly struct CapturedFrame : IDisposable
     /// <param name="width">The width of the frame.</param>
     /// <param name="height">The height of the frame.</param>
     /// <param name="stride">The stride of the frame.</param>
+    /// <param name="monotonicTimestamp">High-resolution timestamp captured alongside the frame, expressed in <see cref="System.Diagnostics.Stopwatch"/> ticks.</param>
+    /// <param name="timestampUtc">The UTC wall-clock timestamp for the frame.</param>
+    /// <param name="releaseAction">Optional callback invoked when the frame is disposed to release native resources.</param>
+    /// <param name="storageKind">Describes how the pixel payload should be accessed by consumers.</param>
     public CapturedFrame(IntPtr buffer, int width, int height, int stride, long monotonicTimestamp, DateTime timestampUtc, Action? releaseAction = null, CapturedFrameStorageKind storageKind = CapturedFrameStorageKind.CpuMemory)
     {
         Buffer = buffer;

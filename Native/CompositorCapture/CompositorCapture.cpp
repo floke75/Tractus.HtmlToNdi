@@ -25,9 +25,15 @@ public:
 
 namespace
 {
+/// <summary>
+/// Implements compositor capture orchestration by owning the Chromium host and viz capturer.
+/// </summary>
 class CompositorCaptureSessionImpl
 {
 public:
+    /// <summary>
+    /// Creates a new compositor capture session implementation.
+    /// </summary>
     CompositorCaptureSessionImpl(CefBrowserHost* browser_host, const CompositorCaptureConfig& config, CompositorFrameCallback callback, void* user_data)
         : host_(browser_host), config_(config), callback_(callback), user_data_(user_data)
     {
@@ -39,6 +45,9 @@ public:
         capturer_ = CreateCapturer();
     }
 
+    /// <summary>
+    /// Ensures Chromium resumes its default begin-frame behaviour when the session is destroyed.
+    /// </summary>
     ~CompositorCaptureSessionImpl()
     {
         if (host_)
@@ -47,6 +56,9 @@ public:
         }
     }
 
+    /// <summary>
+    /// Starts the compositor capture flow and primes the viz capturer when available.
+    /// </summary>
     void Start()
     {
 #if TRACTUS_HAS_VIZ_CAPTURER
@@ -58,6 +70,9 @@ public:
         started_ = true;
     }
 
+    /// <summary>
+    /// Stops the compositor capture flow and notifies the viz capturer to halt production.
+    /// </summary>
     void Stop()
     {
 #if TRACTUS_HAS_VIZ_CAPTURER
@@ -69,12 +84,18 @@ public:
         started_ = false;
     }
 
+    /// <summary>
+    /// Releases compositor frame resources once managed consumers signal completion.
+    /// </summary>
     void ReleaseFrame(uint64_t)
     {
         // Placeholder for native frame lifetime management.
     }
 
 private:
+    /// <summary>
+    /// Creates a viz capturer instance when Chromium exports the required headers.
+    /// </summary>
     static std::unique_ptr<viz::FrameSinkVideoCapturer> CreateCapturer()
     {
 #if TRACTUS_HAS_VIZ_CAPTURER

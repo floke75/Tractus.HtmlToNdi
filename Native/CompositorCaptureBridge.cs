@@ -19,13 +19,29 @@ internal sealed class CompositorCaptureBridge : IDisposable
     private IntPtr hostPtr;
     private bool disposed;
 
+    /// <summary>
+    /// Initializes a new instance of the <see cref="CompositorCaptureBridge"/> class.
+    /// </summary>
+    /// <param name="logger">The logger used for diagnostics and error reporting.</param>
     internal CompositorCaptureBridge(ILogger logger)
     {
         this.logger = (logger ?? throw new ArgumentNullException(nameof(logger))).ForContext<CompositorCaptureBridge>();
     }
 
+    /// <summary>
+    /// Occurs when the native compositor helper has produced a frame for consumption by the video pipeline.
+    /// </summary>
     internal event EventHandler<CapturedFrame>? FrameArrived;
 
+    /// <summary>
+    /// Attempts to start a compositor capture session that delivers frames via the supplied callback.
+    /// </summary>
+    /// <param name="host">The Chromium browser host that owns the compositor.</param>
+    /// <param name="width">The expected frame width.</param>
+    /// <param name="height">The expected frame height.</param>
+    /// <param name="frameRate">The target frame rate advertised to the compositor helper.</param>
+    /// <param name="error">When this method returns <c>false</c>, contains the error message describing why start-up failed.</param>
+    /// <returns><c>true</c> when the compositor capture session was created and started; otherwise <c>false</c>.</returns>
     internal bool TryStart(IBrowserHost host, int width, int height, FrameRate frameRate, out string? error)
     {
         if (host is null)
@@ -113,6 +129,9 @@ internal sealed class CompositorCaptureBridge : IDisposable
         }
     }
 
+    /// <summary>
+    /// Stops the compositor capture session and releases any pinned managed resources.
+    /// </summary>
     internal void Stop()
     {
         var handle = sessionHandle;
@@ -162,6 +181,9 @@ internal sealed class CompositorCaptureBridge : IDisposable
         }
     }
 
+    /// <summary>
+    /// Releases pinned delegates, GC handles, and browser host references created during session start-up.
+    /// </summary>
     private void CleanupCallbackState()
     {
         if (selfHandle.IsAllocated)
@@ -188,6 +210,11 @@ internal sealed class CompositorCaptureBridge : IDisposable
         }
     }
 
+    /// <summary>
+    /// Static callback invoked by the native helper whenever a new frame becomes available.
+    /// </summary>
+    /// <param name="frame">The frame provided by the native capturer.</param>
+    /// <param name="userData">Opaque pointer used to recover the managed <see cref="CompositorCaptureBridge"/> instance.</param>
     private static void OnNativeFrame(ref NativeCapturedFrame frame, IntPtr userData)
     {
         if (userData == IntPtr.Zero)
@@ -213,6 +240,10 @@ internal sealed class CompositorCaptureBridge : IDisposable
         bridge.DispatchFrame(frame);
     }
 
+    /// <summary>
+    /// Translates the native frame representation into a managed <see cref="CapturedFrame"/> and raises <see cref="FrameArrived"/>.
+    /// </summary>
+    /// <param name="frame">The native frame payload.</param>
     private void DispatchFrame(NativeCapturedFrame frame)
     {
         var session = sessionHandle;
@@ -269,6 +300,11 @@ internal sealed class CompositorCaptureBridge : IDisposable
         }
     }
 
+    /// <summary>
+    /// Determines the appropriate pointer to expose to managed consumers based on the storage type.
+    /// </summary>
+    /// <param name="frame">The native frame supplied by the helper.</param>
+    /// <returns>The pointer that represents the pixel payload for the frame.</returns>
     private static IntPtr ResolveBufferPointer(NativeCapturedFrame frame)
     {
         return frame.StorageType switch
@@ -279,6 +315,12 @@ internal sealed class CompositorCaptureBridge : IDisposable
         };
     }
 
+    /// <summary>
+    /// Creates an action that returns ownership of a captured frame back to the native compositor session.
+    /// </summary>
+    /// <param name="handle">The active session handle.</param>
+    /// <param name="token">The token that uniquely identifies the native frame.</param>
+    /// <returns>An <see cref="Action"/> that releases the native resources when invoked.</returns>
     private static Action CreateReleaseAction(SafeCompositorCaptureHandle handle, ulong token)
     {
         return () =>
@@ -319,6 +361,9 @@ internal sealed class CompositorCaptureBridge : IDisposable
         };
     }
 
+    /// <summary>
+    /// Releases resources held by the <see cref="CompositorCaptureBridge"/>.
+    /// </summary>
     public void Dispose()
     {
         if (disposed)
@@ -330,6 +375,9 @@ internal sealed class CompositorCaptureBridge : IDisposable
         Stop();
     }
 
+    /// <summary>
+    /// Safe handle wrapper for the native compositor capture session.
+    /// </summary>
     private sealed class SafeCompositorCaptureHandle : SafeHandle
     {
         private SafeCompositorCaptureHandle()
@@ -337,6 +385,7 @@ internal sealed class CompositorCaptureBridge : IDisposable
         {
         }
 
+        /// <inheritdoc />
         public override bool IsInvalid => handle == IntPtr.Zero;
 
         protected override bool ReleaseHandle()
@@ -346,6 +395,9 @@ internal sealed class CompositorCaptureBridge : IDisposable
         }
     }
 
+    /// <summary>
+    /// Native configuration passed to the compositor helper when creating a session.
+    /// </summary>
     [StructLayout(LayoutKind.Sequential)]
     private struct NativeCompositorCaptureConfig
     {
@@ -355,6 +407,9 @@ internal sealed class CompositorCaptureBridge : IDisposable
         public int FrameRateDenominator;
     }
 
+    /// <summary>
+    /// Native frame descriptor supplied by the compositor helper callback.
+    /// </summary>
     [StructLayout(LayoutKind.Sequential)]
     private struct NativeCapturedFrame
     {
@@ -369,6 +424,9 @@ internal sealed class CompositorCaptureBridge : IDisposable
         public NativeFrameStorageType StorageType;
     }
 
+    /// <summary>
+    /// Storage hints surfaced by the native helper to describe each frame.
+    /// </summary>
     private enum NativeFrameStorageType
     {
         SystemMemory = 0,
@@ -376,9 +434,15 @@ internal sealed class CompositorCaptureBridge : IDisposable
         SharedMemoryHandle = 2,
     }
 
+    /// <summary>
+    /// Delegate signature used by the native helper to deliver frames.
+    /// </summary>
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     private delegate void FrameReadyCallback(ref NativeCapturedFrame frame, IntPtr userData);
 
+    /// <summary>
+    /// P/Invoke declarations that bridge to the native compositor helper.
+    /// </summary>
     private static class NativeMethods
     {
         [DllImport("CompositorCapture", EntryPoint = "cc_create_session", CallingConvention = CallingConvention.Cdecl)]

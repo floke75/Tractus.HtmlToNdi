@@ -112,6 +112,11 @@ internal class CefWrapper : IDisposable
         this.videoPipeline.Start();
     }
 
+    /// <summary>
+    /// Handles Chromium paint callbacks and forwards frames into the legacy invalidation-driven pipeline.
+    /// </summary>
+    /// <param name="sender">The browser raising the paint event.</param>
+    /// <param name="e">The paint event arguments.</param>
     private void OnBrowserPaint(object? sender, OnPaintEventArgs e)
     {
         if (Program.NdiSenderPtr == nint.Zero)
@@ -138,6 +143,11 @@ internal class CefWrapper : IDisposable
         this.videoPipeline.HandleFrame(capturedFrame);
     }
 
+    /// <summary>
+    /// Attempts to enable compositor-driven capture by disabling Chromium's auto begin frames and starting the native bridge.
+    /// </summary>
+    /// <param name="host">The browser host that exposes compositor control.</param>
+    /// <returns><c>true</c> when compositor capture is active; otherwise <c>false</c>.</returns>
     private bool TryActivateCompositorCapture(IBrowserHost host)
     {
         this.logger.Information("Attempting compositor-driven capture");
@@ -179,6 +189,11 @@ internal class CefWrapper : IDisposable
         return true;
     }
 
+    /// <summary>
+    /// Handles compositor-delivered frames, forwarding them to the pipeline and ensuring native resources are released on error.
+    /// </summary>
+    /// <param name="sender">The compositor capture bridge that surfaced the frame.</param>
+    /// <param name="frame">The captured frame payload.</param>
     private void OnCompositorFrame(object? sender, CapturedFrame frame)
     {
         if (Program.NdiSenderPtr == nint.Zero)
@@ -198,6 +213,10 @@ internal class CefWrapper : IDisposable
         }
     }
 
+    /// <summary>
+    /// Re-enables Chromium's auto begin frame behaviour when the compositor experiment is disabled or disposed.
+    /// </summary>
+    /// <param name="host">The host to restore state on.</param>
     private void TryRestoreAutoBeginFrame(IBrowserHost host)
     {
         try
