@@ -106,6 +106,43 @@ public class FramePumpTests
     }
 
     [Fact]
+    public async Task RequestInvalidateAsyncPropagatesFaultedDelegate()
+    {
+        using var pump = new FramePump(
+            CreateBrowserStub(),
+            TimeSpan.FromMilliseconds(5),
+            TimeSpan.FromMilliseconds(50),
+            CreateNullLogger(),
+            FramePumpMode.OnDemand,
+            cadenceAdaptationEnabled: false,
+            (_, _, _) => Task.FromException(new InvalidOperationException("invalidate failed")));
+
+        pump.Start();
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => pump.RequestInvalidateAsync());
+    }
+
+    [Fact]
+    public async Task RequestInvalidateAsyncPropagatesCanceledDelegate()
+    {
+        using var cancellationSource = new CancellationTokenSource();
+        cancellationSource.Cancel();
+
+        using var pump = new FramePump(
+            CreateBrowserStub(),
+            TimeSpan.FromMilliseconds(5),
+            TimeSpan.FromMilliseconds(50),
+            CreateNullLogger(),
+            FramePumpMode.OnDemand,
+            cadenceAdaptationEnabled: false,
+            (_, _, _) => Task.FromCanceled(cancellationSource.Token));
+
+        pump.Start();
+
+        await Assert.ThrowsAsync<TaskCanceledException>(() => pump.RequestInvalidateAsync());
+    }
+
+    [Fact]
     public async Task WatchdogTriggersInvalidateAfterIdle()
     {
         var tcs = new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);

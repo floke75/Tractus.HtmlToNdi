@@ -303,6 +303,12 @@ internal sealed class FramePump : IPacedInvalidationScheduler
                 return;
             }
 
+            if (invalidateTask.IsCanceled || invalidateTask.IsFaulted)
+            {
+                // Propagate cancellations or synchronous faults so callers can release pacing tickets immediately.
+                invalidateTask.GetAwaiter().GetResult();
+            }
+
             request.Complete();
 
             if (!invalidateTask.IsCompleted)
