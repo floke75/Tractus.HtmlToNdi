@@ -2,6 +2,7 @@ using CefSharp;
 using CefSharp.OffScreen;
 using Serilog;
 using System.Diagnostics;
+using Tractus.HtmlToNdi.Native;
 using Tractus.HtmlToNdi.Video;
 
 namespace Tractus.HtmlToNdi.Chromium;
@@ -34,6 +35,8 @@ internal class CefWrapper : IDisposable
     private readonly int? windowlessFrameRateOverride;
     private FramePump? framePump;
     private readonly ILogger logger;
+    private readonly bool compositorCaptureRequested;
+    private CompositorCaptureBridge? compositorCaptureBridge;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="CefWrapper"/> class.
@@ -54,6 +57,7 @@ internal class CefWrapper : IDisposable
         this.frameRate = frameRate;
         this.logger = logger;
         this.windowlessFrameRateOverride = windowlessFrameRateOverride;
+        this.compositorCaptureRequested = pipeline.Options.EnableCompositorCapture;
 
         this.browser = new ChromiumWebBrowser(initialUrl)
         {
@@ -77,14 +81,29 @@ internal class CefWrapper : IDisposable
 
         await this.browser.WaitForInitialLoadAsync();
 
+        var host = this.browser.GetBrowserHost();
         var targetWindowlessRate = this.windowlessFrameRateOverride ?? Math.Clamp((int)Math.Round(this.frameRate.Value), 1, 240);
-        this.browser.GetBrowserHost().WindowlessFrameRate = targetWindowlessRate;
+        host.WindowlessFrameRate = targetWindowlessRate;
         this.browser.ToggleAudioMute();
+
+        if (this.compositorCaptureRequested)
+        {
+            if (this.TryActivateCompositorCapture(host))
+            {
+                this.videoPipeline.AttachInvalidationScheduler(null);
+                this.videoPipeline.Start();
+                return;
+            }
+        }
 
         this.browser.Paint += this.OnBrowserPaint;
 
         var pipelineOptions = this.videoPipeline.Options;
-        var pumpMode = pipelineOptions.EnablePacedInvalidation
+        var pacedInvalidationRequested = pipelineOptions.DisablePacedInvalidation
+            ? false
+            : pipelineOptions.EnablePacedInvalidation;
+
+        var pumpMode = pacedInvalidationRequested && !this.compositorCaptureRequested
             ? FramePumpMode.OnDemand
             : FramePumpMode.Periodic;
 
@@ -100,6 +119,11 @@ internal class CefWrapper : IDisposable
         this.videoPipeline.Start();
     }
 
+    /// <summary>
+    /// Handles Chromium paint callbacks and forwards frames into the legacy invalidation-driven pipeline.
+    /// </summary>
+    /// <param name="sender">The browser raising the paint event.</param>
+    /// <param name="e">The paint event arguments.</param>
     private void OnBrowserPaint(object? sender, OnPaintEventArgs e)
     {
         if (Program.NdiSenderPtr == nint.Zero)
@@ -126,12 +150,124 @@ internal class CefWrapper : IDisposable
         this.videoPipeline.HandleFrame(capturedFrame);
     }
 
+    /// <summary>
+    /// Attempts to enable compositor-driven capture by disabling Chromium's auto begin frames and starting the native bridge.
+    /// </summary>
+    /// <param name="host">The browser host that exposes compositor control.</param>
+    /// <returns><c>true</c> when compositor capture is active; otherwise <c>false</c>.</returns>
+    private bool TryActivateCompositorCapture(IBrowserHost host)
+    {
+        this.logger.Information("Attempting compositor-driven capture");
+
+        try
+        {
+            host.SetAutoBeginFrameEnabled(false);
+        }
+        catch (NotSupportedException ex)
+        {
+            this.logger.Warning(ex, "Browser host does not support manual begin-frame control");
+            return false;
+        }
+        catch (Exception ex)
+        {
+            this.logger.Warning(ex, "Failed to disable Chromium auto begin frames");
+            return false;
+        }
+
+        var bridge = new CompositorCaptureBridge(this.logger);
+        bridge.FrameArrived += this.OnCompositorFrame;
+
+        if (!bridge.TryStart(host, this.Width, this.Height, this.frameRate, out var error))
+        {
+            bridge.FrameArrived -= this.OnCompositorFrame;
+            bridge.Dispose();
+            this.TryRestoreAutoBeginFrame(host);
+
+            if (!string.IsNullOrWhiteSpace(error))
+            {
+                this.logger.Warning("Compositor capture unavailable: {Error}", error);
+            }
+
+            return false;
+        }
+
+        this.logger.Information("Compositor capture enabled; FramePump disabled");
+        this.compositorCaptureBridge = bridge;
+        return true;
+    }
+
+    /// <summary>
+    /// Handles compositor-delivered frames, forwarding them to the pipeline and ensuring native resources are released on error.
+    /// </summary>
+    /// <param name="sender">The compositor capture bridge that surfaced the frame.</param>
+    /// <param name="frame">The captured frame payload.</param>
+    private void OnCompositorFrame(object? sender, CapturedFrame frame)
+    {
+        if (Program.NdiSenderPtr == nint.Zero)
+        {
+            frame.Dispose();
+            return;
+        }
+
+        try
+        {
+            this.videoPipeline.HandleCompositorFrame(frame);
+        }
+        catch (Exception ex)
+        {
+            this.logger.Warning(ex, "Unhandled exception while forwarding compositor frame");
+            frame.Dispose();
+        }
+    }
+
+    /// <summary>
+    /// Re-enables Chromium's auto begin frame behaviour when the compositor experiment is disabled or disposed.
+    /// </summary>
+    /// <param name="host">The host to restore state on.</param>
+    private void TryRestoreAutoBeginFrame(IBrowserHost host)
+    {
+        try
+        {
+            host.SetAutoBeginFrameEnabled(true);
+        }
+        catch (Exception ex)
+        {
+            this.logger.Debug(ex, "Failed to restore Chromium auto begin frame state");
+        }
+    }
+
     protected virtual void Dispose(bool disposing)
     {
         if (!this.disposedValue)
         {
             if (disposing)
             {
+                IBrowserHost? host = null;
+
+                if (this.browser is not null)
+                {
+                    try
+                    {
+                        host = this.browser.GetBrowserHost();
+                    }
+                    catch (Exception ex)
+                    {
+                        this.logger.Debug(ex, "Failed to retrieve browser host during dispose");
+                    }
+                }
+
+                if (this.compositorCaptureBridge is not null)
+                {
+                    this.compositorCaptureBridge.FrameArrived -= this.OnCompositorFrame;
+                    this.compositorCaptureBridge.Dispose();
+                    this.compositorCaptureBridge = null;
+
+                    if (host is not null)
+                    {
+                        this.TryRestoreAutoBeginFrame(host);
+                    }
+                }
+
                 if (this.browser is not null)
                 {
                     this.browser.Paint -= this.OnBrowserPaint;

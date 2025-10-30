@@ -54,4 +54,9 @@ internal sealed record NdiVideoPipelineOptions
     /// Gets or sets a value indicating whether the invalidation cadence should adapt to alignment telemetry.
     /// </summary>
     public bool EnablePumpCadenceAdaptation { get; init; }
+
+    /// <summary>
+    /// Gets or sets a value indicating whether compositor-driven capture should be used instead of invalidation-driven paints.
+    /// </summary>
+    public bool EnableCompositorCapture { get; init; }
 }
