@@ -108,4 +108,10 @@ public class LauncherSettings
     /// </summary>
     public bool EnablePumpCadenceAdaptation { get; set; }
         = false;
+
+    /// <summary>
+    /// Gets or sets a value indicating whether compositor-driven capture should be enabled.
+    /// </summary>
+    public bool EnableCompositorCapture { get; set; }
+        = false;
 }
