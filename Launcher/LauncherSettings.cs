@@ -92,6 +92,12 @@ public class LauncherSettings
         = false;
 
     /// <summary>
+    /// Gets or sets a value indicating whether paced invalidation should be forcefully disabled.
+    /// </summary>
+    public bool DisablePacedInvalidation { get; set; }
+        = false;
+
+    /// <summary>
     /// Gets or sets a value indicating whether capture should pause when the paced buffer is oversupplied.
     /// </summary>
     public bool EnableCaptureBackpressure { get; set; }

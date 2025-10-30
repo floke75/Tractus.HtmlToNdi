@@ -28,6 +28,7 @@ public sealed class LaunchParameters
         bool alignWithCaptureTimestamps,
         bool enableCadenceTelemetry,
         bool enablePacedInvalidation,
+        bool disablePacedInvalidation,
         bool enableCaptureBackpressure,
         bool enablePumpCadenceAdaptation)
     {
@@ -47,6 +48,7 @@ public sealed class LaunchParameters
         AlignWithCaptureTimestamps = alignWithCaptureTimestamps;
         EnableCadenceTelemetry = enableCadenceTelemetry;
         EnablePacedInvalidation = enablePacedInvalidation;
+        DisablePacedInvalidation = disablePacedInvalidation;
         EnableCaptureBackpressure = enableCaptureBackpressure;
         EnablePumpCadenceAdaptation = enablePumpCadenceAdaptation;
     }
@@ -132,6 +134,11 @@ public sealed class LaunchParameters
     public bool EnablePacedInvalidation { get; }
 
     /// <summary>
+    /// Gets a value indicating whether paced invalidation should be forcefully disabled.
+    /// </summary>
+    public bool DisablePacedInvalidation { get; }
+
+    /// <summary>
     /// Gets a value indicating whether capture backpressure should pause Chromium invalidation when the buffer is ahead.
     /// </summary>
     public bool EnableCaptureBackpressure { get; }
@@ -179,6 +186,30 @@ public sealed class LaunchParameters
             }
 
             return defaultValue;
+        }
+
+        bool? ResolveOptionalToggle(string enableFlag, string disableFlag)
+        {
+            var enabled = HasFlag(enableFlag);
+            var disabled = HasFlag(disableFlag);
+
+            if (enabled && disabled)
+            {
+                Log.Warning("Both {EnableFlag} and {DisableFlag} were provided; ignoring both and using defaults", enableFlag, disableFlag);
+                return null;
+            }
+
+            if (enabled)
+            {
+                return true;
+            }
+
+            if (disabled)
+            {
+                return false;
+            }
+
+            return null;
         }
 
         var ndiName = GetArgValue("--ndiname") ?? "HTML5";
@@ -282,7 +313,9 @@ public sealed class LaunchParameters
             enableCadenceTelemetry = true;
         }
 
-        var enablePacedInvalidation = ResolveToggle("--enable-paced-invalidation", "--disable-paced-invalidation", false);
+        var pacedInvalidationToggle = ResolveOptionalToggle("--enable-paced-invalidation", "--disable-paced-invalidation");
+        var enablePacedInvalidation = pacedInvalidationToggle == true;
+        var disablePacedInvalidation = pacedInvalidationToggle == false;
         var enableCaptureBackpressure = ResolveToggle("--enable-capture-backpressure", "--disable-capture-backpressure", false);
         var enablePumpCadenceAdaptation = ResolveToggle("--enable-pump-cadence-adaptation", "--disable-pump-cadence-adaptation", false);
 
@@ -318,6 +351,7 @@ public sealed class LaunchParameters
             alignWithCaptureTimestamps,
             enableCadenceTelemetry,
             enablePacedInvalidation,
+            disablePacedInvalidation,
             enableCaptureBackpressure,
             enablePumpCadenceAdaptation);
 
@@ -408,6 +442,7 @@ public sealed class LaunchParameters
             settings.AlignWithCaptureTimestamps,
             settings.EnableCadenceTelemetry,
             settings.EnablePacedInvalidation,
+            settings.DisablePacedInvalidation,
             settings.EnableCaptureBackpressure,
             settings.EnablePumpCadenceAdaptation);
     }

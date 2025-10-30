@@ -152,6 +152,15 @@ public class Program
         var enableBuffering = parameters.EnableBuffering;
         var effectiveDepth = enableBuffering ? Math.Max(1, parameters.BufferDepth == 0 ? 3 : parameters.BufferDepth) : 1;
 
+        var pacedInvalidationEnabled = parameters.DisablePacedInvalidation
+            ? false
+            : parameters.EnablePacedInvalidation;
+
+        if (parameters.DisablePacedInvalidation)
+        {
+            Log.Information("Paced invalidation disabled via configuration.");
+        }
+
         var pipelineOptions = new NdiVideoPipelineOptions
         {
             EnableBuffering = enableBuffering,
@@ -160,7 +169,8 @@ public class Program
             AllowLatencyExpansion = parameters.AllowLatencyExpansion,
             AlignWithCaptureTimestamps = parameters.AlignWithCaptureTimestamps,
             EnableCadenceTelemetry = parameters.EnableCadenceTelemetry,
-            EnablePacedInvalidation = parameters.EnablePacedInvalidation,
+            EnablePacedInvalidation = pacedInvalidationEnabled,
+            DisablePacedInvalidation = parameters.DisablePacedInvalidation,
             EnableCaptureBackpressure = parameters.EnableCaptureBackpressure,
             EnablePumpCadenceAdaptation = parameters.EnablePumpCadenceAdaptation,
         };

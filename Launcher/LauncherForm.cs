@@ -25,8 +25,10 @@ public sealed class LauncherForm : Form
     private readonly CheckBox _alignWithCaptureTimestampsCheckBox;
     private readonly CheckBox _enableCadenceTelemetryCheckBox;
     private readonly CheckBox _enablePacedInvalidationCheckBox;
+    private readonly CheckBox _disablePacedInvalidationCheckBox;
     private readonly CheckBox _enableCaptureBackpressureCheckBox;
     private readonly CheckBox _enablePumpCadenceAdaptationCheckBox;
+    private bool _suppressPacingCheckboxUpdates;
 
     /// <summary>
     /// Gets the selected launch parameters.
@@ -169,6 +171,14 @@ public sealed class LauncherForm : Form
         };
         AddRow(table, "Paced Invalidation", _enablePacedInvalidationCheckBox);
 
+        _disablePacedInvalidationCheckBox = new CheckBox
+        {
+            Text = "Force periodic Chromium invalidation",
+            Dock = DockStyle.Fill,
+            AutoSize = true,
+        };
+        AddRow(table, "Disable Pacing", _disablePacedInvalidationCheckBox);
+
         _enableCaptureBackpressureCheckBox = new CheckBox
         {
             Text = "Pause Chromium when buffer is ahead",
@@ -240,7 +250,8 @@ public sealed class LauncherForm : Form
         CancelButton = cancelButton;
 
         _enableBufferingCheckBox.CheckedChanged += (_, _) => UpdateBufferingDependentControls();
-        _enablePacedInvalidationCheckBox.CheckedChanged += (_, _) => UpdateBufferingDependentControls();
+        _enablePacedInvalidationCheckBox.CheckedChanged += OnEnablePacedInvalidationCheckedChanged;
+        _disablePacedInvalidationCheckBox.CheckedChanged += OnDisablePacedInvalidationCheckedChanged;
 
         ApplySettings(initialSettings);
     }
@@ -265,7 +276,10 @@ public sealed class LauncherForm : Form
         _telemetryNumericUpDown.Value = telemetryValue;
         _alignWithCaptureTimestampsCheckBox.Checked = settings.AlignWithCaptureTimestamps;
         _enableCadenceTelemetryCheckBox.Checked = settings.EnableCadenceTelemetry;
+        _suppressPacingCheckboxUpdates = true;
         _enablePacedInvalidationCheckBox.Checked = settings.EnablePacedInvalidation;
+        _disablePacedInvalidationCheckBox.Checked = settings.DisablePacedInvalidation;
+        _suppressPacingCheckboxUpdates = false;
         _enableCaptureBackpressureCheckBox.Checked = settings.EnableCaptureBackpressure;
         _enablePumpCadenceAdaptationCheckBox.Checked = settings.EnablePumpCadenceAdaptation;
         _windowlessFrameRateTextBox.Text = settings.WindowlessFrameRateOverride ?? string.Empty;
@@ -281,14 +295,52 @@ public sealed class LauncherForm : Form
         _bufferDepthNumericUpDown.Enabled = bufferingEnabled;
         _allowLatencyExpansionCheckBox.Enabled = bufferingEnabled;
         _enablePacedInvalidationCheckBox.Enabled = bufferingEnabled;
+        _disablePacedInvalidationCheckBox.Enabled = true;
         _enablePumpCadenceAdaptationCheckBox.Enabled = bufferingEnabled;
 
-        var backpressureAllowed = bufferingEnabled && _enablePacedInvalidationCheckBox.Checked;
+        var backpressureAllowed = bufferingEnabled
+            && _enablePacedInvalidationCheckBox.Checked
+            && !_disablePacedInvalidationCheckBox.Checked;
         _enableCaptureBackpressureCheckBox.Enabled = backpressureAllowed;
         if (!backpressureAllowed)
         {
             _enableCaptureBackpressureCheckBox.Checked = false;
         }
+    }
+
+    private void OnEnablePacedInvalidationCheckedChanged(object? sender, EventArgs e)
+    {
+        if (_suppressPacingCheckboxUpdates)
+        {
+            return;
+        }
+
+        if (_enablePacedInvalidationCheckBox.Checked)
+        {
+            _suppressPacingCheckboxUpdates = true;
+            _disablePacedInvalidationCheckBox.Checked = false;
+            _suppressPacingCheckboxUpdates = false;
+        }
+
+        UpdateBufferingDependentControls();
+    }
+
+    private void OnDisablePacedInvalidationCheckedChanged(object? sender, EventArgs e)
+    {
+        if (_suppressPacingCheckboxUpdates)
+        {
+            return;
+        }
+
+        if (_disablePacedInvalidationCheckBox.Checked)
+        {
+            _suppressPacingCheckboxUpdates = true;
+            _enablePacedInvalidationCheckBox.Checked = false;
+            _enableCaptureBackpressureCheckBox.Checked = false;
+            _suppressPacingCheckboxUpdates = false;
+        }
+
+        UpdateBufferingDependentControls();
     }
 
     private void OnLaunch()
@@ -335,6 +387,7 @@ public sealed class LauncherForm : Form
             DisableFrameRateLimit = _disableFrameRateLimitCheckBox.Checked,
             AllowLatencyExpansion = _allowLatencyExpansionCheckBox.Checked,
             EnablePacedInvalidation = _enableBufferingCheckBox.Checked && _enablePacedInvalidationCheckBox.Checked,
+            DisablePacedInvalidation = _disablePacedInvalidationCheckBox.Checked,
             EnableCaptureBackpressure = _enableBufferingCheckBox.Checked && _enableCaptureBackpressureCheckBox.Checked,
             EnablePumpCadenceAdaptation = _enableBufferingCheckBox.Checked && _enablePumpCadenceAdaptationCheckBox.Checked
         };
