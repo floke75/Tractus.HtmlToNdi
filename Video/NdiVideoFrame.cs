@@ -1,3 +1,4 @@
+using System;
 using System.Runtime.InteropServices;
 
 namespace Tractus.HtmlToNdi.Video;
@@ -59,6 +60,11 @@ internal sealed class NdiVideoFrame : IDisposable
     /// <returns>A new <see cref="NdiVideoFrame"/> instance.</returns>
     public static NdiVideoFrame CopyFrom(CapturedFrame frame)
     {
+        if (frame.StorageKind != CapturedFrameStorageKind.CpuMemory)
+        {
+            throw new InvalidOperationException($"Cannot copy frame stored as {frame.StorageKind}. CPU-accessible memory is required.");
+        }
+
         var size = frame.SizeInBytes;
         var buffer = Marshal.AllocHGlobal(size);
         unsafe

@@ -30,7 +30,8 @@ public sealed class LaunchParameters
         bool enablePacedInvalidation,
         bool disablePacedInvalidation,
         bool enableCaptureBackpressure,
-        bool enablePumpCadenceAdaptation)
+        bool enablePumpCadenceAdaptation,
+        bool enableCompositorCapture)
     {
         NdiName = ndiName;
         Port = port;
@@ -51,6 +52,7 @@ public sealed class LaunchParameters
         DisablePacedInvalidation = disablePacedInvalidation;
         EnableCaptureBackpressure = enableCaptureBackpressure;
         EnablePumpCadenceAdaptation = enablePumpCadenceAdaptation;
+        EnableCompositorCapture = enableCompositorCapture;
     }
 
     /// <summary>
@@ -147,6 +149,11 @@ public sealed class LaunchParameters
     /// Gets a value indicating whether the Chromium pump adapts its cadence using pipeline telemetry.
     /// </summary>
     public bool EnablePumpCadenceAdaptation { get; }
+
+    /// <summary>
+    /// Gets a value indicating whether the compositor capture path should be enabled.
+    /// </summary>
+    public bool EnableCompositorCapture { get; }
 
     /// <summary>
     /// Attempts to create a <see cref="LaunchParameters"/> instance from command-line arguments.
@@ -318,6 +325,7 @@ public sealed class LaunchParameters
         var disablePacedInvalidation = pacedInvalidationToggle == false;
         var enableCaptureBackpressure = ResolveToggle("--enable-capture-backpressure", "--disable-capture-backpressure", false);
         var enablePumpCadenceAdaptation = ResolveToggle("--enable-pump-cadence-adaptation", "--disable-pump-cadence-adaptation", false);
+        var enableCompositorCapture = ResolveToggle("--enable-compositor-capture", "--disable-compositor-capture", false);
 
         int? windowlessFrameRateOverride = null;
         var windowlessRateArg = GetArgValue("--windowless-frame-rate");
@@ -353,7 +361,8 @@ public sealed class LaunchParameters
             enablePacedInvalidation,
             disablePacedInvalidation,
             enableCaptureBackpressure,
-            enablePumpCadenceAdaptation);
+            enablePumpCadenceAdaptation,
+            enableCompositorCapture);
 
         return true;
     }
@@ -444,6 +453,7 @@ public sealed class LaunchParameters
             settings.EnablePacedInvalidation,
             settings.DisablePacedInvalidation,
             settings.EnableCaptureBackpressure,
-            settings.EnablePumpCadenceAdaptation);
+            settings.EnablePumpCadenceAdaptation,
+            settings.EnableCompositorCapture);
     }
 }
