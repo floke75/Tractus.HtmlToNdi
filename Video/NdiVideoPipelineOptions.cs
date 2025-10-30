@@ -41,6 +41,11 @@ internal sealed record NdiVideoPipelineOptions
     public bool EnablePacedInvalidation { get; init; }
 
     /// <summary>
+    /// Gets or sets a value indicating whether paced invalidation should be forcefully disabled even when other inputs request it.
+    /// </summary>
+    public bool DisablePacedInvalidation { get; init; }
+
+    /// <summary>
     /// Gets or sets a value indicating whether capture invalidation should be paused when the buffer is ahead.
     /// </summary>
     public bool EnableCaptureBackpressure { get; init; }

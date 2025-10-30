@@ -224,12 +224,18 @@ internal sealed class NdiVideoPipeline : IDisposable
         alignWithCaptureTimestamps = options.AlignWithCaptureTimestamps;
         cadenceTelemetryEnabled = options.EnableCadenceTelemetry;
         cadenceTrackingEnabled = alignWithCaptureTimestamps || cadenceTelemetryEnabled;
-        pacedInvalidationEnabled = options.EnablePacedInvalidation;
+        var pacingRequested = options.DisablePacedInvalidation ? false : options.EnablePacedInvalidation;
+        pacedInvalidationEnabled = pacingRequested;
         captureBackpressureEnabled = options.EnableBuffering
             && options.EnableCaptureBackpressure
-            && options.EnablePacedInvalidation;
-        directPacedInvalidationEnabled = !options.EnableBuffering && options.EnablePacedInvalidation;
-        if (options.EnableBuffering && options.EnableCaptureBackpressure && !options.EnablePacedInvalidation)
+            && pacingRequested;
+        directPacedInvalidationEnabled = !options.EnableBuffering && pacingRequested;
+        if (options.DisablePacedInvalidation && options.EnablePacedInvalidation)
+        {
+            logger.Information("Paced invalidation disable request overrides enable flag.");
+        }
+
+        if (options.EnableBuffering && options.EnableCaptureBackpressure && !pacingRequested)
         {
             logger.Warning(
                 "Capture backpressure requires paced invalidation; disabling backpressure until paced invalidation is enabled.");

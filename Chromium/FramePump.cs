@@ -286,8 +286,43 @@ internal sealed class FramePump : IPacedInvalidationScheduler
                 await ApplyOnDemandCadenceDelayAsync(token).ConfigureAwait(false);
             }
 
-            await invalidateBrowserAsync(token).ConfigureAwait(false);
+            Task invalidateTask;
+            try
+            {
+                invalidateTask = invalidateBrowserAsync(token);
+            }
+            catch (OperationCanceledException ex)
+            {
+                request.Fail(ex);
+                throw;
+            }
+            catch (Exception ex)
+            {
+                request.Fail(ex);
+                logger.Warning(ex, "FramePump failed to invalidate Chromium");
+                return;
+            }
+
+            if (invalidateTask.IsCanceled || invalidateTask.IsFaulted)
+            {
+                // Propagate cancellations or synchronous faults so callers can release pacing tickets immediately.
+                invalidateTask.GetAwaiter().GetResult();
+            }
+
             request.Complete();
+
+            if (!invalidateTask.IsCompleted)
+            {
+                _ = invalidateTask.ContinueWith(
+                    t => logger.Warning(t.Exception, "FramePump invalidate task faulted"),
+                    CancellationToken.None,
+                    TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+                    TaskScheduler.Default);
+            }
+            else if (invalidateTask.IsFaulted)
+            {
+                logger.Warning(invalidateTask.Exception, "FramePump invalidate task faulted");
+            }
         }
         catch (OperationCanceledException ex)
         {
