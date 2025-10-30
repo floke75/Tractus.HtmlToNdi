@@ -803,6 +803,176 @@ public class NdiVideoPipelineTests
     }
 
     [Fact]
+    public void BufferedInvalidationsRecoverAfterDroppedPaint()
+    {
+        var sender = new CollectingSender();
+        var scheduler = new TestScheduler();
+        var options = new NdiVideoPipelineOptions
+        {
+            EnableBuffering = true,
+            BufferDepth = 3,
+            TelemetryInterval = TimeSpan.FromDays(1),
+            EnablePacedInvalidation = true,
+        };
+
+        var pipeline = new NdiVideoPipeline(sender, new FrameRate(60, 1), options, CreateNullLogger());
+        pipeline.AttachInvalidationScheduler(scheduler);
+        pipeline.Start();
+
+        try
+        {
+            var warmed = SpinWait.SpinUntil(
+                () => scheduler.RequestCount >= options.BufferDepth,
+                TimeSpan.FromMilliseconds(500));
+            Assert.True(warmed, "Warm-up invalidation requests not observed");
+
+            var baseline = scheduler.RequestCount;
+
+            var reissued = SpinWait.SpinUntil(
+                () => scheduler.RequestCount >= baseline + options.BufferDepth,
+                TimeSpan.FromMilliseconds(2000));
+
+            Assert.True(
+                reissued,
+                $"Scheduler did not reissue invalidations after dropped paint timeout. Baseline={baseline}, Current={scheduler.RequestCount}");
+
+            var expiredField = typeof(NdiVideoPipeline)
+                .GetField("expiredInvalidationTickets", BindingFlags.Instance | BindingFlags.NonPublic);
+            Assert.NotNull(expiredField);
+            var expired = (long)(expiredField!.GetValue(pipeline) ?? 0L);
+
+            Assert.True(expired > 0, "Expired invalidation ticket counter did not advance");
+            Assert.True(pipeline.PendingInvalidations > 0);
+        }
+        finally
+        {
+            pipeline.Dispose();
+            scheduler.Dispose();
+        }
+    }
+
+    [Fact]
+    public void DirectInvalidationsRecoverAfterDroppedPaint()
+    {
+        var sender = new CollectingSender();
+        var scheduler = new TestScheduler();
+        var options = new NdiVideoPipelineOptions
+        {
+            EnableBuffering = false,
+            TelemetryInterval = TimeSpan.FromDays(1),
+            EnablePacedInvalidation = true,
+        };
+
+        var pipeline = new NdiVideoPipeline(sender, new FrameRate(60, 1), options, CreateNullLogger());
+        pipeline.AttachInvalidationScheduler(scheduler);
+
+        try
+        {
+            var initial = SpinWait.SpinUntil(
+                () => scheduler.RequestCount >= 1,
+                TimeSpan.FromMilliseconds(500));
+            Assert.True(initial, "Initial paced invalidation request not observed.");
+
+            var baseline = scheduler.RequestCount;
+            var reissued = SpinWait.SpinUntil(
+                () => scheduler.RequestCount >= baseline + 1,
+                TimeSpan.FromMilliseconds(1000));
+
+            Assert.True(
+                reissued,
+                $"Direct paced invalidation did not reissue after timeout. Baseline={baseline}, Current={scheduler.RequestCount}");
+
+            var requestAfterTimeout = scheduler.RequestCount;
+            var frameSize = 4 * 2 * 2;
+            var buffer = Marshal.AllocHGlobal(frameSize);
+
+            try
+            {
+                FillBuffer(buffer, frameSize, 0x42);
+                pipeline.HandleFrame(CreateCapturedFrame(buffer, 2, 2, 8));
+            }
+            finally
+            {
+                Marshal.FreeHGlobal(buffer);
+            }
+
+            var followUp = SpinWait.SpinUntil(
+                () => scheduler.RequestCount >= requestAfterTimeout + 1,
+                TimeSpan.FromMilliseconds(500));
+            Assert.True(followUp, "Pipeline did not request a follow-up invalidation after sending direct frame.");
+        }
+        finally
+        {
+            pipeline.Dispose();
+            scheduler.Dispose();
+        }
+    }
+
+    [Fact]
+    public void DirectInvalidationsAcceptFramesAfterTicketExpiry()
+    {
+        var sender = new CollectingSender();
+        var scheduler = new TestScheduler();
+        scheduler.Pause();
+
+        var options = new NdiVideoPipelineOptions
+        {
+            EnableBuffering = false,
+            TelemetryInterval = TimeSpan.FromDays(1),
+            EnablePacedInvalidation = true,
+        };
+
+        var pipeline = new NdiVideoPipeline(sender, new FrameRate(60, 1), options, CreateNullLogger());
+        pipeline.AttachInvalidationScheduler(scheduler);
+
+        try
+        {
+            var pendingObserved = SpinWait.SpinUntil(
+                () => pipeline.PendingInvalidations > 0,
+                TimeSpan.FromMilliseconds(500));
+            Assert.True(pendingObserved, "Pending invalidation ticket was not acquired while scheduler paused.");
+
+            var expiredObserved = SpinWait.SpinUntil(
+                () =>
+                {
+                    var expiredField = typeof(NdiVideoPipeline)
+                        .GetField("expiredInvalidationTickets", BindingFlags.Instance | BindingFlags.NonPublic);
+                    return expiredField is not null && (long)(expiredField.GetValue(pipeline) ?? 0L) > 0;
+                },
+                TimeSpan.FromMilliseconds(1500));
+            Assert.True(expiredObserved, "Invalidation ticket did not expire while scheduler was paused.");
+
+            scheduler.Resume();
+
+            var frameSize = 4 * 2 * 2;
+            var buffer1 = Marshal.AllocHGlobal(frameSize);
+            var buffer2 = Marshal.AllocHGlobal(frameSize);
+
+            try
+            {
+                FillBuffer(buffer1, frameSize, 0x31);
+                pipeline.HandleFrame(CreateCapturedFrame(buffer1, 2, 2, 8));
+
+                FillBuffer(buffer2, frameSize, 0x32);
+                pipeline.HandleFrame(CreateCapturedFrame(buffer2, 2, 2, 8));
+            }
+            finally
+            {
+                Marshal.FreeHGlobal(buffer1);
+                Marshal.FreeHGlobal(buffer2);
+            }
+
+            Assert.Equal(2, sender.Frames.Count);
+            Assert.Equal(0, pipeline.SpuriousCaptureCount);
+        }
+        finally
+        {
+            pipeline.Dispose();
+            scheduler.Dispose();
+        }
+    }
+
+    [Fact]
     public async Task PacedInvalidationRequestsInDirectMode()
     {
         var sender = new CollectingSender();
