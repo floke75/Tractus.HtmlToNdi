@@ -23,6 +23,7 @@ internal sealed class NdiVideoPipeline : IDisposable
     private readonly FrameRingBuffer<NdiVideoFrame>? ringBuffer;
     private readonly ILogger logger;
     private static readonly TimeSpan BusyWaitThreshold = TimeSpan.FromMilliseconds(1);
+    private static readonly TimeSpan TelemetryWarmupPeriod = TimeSpan.FromSeconds(30);
     private static readonly double StopwatchTicksToTimeSpanTicks = TimeSpan.TicksPerSecond / (double)Stopwatch.Frequency;
 
     private readonly int targetDepth;
@@ -65,6 +66,7 @@ internal sealed class NdiVideoPipeline : IDisposable
     private long sentFrames;
     private long repeatedFrames;
     private DateTime lastTelemetry = DateTime.UtcNow;
+    private readonly DateTime telemetryWarmupDeadline;
     private readonly CadenceTracker captureCadenceTracker;
     private readonly CadenceTracker outputCadenceTracker;
     private readonly bool alignWithCaptureTimestamps;
@@ -216,6 +218,7 @@ internal sealed class NdiVideoPipeline : IDisposable
         configuredFrameRate = frameRate;
         this.options = options ?? throw new ArgumentNullException(nameof(options));
         this.logger = logger;
+        telemetryWarmupDeadline = DateTime.UtcNow + TelemetryWarmupPeriod;
 
         targetDepth = Math.Max(1, options.BufferDepth);
         lowWatermark = Math.Max(0, targetDepth - 1.5);
@@ -1990,12 +1993,18 @@ internal sealed class NdiVideoPipeline : IDisposable
 
     private void EmitTelemetryIfNeeded([CallerMemberName] string? caller = null)
     {
-        if (DateTime.UtcNow - lastTelemetry < options.TelemetryInterval)
+        var now = DateTime.UtcNow;
+        if (now < telemetryWarmupDeadline)
         {
             return;
         }
 
-        lastTelemetry = DateTime.UtcNow;
+        if (now - lastTelemetry < options.TelemetryInterval)
+        {
+            return;
+        }
+
+        lastTelemetry = now;
 
         var bufferStats = BufferingEnabled && ringBuffer is not null
             ? $", primed={bufferPrimed}, buffered={ringBuffer.Count}, droppedOverflow={ringBuffer.DroppedFromOverflow}, droppedStale={ringBuffer.DroppedAsStale}, underruns={Interlocked.Read(ref underruns)}, warmups={Interlocked.Read(ref warmupCycles)}, lastWarmupMs={ComputeLastWarmupMilliseconds():F1}, lastWarmupRepeats={Interlocked.Read(ref lastWarmupRepeatTicks)}, lowWaterHits={Interlocked.Read(ref lowWatermarkHits)}, highWaterHits={Interlocked.Read(ref highWatermarkHits)}, resyncDrops={Interlocked.Read(ref latencyResyncDrops)}, latencyError={Volatile.Read(ref latencyError):F2}"
