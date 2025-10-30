@@ -75,6 +75,9 @@ internal sealed class NdiVideoPipeline : IDisposable
     private readonly bool captureBackpressureEnabled;
     private readonly bool directPacedInvalidationEnabled;
     private readonly bool pumpCadenceAdaptationEnabled;
+    private readonly bool compositorCaptureEnabled;
+    private long compositorFrames;
+    private long invalidationFrames;
 
     private IPacedInvalidationScheduler? invalidationScheduler;
     private bool captureGateActive;
@@ -83,6 +86,7 @@ internal sealed class NdiVideoPipeline : IDisposable
     private int directInvalidationPending;
     private long pendingInvalidations;
     private long spuriousCaptureCount;
+    private long unsupportedStorageDrops;
     private long expiredInvalidationTickets;
     private readonly object captureDemandMaintenanceGate = new();
     private CancellationTokenSource? captureDemandMaintenanceCts;
@@ -241,6 +245,23 @@ internal sealed class NdiVideoPipeline : IDisposable
                 "Capture backpressure requires paced invalidation; disabling backpressure until paced invalidation is enabled.");
         }
         pumpCadenceAdaptationEnabled = options.EnablePumpCadenceAdaptation;
+        compositorCaptureEnabled = options.EnableCompositorCapture;
+        if (compositorCaptureEnabled)
+        {
+            if (pacingRequested)
+            {
+                logger.Information("Compositor capture enabled; bypassing Chromium invalidation scheduling.");
+            }
+
+            if (options.EnableCaptureBackpressure)
+            {
+                logger.Information("Capture backpressure is unavailable while compositor capture is active.");
+            }
+
+            pacedInvalidationEnabled = false;
+            directPacedInvalidationEnabled = false;
+            captureBackpressureEnabled = false;
+        }
         captureCadenceTracker = new CadenceTracker(frameInterval);
         outputCadenceTracker = new CadenceTracker(frameInterval);
 
@@ -354,11 +375,34 @@ internal sealed class NdiVideoPipeline : IDisposable
     /// <param name="frame">The captured video frame.</param>
     public void HandleFrame(CapturedFrame frame)
     {
+        HandleFrameInternal(frame, compositorDriven: false);
+    }
+
+    /// <summary>
+    /// Handles a compositor-delivered frame where pacing is driven by Chromium's compositor rather than UI invalidations.
+    /// </summary>
+    /// <param name="frame">The captured video frame.</param>
+    public void HandleCompositorFrame(CapturedFrame frame)
+    {
+        HandleFrameInternal(frame, compositorDriven: true);
+    }
+
+    private void HandleFrameInternal(CapturedFrame frame, bool compositorDriven)
+    {
         Interlocked.Increment(ref capturedFrames);
-        if (!TryConsumePendingInvalidationTicket())
+        if (compositorDriven)
         {
-            Interlocked.Increment(ref spuriousCaptureCount);
-            return;
+            Interlocked.Increment(ref compositorFrames);
+        }
+        else
+        {
+            Interlocked.Increment(ref invalidationFrames);
+            if (!TryConsumePendingInvalidationTicket())
+            {
+                Interlocked.Increment(ref spuriousCaptureCount);
+                frame.Dispose();
+                return;
+            }
         }
 
         if (cadenceTrackingEnabled)
@@ -366,24 +410,42 @@ internal sealed class NdiVideoPipeline : IDisposable
             captureCadenceTracker.Record(frame.MonotonicTimestamp);
         }
 
+        if (!EnsureCpuAccessible(ref frame, compositorDriven))
+        {
+            if (!compositorDriven)
+            {
+                RequestDirectInvalidation();
+            }
+
+            return;
+        }
+
         if (!BufferingEnabled)
         {
-            if (directPacedInvalidationEnabled)
+            if (!compositorDriven && directPacedInvalidationEnabled)
             {
                 Interlocked.Exchange(ref directInvalidationPending, 0);
             }
 
             SendDirect(frame);
-            RequestDirectInvalidation();
+            frame.Dispose();
+
+            if (!compositorDriven)
+            {
+                RequestDirectInvalidation();
+            }
+
             return;
         }
 
         if (ringBuffer is null)
         {
+            frame.Dispose();
             return;
         }
 
         var copy = NdiVideoFrame.CopyFrom(frame);
+        frame.Dispose();
         ringBuffer.Enqueue(copy, out var dropped);
         dropped?.Dispose();
 
@@ -394,7 +456,36 @@ internal sealed class NdiVideoPipeline : IDisposable
         }
 
         EmitTelemetryIfNeeded();
-        EnsureCaptureDemand(backlog);
+        if (!compositorDriven)
+        {
+            EnsureCaptureDemand(backlog);
+        }
+    }
+
+    private bool EnsureCpuAccessible(ref CapturedFrame frame, bool compositorDriven)
+    {
+        if (frame.StorageKind == CapturedFrameStorageKind.CpuMemory)
+        {
+            return true;
+        }
+
+        frame.Dispose();
+        var dropCount = Interlocked.Increment(ref unsupportedStorageDrops);
+        if (dropCount <= 3 || dropCount % 50 == 0)
+        {
+            var source = compositorDriven ? "compositor" : "paint";
+            logger.Warning(
+                "Dropping {Source} frame stored as {StorageKind}; CPU-accessible pixels are required for NdiVideoPipeline.",
+                source,
+                frame.StorageKind);
+        }
+
+        if (!compositorDriven && directPacedInvalidationEnabled)
+        {
+            Interlocked.Exchange(ref directInvalidationPending, 0);
+        }
+
+        return false;
     }
 
     private async Task RunPacedLoopAsync(CancellationToken token)
@@ -1954,14 +2045,18 @@ internal sealed class NdiVideoPipeline : IDisposable
                 $", captureJitterRmsMs={captureSnapshot.IntervalRmsMilliseconds:F4}, captureJitterPkMs={captureSnapshot.PeakIntervalErrorMilliseconds:F4}, captureDriftMs={captureSnapshot.DriftMilliseconds:F4}, captureIntervals={captureSnapshot.IntervalSamples}, outputJitterRmsMs={outputSnapshot.IntervalRmsMilliseconds:F4}, outputJitterPkMs={outputSnapshot.PeakIntervalErrorMilliseconds:F4}, outputDriftMs={outputSnapshot.DriftMilliseconds:F4}, outputIntervals={outputSnapshot.IntervalSamples}, driftDeltaFrames={alignmentDelta:F4}");
         }
 
+        var compositorStats = System.FormattableString.Invariant(
+            $", compositorCapture={compositorCaptureEnabled}, compositorFrames={Interlocked.Read(ref compositorFrames)}, legacyInvalidationFrames={Interlocked.Read(ref invalidationFrames)}");
+
         logger.Information(
-            "NDI video pipeline stats: captured={Captured}, sent={Sent}, repeated={Repeated}{BufferStats}{PacingStats}{CadenceStats} (caller={Caller})",
+            "NDI video pipeline stats: captured={Captured}, sent={Sent}, repeated={Repeated}{BufferStats}{PacingStats}{CadenceStats}{CompositorStats} (caller={Caller})",
             Interlocked.Read(ref capturedFrames),
             Interlocked.Read(ref sentFrames),
             Interlocked.Read(ref repeatedFrames),
             bufferStats,
             pacingStats,
             cadenceStats,
+            compositorStats,
             caller);
     }
 

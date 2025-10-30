@@ -28,6 +28,7 @@ public sealed class LauncherForm : Form
     private readonly CheckBox _disablePacedInvalidationCheckBox;
     private readonly CheckBox _enableCaptureBackpressureCheckBox;
     private readonly CheckBox _enablePumpCadenceAdaptationCheckBox;
+    private readonly CheckBox _enableCompositorCaptureCheckBox;
     private bool _suppressPacingCheckboxUpdates;
 
     /// <summary>
@@ -195,6 +196,14 @@ public sealed class LauncherForm : Form
         };
         AddRow(table, "Pump Cadence Adaptation", _enablePumpCadenceAdaptationCheckBox);
 
+        _enableCompositorCaptureCheckBox = new CheckBox
+        {
+            Text = "Capture frames from Chromium compositor (experimental)",
+            Dock = DockStyle.Fill,
+            AutoSize = true,
+        };
+        AddRow(table, "Compositor Capture (Experimental)", _enableCompositorCaptureCheckBox);
+
         _windowlessFrameRateTextBox = new TextBox { Dock = DockStyle.Fill };
         AddRow(table, "Windowless Frame Rate", _windowlessFrameRateTextBox);
 
@@ -282,6 +291,7 @@ public sealed class LauncherForm : Form
         _suppressPacingCheckboxUpdates = false;
         _enableCaptureBackpressureCheckBox.Checked = settings.EnableCaptureBackpressure;
         _enablePumpCadenceAdaptationCheckBox.Checked = settings.EnablePumpCadenceAdaptation;
+        _enableCompositorCaptureCheckBox.Checked = settings.EnableCompositorCapture;
         _windowlessFrameRateTextBox.Text = settings.WindowlessFrameRateOverride ?? string.Empty;
         _disableGpuVsyncCheckBox.Checked = settings.DisableGpuVsync;
         _disableFrameRateLimitCheckBox.Checked = settings.DisableFrameRateLimit;
@@ -389,7 +399,8 @@ public sealed class LauncherForm : Form
             EnablePacedInvalidation = _enableBufferingCheckBox.Checked && _enablePacedInvalidationCheckBox.Checked,
             DisablePacedInvalidation = _disablePacedInvalidationCheckBox.Checked,
             EnableCaptureBackpressure = _enableBufferingCheckBox.Checked && _enableCaptureBackpressureCheckBox.Checked,
-            EnablePumpCadenceAdaptation = _enableBufferingCheckBox.Checked && _enablePumpCadenceAdaptationCheckBox.Checked
+            EnablePumpCadenceAdaptation = _enableBufferingCheckBox.Checked && _enablePumpCadenceAdaptationCheckBox.Checked,
+            EnableCompositorCapture = _enableCompositorCaptureCheckBox.Checked
         };
 
         try
