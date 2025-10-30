@@ -45,6 +45,10 @@ For the current paced-buffer design direction and recommendations, review `Docs/
 | `--windowless-frame-rate=<double>` | `--windowless-frame-rate=60` | Overrides Chromium's internal repaint cadence. Defaults to the rounded value of `--fps`. |
 | `--disable-gpu-vsync` | `--disable-gpu-vsync` | Passes `--disable-gpu-vsync` to Chromium to remove GPU vsync throttling. |
 | `--disable-frame-rate-limit` | `--disable-frame-rate-limit` | Passes `--disable-frame-rate-limit` to Chromium for maximum redraw throughput. |
+| `--enable-gpu-rasterization` | `--enable-gpu-rasterization` | Forces Chromium to rasterize content on the GPU for off-screen rendering scenarios. |
+| `--enable-zero-copy` | `--enable-zero-copy` | Enables zero-copy raster uploads so Chromium can share GPU textures without an extra copy. |
+| `--enable-oop-rasterization` | `--enable-oop-rasterization` | Moves raster work to the out-of-process raster thread to smooth main-thread animation stutters. |
+| `--disable-background-throttling` | `--disable-background-throttling` | Prevents Chromium from throttling timers or background renderers when the view is hidden. |
 | `-debug` | `-debug` | Raises Serilog minimum level to `Debug`. |
 | `-quiet` | `-quiet` | Disables console logging (file logging remains). |
 

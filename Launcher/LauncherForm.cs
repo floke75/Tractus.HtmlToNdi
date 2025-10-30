@@ -29,6 +29,10 @@ public sealed class LauncherForm : Form
     private readonly CheckBox _enableCaptureBackpressureCheckBox;
     private readonly CheckBox _enablePumpCadenceAdaptationCheckBox;
     private readonly CheckBox _enableCompositorCaptureCheckBox;
+    private readonly CheckBox _enableGpuRasterizationCheckBox;
+    private readonly CheckBox _enableZeroCopyCheckBox;
+    private readonly CheckBox _enableOutOfProcessRasterizationCheckBox;
+    private readonly CheckBox _disableBackgroundThrottlingCheckBox;
     private bool _suppressPacingCheckboxUpdates;
 
     /// <summary>
@@ -207,6 +211,32 @@ public sealed class LauncherForm : Form
         _windowlessFrameRateTextBox = new TextBox { Dock = DockStyle.Fill };
         AddRow(table, "Windowless Frame Rate", _windowlessFrameRateTextBox);
 
+        AddSectionHeader(table, "Chromium Performance Flags");
+
+        _enableGpuRasterizationCheckBox = new CheckBox
+        {
+            Text = "Enable GPU rasterization",
+            Dock = DockStyle.Fill,
+            AutoSize = true,
+        };
+        AddRow(table, "GPU Rasterization", _enableGpuRasterizationCheckBox);
+
+        _enableZeroCopyCheckBox = new CheckBox
+        {
+            Text = "Enable zero-copy raster uploads",
+            Dock = DockStyle.Fill,
+            AutoSize = true,
+        };
+        AddRow(table, "Zero-Copy", _enableZeroCopyCheckBox);
+
+        _enableOutOfProcessRasterizationCheckBox = new CheckBox
+        {
+            Text = "Enable out-of-process rasterizer",
+            Dock = DockStyle.Fill,
+            AutoSize = true,
+        };
+        AddRow(table, "OOP Rasterizer", _enableOutOfProcessRasterizationCheckBox);
+
         _disableGpuVsyncCheckBox = new CheckBox
         {
             Text = "Disable GPU VSync",
@@ -222,6 +252,14 @@ public sealed class LauncherForm : Form
             AutoSize = true,
         };
         AddRow(table, "Frame Rate Limit", _disableFrameRateLimitCheckBox);
+
+        _disableBackgroundThrottlingCheckBox = new CheckBox
+        {
+            Text = "Disable background throttling",
+            Dock = DockStyle.Fill,
+            AutoSize = true,
+        };
+        AddRow(table, "Background Throttling", _disableBackgroundThrottlingCheckBox);
 
         var buttonPanel = new FlowLayoutPanel
         {
@@ -295,6 +333,10 @@ public sealed class LauncherForm : Form
         _windowlessFrameRateTextBox.Text = settings.WindowlessFrameRateOverride ?? string.Empty;
         _disableGpuVsyncCheckBox.Checked = settings.DisableGpuVsync;
         _disableFrameRateLimitCheckBox.Checked = settings.DisableFrameRateLimit;
+        _enableGpuRasterizationCheckBox.Checked = settings.EnableGpuRasterization;
+        _enableZeroCopyCheckBox.Checked = settings.EnableZeroCopy;
+        _enableOutOfProcessRasterizationCheckBox.Checked = settings.EnableOutOfProcessRasterization;
+        _disableBackgroundThrottlingCheckBox.Checked = settings.DisableBackgroundThrottling;
 
         UpdateBufferingDependentControls();
     }
@@ -353,6 +395,25 @@ public sealed class LauncherForm : Form
         UpdateBufferingDependentControls();
     }
 
+    private static void AddSectionHeader(TableLayoutPanel table, string text)
+    {
+        table.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+
+        var header = new Label
+        {
+            Text = text,
+            Dock = DockStyle.Fill,
+            TextAlign = ContentAlignment.MiddleLeft,
+            AutoSize = true,
+            Padding = new Padding(0, 12, 0, 4),
+            Font = new Font(table.Font, FontStyle.Bold)
+        };
+
+        table.Controls.Add(header, 0, table.RowCount);
+        table.SetColumnSpan(header, 2);
+        table.RowCount++;
+    }
+
     private void OnLaunch()
     {
         var ndiName = _ndiNameTextBox.Text.Trim();
@@ -400,7 +461,11 @@ public sealed class LauncherForm : Form
             DisablePacedInvalidation = _disablePacedInvalidationCheckBox.Checked,
             EnableCaptureBackpressure = _enableBufferingCheckBox.Checked && _enableCaptureBackpressureCheckBox.Checked,
             EnablePumpCadenceAdaptation = _enableBufferingCheckBox.Checked && _enablePumpCadenceAdaptationCheckBox.Checked,
-            EnableCompositorCapture = _enableCompositorCaptureCheckBox.Checked
+            EnableCompositorCapture = _enableCompositorCaptureCheckBox.Checked,
+            EnableGpuRasterization = _enableGpuRasterizationCheckBox.Checked,
+            EnableZeroCopy = _enableZeroCopyCheckBox.Checked,
+            EnableOutOfProcessRasterization = _enableOutOfProcessRasterizationCheckBox.Checked,
+            DisableBackgroundThrottling = _disableBackgroundThrottlingCheckBox.Checked
         };
 
         try

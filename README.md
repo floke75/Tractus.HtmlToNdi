@@ -45,6 +45,10 @@ Parameter|Description
 `--windowless-frame-rate=60`|Overrides CEF's internal repaint cadence. Defaults to the nearest integer of `--fps`.
 `--disable-gpu-vsync`|Disables Chromium's GPU vsync throttling.
 `--disable-frame-rate-limit`|Disables Chromium's frame rate limiter.
+`--enable-gpu-rasterization`|Forces Chromium to rasterize content on the GPU even for off-screen contexts.
+`--enable-zero-copy`|Enables zero-copy raster uploads from GPU memory to reduce texture copies.
+`--enable-oop-rasterization`|Moves rasterization work to the out-of-process raster thread for smoother rendering.
+`--disable-background-throttling`|Prevents Chromium from throttling timers or renderers when the view is hidden/off-screen.
 `--launcher`|Forces the launcher window to appear even when other parameters are supplied.
 `--no-launcher`|Skips the launcher and honours the supplied command-line arguments only.
 

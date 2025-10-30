@@ -254,6 +254,27 @@ public class Program
                         settings.CefCommandLineArgs.Add("disable-frame-rate-limit", "1");
                     }
 
+                    if (parameters.EnableGpuRasterization)
+                    {
+                        settings.CefCommandLineArgs.Add("enable-gpu-rasterization", "1");
+                    }
+
+                    if (parameters.EnableZeroCopy)
+                    {
+                        settings.CefCommandLineArgs.Add("enable-zero-copy", "1");
+                    }
+
+                    if (parameters.EnableOutOfProcessRasterization)
+                    {
+                        settings.CefCommandLineArgs.Add("enable-oop-rasterization", "1");
+                    }
+
+                    if (parameters.DisableBackgroundThrottling)
+                    {
+                        settings.CefCommandLineArgs.Add("disable-background-timer-throttling", "1");
+                        settings.CefCommandLineArgs.Add("disable-renderer-backgrounding", "1");
+                    }
+
                     settings.EnableAudio();
                     var cefInitialized = Cef.Initialize(settings);
                     Log.Information("CEF initialization {Result}", cefInitialized ? "succeeded" : "reported failure");

@@ -31,7 +31,11 @@ public sealed class LaunchParameters
         bool disablePacedInvalidation,
         bool enableCaptureBackpressure,
         bool enablePumpCadenceAdaptation,
-        bool enableCompositorCapture)
+        bool enableCompositorCapture,
+        bool enableGpuRasterization,
+        bool enableZeroCopy,
+        bool enableOutOfProcessRasterization,
+        bool disableBackgroundThrottling)
     {
         NdiName = ndiName;
         Port = port;
@@ -53,6 +57,10 @@ public sealed class LaunchParameters
         EnableCaptureBackpressure = enableCaptureBackpressure;
         EnablePumpCadenceAdaptation = enablePumpCadenceAdaptation;
         EnableCompositorCapture = enableCompositorCapture;
+        EnableGpuRasterization = enableGpuRasterization;
+        EnableZeroCopy = enableZeroCopy;
+        EnableOutOfProcessRasterization = enableOutOfProcessRasterization;
+        DisableBackgroundThrottling = disableBackgroundThrottling;
     }
 
     /// <summary>
@@ -154,6 +162,26 @@ public sealed class LaunchParameters
     /// Gets a value indicating whether the compositor capture path should be enabled.
     /// </summary>
     public bool EnableCompositorCapture { get; }
+
+    /// <summary>
+    /// Gets a value indicating whether Chromium should force GPU rasterization.
+    /// </summary>
+    public bool EnableGpuRasterization { get; }
+
+    /// <summary>
+    /// Gets a value indicating whether Chromium should enable zero-copy raster uploads.
+    /// </summary>
+    public bool EnableZeroCopy { get; }
+
+    /// <summary>
+    /// Gets a value indicating whether Chromium should use the out-of-process rasterizer.
+    /// </summary>
+    public bool EnableOutOfProcessRasterization { get; }
+
+    /// <summary>
+    /// Gets a value indicating whether Chromium should keep renderers active even when hidden.
+    /// </summary>
+    public bool DisableBackgroundThrottling { get; }
 
     /// <summary>
     /// Attempts to create a <see cref="LaunchParameters"/> instance from command-line arguments.
@@ -326,6 +354,10 @@ public sealed class LaunchParameters
         var enableCaptureBackpressure = ResolveToggle("--enable-capture-backpressure", "--disable-capture-backpressure", false);
         var enablePumpCadenceAdaptation = ResolveToggle("--enable-pump-cadence-adaptation", "--disable-pump-cadence-adaptation", false);
         var enableCompositorCapture = ResolveToggle("--enable-compositor-capture", "--disable-compositor-capture", false);
+        var enableGpuRasterization = HasFlag("--enable-gpu-rasterization");
+        var enableZeroCopy = HasFlag("--enable-zero-copy");
+        var enableOutOfProcessRasterization = HasFlag("--enable-oop-rasterization") || HasFlag("--enable-out-of-process-rasterization");
+        var disableBackgroundThrottling = HasFlag("--disable-background-throttling") || HasFlag("--disable-renderer-backgrounding");
 
         int? windowlessFrameRateOverride = null;
         var windowlessRateArg = GetArgValue("--windowless-frame-rate");
@@ -362,7 +394,11 @@ public sealed class LaunchParameters
             disablePacedInvalidation,
             enableCaptureBackpressure,
             enablePumpCadenceAdaptation,
-            enableCompositorCapture);
+            enableCompositorCapture,
+            enableGpuRasterization,
+            enableZeroCopy,
+            enableOutOfProcessRasterization,
+            disableBackgroundThrottling);
 
         return true;
     }
@@ -454,6 +490,10 @@ public sealed class LaunchParameters
             settings.DisablePacedInvalidation,
             settings.EnableCaptureBackpressure,
             settings.EnablePumpCadenceAdaptation,
-            settings.EnableCompositorCapture);
+            settings.EnableCompositorCapture,
+            settings.EnableGpuRasterization,
+            settings.EnableZeroCopy,
+            settings.EnableOutOfProcessRasterization,
+            settings.DisableBackgroundThrottling);
     }
 }
