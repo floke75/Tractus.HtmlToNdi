@@ -95,6 +95,11 @@ internal sealed class NdiVideoPipeline : IDisposable
         Expired,
     }
 
+    /// <summary>
+    /// Represents a single paced invalidation request that tracks whether the slot
+    /// was consumed, returned, or expired so the pending request counters remain
+    /// accurate.
+    /// </summary>
     private sealed class InvalidationTicket
     {
         private const int StateIssued = 0;
@@ -111,11 +116,19 @@ internal sealed class NdiVideoPipeline : IDisposable
             this.owner = owner;
         }
 
+        /// <summary>
+        /// Associates a timeout cancellation source so the ticket can expire if it
+        /// outlives the configured request window.
+        /// </summary>
         internal void ArmTimeout(CancellationTokenSource cts)
         {
             Interlocked.Exchange(ref timeoutCts, cts);
         }
 
+        /// <summary>
+        /// Marks the ticket as consumed and notifies the owning pipeline to release
+        /// the pending slot.
+        /// </summary>
         internal bool TryComplete()
         {
             if (!TryTransition(StateConsumed))
@@ -127,6 +140,10 @@ internal sealed class NdiVideoPipeline : IDisposable
             return true;
         }
 
+        /// <summary>
+        /// Returns the ticket to the pool when a request is cancelled before the
+        /// scheduler consumes it.
+        /// </summary>
         internal bool TryReturn()
         {
             if (!TryTransition(StateReturned))
@@ -138,6 +155,10 @@ internal sealed class NdiVideoPipeline : IDisposable
             return true;
         }
 
+        /// <summary>
+        /// Expires the ticket after the timeout elapses so stale entries are removed
+        /// from the queue.
+        /// </summary>
         internal bool TryExpire()
         {
             if (!TryTransition(StateExpired))
@@ -701,6 +722,10 @@ internal sealed class NdiVideoPipeline : IDisposable
 
     private bool CaptureTicketsEnabled => directPacedInvalidationEnabled || (BufferingEnabled && pacedInvalidationEnabled);
 
+    /// <summary>
+    /// Requests an invalidation from the scheduler while holding an invalidation
+    /// ticket so pending counters stay in sync even if the request faults.
+    /// </summary>
     private async Task RequestInvalidateWithTicketAsync(IPacedInvalidationScheduler scheduler, CancellationToken token)
     {
         if (!TryAcquireInvalidationSlot(out var ticket))
@@ -719,6 +744,9 @@ internal sealed class NdiVideoPipeline : IDisposable
         }
     }
 
+    /// <summary>
+    /// Attempts to reserve a pacing slot for an upcoming invalidation request.
+    /// </summary>
     private bool TryAcquireInvalidationSlot(out InvalidationTicket? ticket)
     {
         ticket = null;
@@ -752,6 +780,10 @@ internal sealed class NdiVideoPipeline : IDisposable
         }
     }
 
+    /// <summary>
+    /// Calculates how many invalidation requests may be outstanding based on the
+    /// current buffering state.
+    /// </summary>
     private int GetPendingInvalidationLimit()
     {
         if (!CaptureTicketsEnabled)
@@ -781,6 +813,10 @@ internal sealed class NdiVideoPipeline : IDisposable
         return Math.Max(1, targetDepth);
     }
 
+    /// <summary>
+    /// Consumes the next non-stale invalidation ticket, ensuring expired entries
+    /// are discarded before a new capture proceeds.
+    /// </summary>
     private bool TryConsumePendingInvalidationTicket()
     {
         if (!CaptureTicketsEnabled)
@@ -820,6 +856,9 @@ internal sealed class NdiVideoPipeline : IDisposable
         }
     }
 
+    /// <summary>
+    /// Returns a ticket to the pool when an invalidation fails before completion.
+    /// </summary>
     private void ReturnInvalidationTicket(InvalidationTicket? ticket)
     {
         if (!CaptureTicketsEnabled || ticket is null)
@@ -830,6 +869,10 @@ internal sealed class NdiVideoPipeline : IDisposable
         ticket.TryReturn();
     }
 
+    /// <summary>
+    /// Arms a timeout for the ticket so stalled invalidation requests are expired
+    /// and removed from the queue.
+    /// </summary>
     private void ScheduleTicketExpiration(InvalidationTicket ticket)
     {
         if (!CaptureTicketsEnabled)
@@ -883,6 +926,10 @@ internal sealed class NdiVideoPipeline : IDisposable
         });
     }
 
+    /// <summary>
+    /// Releases the ticket, updates bookkeeping counters, and removes stale entries
+    /// from the queue based on the final outcome.
+    /// </summary>
     private void FinalizeTicket(InvalidationTicket ticket, InvalidationTicketOutcome outcome)
     {
         ticket.CancelTimeout();
@@ -962,6 +1009,10 @@ internal sealed class NdiVideoPipeline : IDisposable
         }
     }
 
+    /// <summary>
+    /// Restores capture demand when a pending invalidation exceeds the timeout,
+    /// ensuring the pipeline keeps driving Chromium after stalls.
+    /// </summary>
     private void HandleExpiredTicket()
     {
         if (!pacedInvalidationEnabled || cancellation.IsCancellationRequested)
@@ -985,6 +1036,10 @@ internal sealed class NdiVideoPipeline : IDisposable
         EnsureCaptureDemand();
     }
 
+    /// <summary>
+    /// Drains and returns all outstanding tickets when the pipeline resets so no
+    /// stale entries linger in the queue.
+    /// </summary>
     private void ResetInvalidationTickets()
     {
         if (!CaptureTicketsEnabled)
