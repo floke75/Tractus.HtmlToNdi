@@ -427,6 +427,11 @@ internal sealed class FramePump : IPacedInvalidationScheduler
                 var lastPaint = new DateTime(Interlocked.Read(ref lastPaintTicks), DateTimeKind.Utc);
                 if (DateTime.UtcNow - lastPaint > watchdogInterval)
                 {
+                    if (paused)
+                    {
+                        continue;
+                    }
+
                     logger.Debug(
                         "FramePump watchdog triggering invalidate after {Seconds}s idle",
                         watchdogInterval.TotalSeconds);
