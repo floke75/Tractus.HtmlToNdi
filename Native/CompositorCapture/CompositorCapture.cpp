@@ -240,7 +240,7 @@ struct CompositorCaptureSession
 
 CompositorCaptureSession* cc_create_session(CefBrowserHost* host, const CompositorCaptureConfig* config, CompositorFrameCallback callback, void* user_data)
 {
-    if (host == nullptr || config == nullptr || callback == nullptr)
+    if (config == nullptr || callback == nullptr)
     {
         return nullptr;
     }
