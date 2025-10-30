@@ -380,8 +380,15 @@ internal sealed class NdiVideoPipeline : IDisposable
         var copy = NdiVideoFrame.CopyFrom(frame);
         ringBuffer.Enqueue(copy, out var dropped);
         dropped?.Dispose();
+
+        var backlog = ringBuffer.Count;
+        if (Volatile.Read(ref isWarmingUp) && !Volatile.Read(ref latencyExpansionActive) && backlog >= targetDepth)
+        {
+            ExitWarmup();
+        }
+
         EmitTelemetryIfNeeded();
-        EnsureCaptureDemand(ringBuffer.Count);
+        EnsureCaptureDemand(backlog);
     }
 
     private async Task RunPacedLoopAsync(CancellationToken token)
@@ -447,6 +454,15 @@ internal sealed class NdiVideoPipeline : IDisposable
         var integral = Math.Clamp(-Volatile.Read(ref latencyError) / Math.Max(1d, targetDepth), -2d, 2d);
         var adjustmentFactor = normalized + (integral * 0.2d);
         var cadenceAdjustment = CalculateCadenceAlignmentOffset();
+        if (Math.Abs(backlog - targetDepth) >= 1)
+        {
+            cadenceAdjustment = 0d;
+            Interlocked.Exchange(ref cadenceAlignmentDeltaFrames, 0d);
+            if (pumpCadenceAdaptationEnabled && invalidationScheduler is not null)
+            {
+                invalidationScheduler.UpdateCadenceAlignment(0);
+            }
+        }
         adjustmentFactor += cadenceAdjustment;
         if (Math.Abs(adjustmentFactor) < 1e-6)
         {
@@ -692,7 +708,7 @@ internal sealed class NdiVideoPipeline : IDisposable
 
         if (!bufferPrimed || isWarmingUp || latencyExpansionActive)
         {
-            if (desired < targetDepth)
+            if (backlog < targetDepth && desired < targetDepth)
             {
                 desired = targetDepth;
             }
