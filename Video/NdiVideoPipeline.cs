@@ -86,6 +86,7 @@ internal sealed class NdiVideoPipeline : IDisposable
     private int directInvalidationPending;
     private long pendingInvalidations;
     private long spuriousCaptureCount;
+    private long unsupportedStorageDrops;
     private long expiredInvalidationTickets;
     private readonly object captureDemandMaintenanceGate = new();
     private CancellationTokenSource? captureDemandMaintenanceCts;
@@ -409,6 +410,16 @@ internal sealed class NdiVideoPipeline : IDisposable
             captureCadenceTracker.Record(frame.MonotonicTimestamp);
         }
 
+        if (!EnsureCpuAccessible(ref frame, compositorDriven))
+        {
+            if (!compositorDriven)
+            {
+                RequestDirectInvalidation();
+            }
+
+            return;
+        }
+
         if (!BufferingEnabled)
         {
             if (!compositorDriven && directPacedInvalidationEnabled)
@@ -449,6 +460,32 @@ internal sealed class NdiVideoPipeline : IDisposable
         {
             EnsureCaptureDemand(backlog);
         }
+    }
+
+    private bool EnsureCpuAccessible(ref CapturedFrame frame, bool compositorDriven)
+    {
+        if (frame.StorageKind == CapturedFrameStorageKind.CpuMemory)
+        {
+            return true;
+        }
+
+        frame.Dispose();
+        var dropCount = Interlocked.Increment(ref unsupportedStorageDrops);
+        if (dropCount <= 3 || dropCount % 50 == 0)
+        {
+            var source = compositorDriven ? "compositor" : "paint";
+            logger.Warning(
+                "Dropping {Source} frame stored as {StorageKind}; CPU-accessible pixels are required for NdiVideoPipeline.",
+                source,
+                frame.StorageKind);
+        }
+
+        if (!compositorDriven && directPacedInvalidationEnabled)
+        {
+            Interlocked.Exchange(ref directInvalidationPending, 0);
+        }
+
+        return false;
     }
 
     private async Task RunPacedLoopAsync(CancellationToken token)
