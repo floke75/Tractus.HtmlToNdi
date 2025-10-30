@@ -169,6 +169,8 @@ internal sealed class NdiVideoPipeline : IDisposable
             }
         }
 
+        internal bool IsStale => Volatile.Read(ref state) != StateIssued;
+
         private bool TryTransition(int targetState)
         {
             return Interlocked.CompareExchange(ref state, targetState, StateIssued) == StateIssued;
@@ -874,10 +876,30 @@ internal sealed class NdiVideoPipeline : IDisposable
             }
         }
 
+        CullStaleInvalidationTickets();
+
         if (outcome == InvalidationTicketOutcome.Expired)
         {
             Interlocked.Increment(ref expiredInvalidationTickets);
             HandleExpiredTicket();
+        }
+    }
+
+    private void CullStaleInvalidationTickets()
+    {
+        if (!CaptureTicketsEnabled)
+        {
+            return;
+        }
+
+        while (invalidationTickets.TryPeek(out var head))
+        {
+            if (!head.IsStale)
+            {
+                return;
+            }
+
+            invalidationTickets.TryDequeue(out _);
         }
     }
 
