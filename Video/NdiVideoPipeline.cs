@@ -494,16 +494,27 @@ internal sealed class NdiVideoPipeline : IDisposable
         return TimeSpan.FromTicks(candidateTicks);
     }
 
+    /// <summary>
+    /// Refills Chromium invalidation demand using the latest buffer depth so pending
+    /// ticket counts stay aligned with the paced sender.
+    /// </summary>
     private void EnsureCaptureDemand()
     {
         EnsureCaptureDemandInternal(ringBuffer?.Count);
     }
 
+    /// <summary>
+    /// Refills Chromium invalidation demand using the supplied backlog value.
+    /// </summary>
     private void EnsureCaptureDemand(int backlog)
     {
         EnsureCaptureDemandInternal(backlog);
     }
 
+    /// <summary>
+    /// Issues enough invalidation requests to match the desired pending ticket count
+    /// while respecting capture gates and scheduler state.
+    /// </summary>
     private void EnsureCaptureDemandInternal(int? backlog)
     {
         if (!pacedInvalidationEnabled)
@@ -539,6 +550,10 @@ internal sealed class NdiVideoPipeline : IDisposable
         }
     }
 
+    /// <summary>
+    /// Starts the watchdog that periodically replenishes direct pacing demand so the
+    /// scheduler keeps driving Chromium even if sends stall.
+    /// </summary>
     private void StartCaptureDemandMaintenance()
     {
         if (!directPacedInvalidationEnabled || !CaptureTicketsEnabled)
@@ -562,6 +577,9 @@ internal sealed class NdiVideoPipeline : IDisposable
         }
     }
 
+    /// <summary>
+    /// Stops the capture demand watchdog, cancelling the maintenance loop and wiring fault logging for any outstanding task.
+    /// </summary>
     private void StopCaptureDemandMaintenance()
     {
         CancellationTokenSource? cts;
@@ -614,6 +632,10 @@ internal sealed class NdiVideoPipeline : IDisposable
         }
     }
 
+    /// <summary>
+    /// Periodically re-checks pending invalidation demand while direct pacing is active
+    /// so Chromium continues to receive capture requests.
+    /// </summary>
     private async Task RunCaptureDemandMaintenanceAsync(CancellationToken token)
     {
         var interval = captureDemandCheckInterval > TimeSpan.Zero
@@ -656,6 +678,10 @@ internal sealed class NdiVideoPipeline : IDisposable
         }
     }
 
+    /// <summary>
+    /// Computes the number of invalidation requests that should remain outstanding for
+    /// the current backlog and pacing mode.
+    /// </summary>
     private int CalculateDesiredPendingInvalidations(int backlog)
     {
         var desired = targetDepth - backlog;
@@ -681,6 +707,10 @@ internal sealed class NdiVideoPipeline : IDisposable
         return desired;
     }
 
+    /// <summary>
+    /// Hooks continuations to report unexpected failures from asynchronous invalidation
+    /// requests without throwing on the pacing path.
+    /// </summary>
     private void ObserveInvalidationRequest(Task request, string warningMessage)
     {
         if (request.IsCompleted)
@@ -957,6 +987,10 @@ internal sealed class NdiVideoPipeline : IDisposable
         }
     }
 
+    /// <summary>
+    /// Removes the specified ticket from the pending queue, trimming any stale entries
+    /// so subsequent dequeues see only live requests.
+    /// </summary>
     private void RemoveInvalidationTicket(InvalidationTicket ticket)
     {
         if (!CaptureTicketsEnabled)
