@@ -141,6 +141,7 @@ When adding routes, update **both** this table and `Tractus.HtmlToNdi.http` samp
 ### CefWrapper (`Chromium/CefWrapper.cs`)
 * `ChromiumWebBrowser` is constructed with `AudioHandler = new CustomAudioHandler()` and a fixed `System.Drawing.Size(width,height)`.
 * A pacing-aware `FramePump` invalidates Chromium on the cadence derived from `--fps` (or `--windowless-frame-rate`). When paced invalidation is enabled the pump switches to on-demand mode and waits for `NdiVideoPipeline` to request each capture slot; otherwise it free-runs on the configured interval. A watchdog issues recovery invalidations if paints stall.
+* **Experimental compositor capture** lives behind the `--enable-compositor-capture` CLI flag and the matching launcher checkbox (labelled “Compositor Capture (Experimental)”). Leaving the flag off keeps the legacy paint-driven path intact—do not change behaviour for the default configuration. Any future work on this helper must preserve the opt-in guard and assume it may be disabled in production builds until evaluation concludes.
 * `ScrollBy` always uses `(x=0,y=0)` as the mouse location; complex scrolling (e.g., inside scrolled divs) may require additional API work.
 * `Click` only supports the left mouse button; drag, double-click, or right-click interactions are not implemented.
 * `SendKeystrokes` issues **only** `KeyDown` events with `NativeKeyCode=Convert.ToInt32(char)`. There is no key-up, modifiers, or IME support—uppercase letters require the page to handle them despite missing Shift state.

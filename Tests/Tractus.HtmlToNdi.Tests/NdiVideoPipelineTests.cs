@@ -235,6 +235,59 @@ public class NdiVideoPipelineTests
     }
 
     [Fact]
+    public void CompositorDirectModeSendsImmediately()
+    {
+        var sender = new CollectingSender();
+        var options = new NdiVideoPipelineOptions
+        {
+            EnableBuffering = false,
+            TelemetryInterval = TimeSpan.FromDays(1),
+            EnableCompositorCapture = true,
+        };
+
+        var pipeline = new NdiVideoPipeline(sender, new FrameRate(60, 1), options, CreateNullLogger());
+
+        var size = 4 * 2 * 2;
+        var buffer = Marshal.AllocHGlobal(size);
+        try
+        {
+            var frame = CreateCapturedFrame(buffer, 2, 2, 8);
+            pipeline.HandleCompositorFrame(frame);
+        }
+        finally
+        {
+            Marshal.FreeHGlobal(buffer);
+            pipeline.Dispose();
+        }
+
+        var frames = sender.Frames;
+        Assert.Single(frames);
+        Assert.Equal(60, frames[0].Frame.frame_rate_N);
+        Assert.Equal(1, frames[0].Frame.frame_rate_D);
+    }
+
+    [Fact]
+    public void CompositorFrameInvokesReleaseAction()
+    {
+        var sender = new CollectingSender();
+        var options = new NdiVideoPipelineOptions
+        {
+            EnableBuffering = false,
+            TelemetryInterval = TimeSpan.FromDays(1),
+            EnableCompositorCapture = true,
+        };
+
+        var pipeline = new NdiVideoPipeline(sender, new FrameRate(60, 1), options, CreateNullLogger());
+
+        var released = false;
+        var frame = new CapturedFrame(IntPtr.Zero, 2, 2, 8, Stopwatch.GetTimestamp(), DateTime.UtcNow, () => released = true, CapturedFrameStorageKind.CpuMemory);
+        pipeline.HandleCompositorFrame(frame);
+
+        Assert.True(released);
+        pipeline.Dispose();
+    }
+
+    [Fact]
     public async Task BufferedModeWaitsForWarmupBeforeSending()
     {
         var sender = new CollectingSender();
