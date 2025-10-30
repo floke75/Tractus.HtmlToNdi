@@ -756,13 +756,18 @@ internal sealed class NdiVideoPipeline : IDisposable
     /// Requests an invalidation from the scheduler while holding an invalidation
     /// ticket so pending counters stay in sync even if the request faults.
     /// </summary>
-    private async Task RequestInvalidateWithTicketAsync(IPacedInvalidationScheduler scheduler, CancellationToken token)
+    private Task RequestInvalidateWithTicketAsync(IPacedInvalidationScheduler scheduler, CancellationToken token)
     {
-        if (!TryAcquireInvalidationSlot(out var ticket))
+        if (!TryAcquireInvalidationSlot(out var ticket) || ticket is null)
         {
-            return;
+            return Task.CompletedTask;
         }
 
+        return RequestInvalidateWithTicketAsync(scheduler, ticket, token);
+    }
+
+    private async Task RequestInvalidateWithTicketAsync(IPacedInvalidationScheduler scheduler, InvalidationTicket ticket, CancellationToken token)
+    {
         try
         {
             await scheduler.RequestInvalidateAsync(token).ConfigureAwait(false);
@@ -1130,26 +1135,28 @@ internal sealed class NdiVideoPipeline : IDisposable
             return;
         }
 
-        _ = Task.Run(async () =>
+        if (!TryAcquireInvalidationSlot(out var ticket) || ticket is null)
         {
-            try
+            Interlocked.Exchange(ref directInvalidationPending, 0);
+            return;
+        }
+
+        var request = RequestInvalidateWithTicketAsync(scheduler, ticket, cancellation.Token);
+        ObserveInvalidationRequest(request, "Failed to request Chromium invalidation for direct pacing");
+
+        _ = request.ContinueWith(
+            static (task, state) =>
             {
-                await RequestInvalidateWithTicketAsync(scheduler, cancellation.Token).ConfigureAwait(false);
-            }
-            catch (OperationCanceledException)
-            {
-                Interlocked.Exchange(ref directInvalidationPending, 0);
-            }
-            catch (ObjectDisposedException)
-            {
-                Interlocked.Exchange(ref directInvalidationPending, 0);
-            }
-            catch (Exception ex)
-            {
-                logger.Warning(ex, "Failed to request Chromium invalidation for direct pacing");
-                Interlocked.Exchange(ref directInvalidationPending, 0);
-            }
-        });
+                var pipeline = (NdiVideoPipeline)state!;
+                if (task.IsCanceled || task.IsFaulted)
+                {
+                    Interlocked.Exchange(ref pipeline.directInvalidationPending, 0);
+                }
+            },
+            this,
+            CancellationToken.None,
+            TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default);
     }
 
     private void UpdateCaptureBackpressure(int backlog)
