@@ -57,7 +57,7 @@ struct CompositorCaptureSession;
 /// <summary>
 /// Creates a compositor capture session for the specified browser host and configuration.
 /// </summary>
-/// <param name="host">The browser host that owns the compositor.</param>
+/// <param name="host">Optional browser host pointer (when available) that owns the compositor.</param>
 /// <param name="config">Requested capture configuration (size and cadence).</param>
 /// <param name="callback">Callback invoked for each captured frame.</param>
 /// <param name="user_data">Opaque pointer forwarded with each callback invocation.</param>

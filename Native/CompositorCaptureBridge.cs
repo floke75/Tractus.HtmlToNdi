@@ -16,7 +16,6 @@ internal sealed class CompositorCaptureBridge : IDisposable
     private SafeCompositorCaptureHandle? sessionHandle;
     private GCHandle selfHandle;
     private FrameReadyCallback? frameCallback;
-    private IntPtr hostPtr;
     private bool disposed;
 
     /// <summary>
@@ -63,24 +62,15 @@ internal sealed class CompositorCaptureBridge : IDisposable
             FrameRateDenominator = frameRate.Denominator,
         };
 
-        try
-        {
-            hostPtr = Marshal.GetIUnknownForObject(host);
-        }
-        catch (Exception ex)
-        {
-            logger.Warning(ex, "Failed to marshal browser host for compositor capture");
-            error = ex.Message;
-            return false;
-        }
-
         frameCallback = OnNativeFrame;
         selfHandle = GCHandle.Alloc(this);
 
         SafeCompositorCaptureHandle? handle = null;
         try
         {
-            handle = NativeMethods.cc_create_session(hostPtr, ref config, frameCallback, GCHandle.ToIntPtr(selfHandle));
+            // CefSharp does not expose a supported way to obtain a CefBrowserHost*; the native helper
+            // tolerates a null host pointer and relies on managed code to toggle begin-frame state.
+            handle = NativeMethods.cc_create_session(IntPtr.Zero, ref config, frameCallback, GCHandle.ToIntPtr(selfHandle));
         }
         catch (DllNotFoundException ex)
         {
@@ -193,21 +183,6 @@ internal sealed class CompositorCaptureBridge : IDisposable
 
         frameCallback = null;
 
-        if (hostPtr != IntPtr.Zero)
-        {
-            try
-            {
-                Marshal.Release(hostPtr);
-            }
-            catch (Exception ex)
-            {
-                logger.Debug(ex, "Failed to release browser host pointer");
-            }
-            finally
-            {
-                hostPtr = IntPtr.Zero;
-            }
-        }
     }
 
     /// <summary>

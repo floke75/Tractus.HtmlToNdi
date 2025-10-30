@@ -7,7 +7,6 @@
 #include <vector>
 
 #include "include/cef_browser.h"
-#include "include/wrapper/cef_helpers.h"
 
 #if __has_include("components/viz/service/frame_sinks/frame_sink_video_capturer.h")
 #include "components/viz/service/frame_sinks/frame_sink_video_capturer.h"
@@ -30,7 +29,7 @@ public:
 namespace
 {
 /// <summary>
-/// Implements compositor capture orchestration by owning the Chromium host and viz capturer.
+/// Implements compositor capture orchestration by owning the viz capturer and dispatch logic.
 /// </summary>
 class CompositorCaptureSessionImpl
 {
@@ -38,27 +37,18 @@ public:
     /// <summary>
     /// Creates a new compositor capture session implementation.
     /// </summary>
-    CompositorCaptureSessionImpl(CefBrowserHost* browser_host, const CompositorCaptureConfig& config, CompositorFrameCallback callback, void* user_data)
-        : host_(browser_host), config_(config), callback_(callback), user_data_(user_data)
+    CompositorCaptureSessionImpl(CefBrowserHost* /*browser_host*/, const CompositorCaptureConfig& config, CompositorFrameCallback callback, void* user_data)
+        : config_(config), callback_(callback), user_data_(user_data)
     {
-        if (host_)
-        {
-            host_->SetAutoBeginFrameEnabled(false);
-        }
-
         capturer_ = CreateCapturer();
     }
 
     /// <summary>
-    /// Ensures Chromium resumes its default begin-frame behaviour when the session is destroyed.
+    /// Stops the fallback capture loop when the session is destroyed.
     /// </summary>
     ~CompositorCaptureSessionImpl()
     {
         StopFallbackLoop();
-        if (host_)
-        {
-            host_->SetAutoBeginFrameEnabled(true);
-        }
     }
 
     /// <summary>
@@ -219,7 +209,6 @@ private:
         }
     }
 
-    CefRefPtr<CefBrowserHost> host_;
     CompositorCaptureConfig config_;
     CompositorFrameCallback callback_;
     void* user_data_;
