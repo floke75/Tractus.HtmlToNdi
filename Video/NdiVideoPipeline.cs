@@ -491,8 +491,9 @@ internal sealed class NdiVideoPipeline : IDisposable
         return false;
     }
 
-    private async Task RunPacedLoopAsync(CancellationToken token)
+    private Task RunPacedLoopAsync(CancellationToken token)
     {
+        using var highResolutionTimer = HighResolutionWaitableTimer.TryCreate(logger);
         var pacingClock = Stopwatch.StartNew();
         var pacingOrigin = pacingClock.Elapsed;
         long pacingSequence = 0;
@@ -511,7 +512,7 @@ internal sealed class NdiVideoPipeline : IDisposable
             var nextSequence = pacingSequence + 1;
             var deadline = CalculateNextDeadline(pacingOrigin, nextSequence);
 
-            await WaitUntilAsync(pacingClock, deadline, token);
+            WaitUntil(pacingClock, deadline, token, highResolutionTimer);
 
             if (token.IsCancellationRequested)
             {
@@ -526,6 +527,8 @@ internal sealed class NdiVideoPipeline : IDisposable
 
             pacingSequence = nextSequence;
         }
+
+        return Task.CompletedTask;
     }
 
     private TimeSpan CalculateNextDeadline(TimeSpan origin, long nextSequence)
@@ -1358,7 +1361,11 @@ internal sealed class NdiVideoPipeline : IDisposable
         return Math.Clamp(delta * 0.15d, -0.75d, 0.75d);
     }
 
-    private static async Task WaitUntilAsync(Stopwatch clock, TimeSpan deadline, CancellationToken token)
+    private static void WaitUntil(
+        Stopwatch clock,
+        TimeSpan deadline,
+        CancellationToken token,
+        HighResolutionWaitableTimer? highResolutionTimer)
     {
         while (!token.IsCancellationRequested)
         {
@@ -1379,17 +1386,36 @@ internal sealed class NdiVideoPipeline : IDisposable
                 return;
             }
 
-            var sleep = remaining - BusyWaitThreshold;
-            if (sleep < TimeSpan.FromMilliseconds(1))
+            var coarse = remaining - BusyWaitThreshold;
+            if (coarse <= TimeSpan.Zero)
             {
-                sleep = TimeSpan.FromMilliseconds(1);
+                continue;
+            }
+
+            if (highResolutionTimer is not null)
+            {
+                try
+                {
+                    highResolutionTimer.Wait(coarse, token);
+                }
+                catch (OperationCanceledException)
+                {
+                    return;
+                }
+
+                continue;
+            }
+
+            if (coarse < TimeSpan.FromMilliseconds(1))
+            {
+                coarse = TimeSpan.FromMilliseconds(1);
             }
 
             try
             {
-                await Task.Delay(sleep, token);
+                Task.Delay(coarse, token).GetAwaiter().GetResult();
             }
-            catch (TaskCanceledException)
+            catch (OperationCanceledException)
             {
                 return;
             }
