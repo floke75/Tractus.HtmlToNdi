@@ -658,7 +658,7 @@ internal sealed class NdiVideoPipeline : IDisposable
         }
 
         var scheduler = invalidationScheduler;
-        if (scheduler is null || captureGateActive || scheduler.IsPaused)
+        if (scheduler is null || captureGateActive)
         {
             return;
         }
@@ -1069,7 +1069,28 @@ internal sealed class NdiVideoPipeline : IDisposable
             var shouldExpire = true;
             try
             {
-                await Task.Delay(timeout, linkedCts.Token).ConfigureAwait(false);
+                var elapsed = TimeSpan.Zero;
+                var step = TimeSpan.FromMilliseconds(25);
+
+                while (elapsed < timeout)
+                {
+                    var remaining = timeout - elapsed;
+                    if (remaining <= TimeSpan.Zero)
+                    {
+                        break;
+                    }
+
+                    var delay = remaining < step ? remaining : step;
+                    await Task.Delay(delay, linkedCts.Token).ConfigureAwait(false);
+
+                    var scheduler = invalidationScheduler;
+                    if (scheduler is not null && scheduler.IsPaused)
+                    {
+                        continue;
+                    }
+
+                    elapsed += delay;
+                }
             }
             catch (TaskCanceledException)
             {
@@ -1359,8 +1380,22 @@ internal sealed class NdiVideoPipeline : IDisposable
             return 0d;
         }
 
-        var captureDrift = captureCadenceTracker.GetDriftFrames();
-        var outputDrift = outputCadenceTracker.GetDriftFrames();
+        var captureSnapshot = captureCadenceTracker.GetSnapshot();
+        var outputSnapshot = outputCadenceTracker.GetSnapshot();
+
+        if (captureSnapshot.IntervalSamples < 2 || outputSnapshot.IntervalSamples < 1)
+        {
+            Interlocked.Exchange(ref cadenceAlignmentDeltaFrames, 0d);
+            if (pumpCadenceAdaptationEnabled && invalidationScheduler is not null)
+            {
+                invalidationScheduler.UpdateCadenceAlignment(0);
+            }
+
+            return 0d;
+        }
+
+        var captureDrift = captureSnapshot.DriftFrames;
+        var outputDrift = outputSnapshot.DriftFrames;
         var delta = captureDrift - outputDrift;
         Interlocked.Exchange(ref cadenceAlignmentDeltaFrames, delta);
 
@@ -2097,6 +2132,12 @@ internal sealed class NdiVideoPipeline : IDisposable
             return;
         }
 
+        var captureSnapshot = captureCadenceTracker.GetSnapshot();
+        if (!TryGetCaptureCadenceSummary(captureSnapshot, out var capturePercent, out var captureAverageIntervalTicks))
+        {
+            return;
+        }
+
         lastTelemetry = now;
 
         var bufferStats = BufferingEnabled && ringBuffer is not null
@@ -2133,21 +2174,17 @@ internal sealed class NdiVideoPipeline : IDisposable
         }
 
         var cadenceStats = string.Empty;
-        var captureSnapshot = captureCadenceTracker.GetSnapshot();
-        if (TryGetCaptureCadenceSummary(captureSnapshot, out var capturePercent, out var captureAverageIntervalTicks))
+        var shortfallPercent = Math.Max(0d, 100d - capturePercent);
+        var captureFps = captureAverageIntervalTicks <= 0
+            ? 0
+            : TimeSpan.TicksPerSecond / captureAverageIntervalTicks;
+        if (!double.IsFinite(captureFps) || captureFps < 0)
         {
-            var shortfallPercent = Math.Max(0d, 100d - capturePercent);
-            var captureFps = captureAverageIntervalTicks <= 0
-                ? 0
-                : TimeSpan.TicksPerSecond / captureAverageIntervalTicks;
-            if (!double.IsFinite(captureFps) || captureFps < 0)
-            {
-                captureFps = 0;
-            }
-
-            cadenceStats += System.FormattableString.Invariant(
-                $", captureCadencePercent={capturePercent:F2}, captureCadenceShortfallPercent={shortfallPercent:F2}, captureCadenceFps={captureFps:F4}");
+            captureFps = 0;
         }
+
+        cadenceStats += System.FormattableString.Invariant(
+            $", captureCadencePercent={capturePercent:F2}, captureCadenceShortfallPercent={shortfallPercent:F2}, captureCadenceFps={captureFps:F4}");
 
         if (cadenceTelemetryEnabled)
         {
