@@ -310,6 +310,7 @@ internal sealed class FramePump : IPacedInvalidationScheduler
             }
 
             request.Complete();
+            Interlocked.Exchange(ref lastPaintTicks, DateTime.UtcNow.Ticks);
 
             if (!invalidateTask.IsCompleted)
             {

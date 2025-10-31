@@ -188,7 +188,9 @@ When adding routes, update **both** this table and `Tractus.HtmlToNdi.http` samp
 * `ChromiumWebBrowser` is constructed with `AudioHandler = new CustomAudioHandler()` and a fixed `System.Drawing.Size(width,height)`.
 * A pacing-aware `FramePump` invalidates Chromium on the cadence derived from `--fps` (or `--windowless-frame-rate`). When paced
   invalidation is enabled the pump runs in on-demand mode and waits for `NdiVideoPipeline` to request each capture slot; otherwise
-  it free-runs on the configured interval. The watchdog issues recovery invalidations if paints stall.
+  it free-runs on the configured interval. The watchdog issues recovery invalidations if paints stall, and each successful
+  invalidate refreshes the watchdog timestamp so queued requests resumed after a pause do not immediately trigger an extra
+  watchdog invalidate.
 * **Experimental compositor capture** lives behind the `--enable-compositor-capture` CLI flag and the matching launcher checkbox
   (labelled “Compositor Capture (Experimental)”). The helper disables Chromium’s auto begin frames before starting the native
   session and restores them when the bridge stops. If the native DLL is missing or refuses to start, CefWrapper falls back to the
@@ -236,8 +238,9 @@ When adding routes, update **both** this table and `Tractus.HtmlToNdi.http` samp
   each transmission so Chromium cannot outrun the paced cadence. Backpressure counters (`captureGatePauses` / `captureGateResumes`)
   reset alongside the pacing state machine to keep telemetry accurate.
 * Outstanding invalidations are represented by explicit tickets that share a single counter across direct pacing, buffered pacing,
-  and capture backpressure. Tickets expire after a short timeout; when that happens the pipeline trims stale entries and re-requests
-  demand immediately so Chromium keeps drawing after stalls.
+  and capture backpressure. Tickets expire after a short timeout—unless the scheduler is explicitly paused—in which case expiration
+  is suppressed to avoid churn. When a timeout does fire the pipeline trims stale entries and re-requests demand immediately so
+  Chromium keeps drawing after stalls.
 * Compositor frames flow through `HandleCompositorFrame`. They skip invalidation ticket checks but still contribute to telemetry.
   Frames with non-CPU storage kinds are dropped (with warnings) until CPU mapping is implemented.
 * Direct paced sends run a maintenance loop that periodically tops up pending invalidations whenever pacing is active. The loop
@@ -250,7 +253,7 @@ When adding routes, update **both** this table and `Tractus.HtmlToNdi.http` samp
 ### Logging & diagnostics (`AppManagement.cs`)
 * `AppManagement.InstanceName` composes `<os>_<arch>_<machinename>` for telemetry or metadata (not currently used elsewhere).
 * On fatal `AppDomain` exceptions, details are logged but the process is not explicitly terminated beyond .NET’s default behaviour.
-* Telemetry entries now include `captureCadencePercent`, `captureCadenceShortfallPercent`, and `captureCadenceFps` once Chromium paints have settled (buffer primed and roughly two seconds of cadence history), even when cadence jitter telemetry is disabled, so operators can spot paint-stage drops immediately.
+* Telemetry entries now include `captureCadencePercent`, `captureCadenceShortfallPercent`, and `captureCadenceFps` once Chromium paints have settled (buffer primed and roughly two seconds of cadence history). Emission is deferred until those cadence metrics are ready so the first log after warmup already carries the cadence snapshot, even when cadence jitter telemetry is disabled.
 
 ---
 
