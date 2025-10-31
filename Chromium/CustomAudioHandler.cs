@@ -127,10 +127,26 @@ public class CustomAudioHandler : IAudioHandler
     /// <param name="pts">The presentation timestamp.</param>
     public unsafe void OnAudioStreamPacket(IWebBrowser chromiumWebBrowser, IBrowser browser, nint data, int noOfFrames, long pts)
     {
-        //Console.WriteLine($"OnAudioStreamPacket - Current thread: {Thread.CurrentThread.ManagedThreadId}");
-        if (this.audioBufferPtr == nint.Zero)
+        if (!this.EnsureAudioBufferCapacity(noOfFrames) || data == nint.Zero)
         {
             return;
+        }
+
+        var bytesPerChannel = this.audioBufferLengthInBytes / this.channelCount;
+        var channelStride = (long)bytesPerChannel;
+        var destinationBase = (byte*)this.audioBufferPtr;
+        var channelSources = (float**)data;
+
+        for (var c = 0; c < this.channelCount; c++)
+        {
+            var source = channelSources[c];
+            if (source is null)
+            {
+                continue;
+            }
+
+            var destination = destinationBase + (channelStride * c);
+            Buffer.MemoryCopy(source, destination, channelStride, channelStride);
         }
 
         if (Program.NdiSenderPtr == nint.Zero)
@@ -138,31 +154,50 @@ public class CustomAudioHandler : IAudioHandler
             return;
         }
 
-        var planarDataPtr = this.audioBufferPtr.ToPointer();
-
-        float** dataPtr = (float**)data;
-
-        for (var c = 0; c < this.channelCount; c++)
-        {
-            nint destPtr = (nint)dataPtr[c];
-            Buffer.MemoryCopy(
-                dataPtr[c],
-                nint.Add(this.audioBufferPtr, sizeof(float) * c * noOfFrames).ToPointer(),
-                sizeof(float) * noOfFrames,
-                sizeof(float) * noOfFrames);
-        }
-
         var audioFrame = new NDIlib.audio_frame_v2_t
         {
-            channel_stride_in_bytes = sizeof(float) * noOfFrames,  // Stride for interleaved audio
-            p_data = this.audioBufferPtr,//planarData,  // Pointer to the interleaved audio data
-            no_channels = this.channelCount,  // Number of channels (e.g., 2 for stereo)
-            no_samples = noOfFrames,  // Number of frames (each frame contains a sample per channel)
-            sample_rate = this.AudioParameters.SampleRate,  // Sample rate of the audio
-            timecode = pts // Set timecode (optional)
+            channel_stride_in_bytes = bytesPerChannel,
+            p_data = this.audioBufferPtr,
+            no_channels = this.channelCount,
+            no_samples = noOfFrames,
+            sample_rate = this.AudioParameters.SampleRate,
+            timecode = pts,
         };
 
         NDIlib.send_send_audio_v2(Program.NdiSenderPtr, ref audioFrame);
+    }
+
+    private bool EnsureAudioBufferCapacity(int noOfFrames)
+    {
+        if (noOfFrames <= 0 || this.channelCount <= 0)
+        {
+            return false;
+        }
+
+        var requiredBytesLong = (long)sizeof(float) * this.channelCount * noOfFrames;
+        if (requiredBytesLong <= 0 || requiredBytesLong > int.MaxValue)
+        {
+            return false;
+        }
+
+        var requiredBytes = (int)requiredBytesLong;
+
+        if (this.audioBufferPtr != nint.Zero && requiredBytes <= this.audioBufferLengthInBytes)
+        {
+            return true;
+        }
+
+        if (this.audioBufferPtr != nint.Zero)
+        {
+            Marshal.FreeHGlobal(this.audioBufferPtr);
+            this.audioBufferPtr = nint.Zero;
+            this.audioBufferLengthInBytes = 0;
+        }
+
+        this.audioBufferPtr = Marshal.AllocHGlobal(requiredBytes);
+        this.audioBufferLengthInBytes = requiredBytes;
+
+        return this.audioBufferPtr != nint.Zero;
     }
 
     /// <summary>
