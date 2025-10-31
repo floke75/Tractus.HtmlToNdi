@@ -316,7 +316,12 @@ internal class CefWrapper : IDisposable
     /// <param name="increment">The amount to scroll.</param>
     public void ScrollBy(int increment)
     {
-        this.browser.SendMouseWheelEvent(0, 0, 0, increment, CefEventFlags.None); 
+        if (this.browser is null)
+        {
+            return;
+        }
+
+        this.browser.SendMouseWheelEvent(0, 0, 0, increment, CefEventFlags.None);
     }
 
     /// <summary>
@@ -380,6 +385,11 @@ internal class CefWrapper : IDisposable
     /// </summary>
     public void RefreshPage()
     {
+        if (this.browser is null)
+        {
+            return;
+        }
+
         this.browser.Reload();
     }
 }
