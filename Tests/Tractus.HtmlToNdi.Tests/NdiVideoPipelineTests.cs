@@ -1566,6 +1566,61 @@ public class NdiVideoPipelineTests
             pipeline.Dispose();
         }
     }
+
+    [Fact]
+    public void TelemetryIncludesCompositorCadenceMetrics()
+    {
+        var sender = new CollectingSender();
+        var sink = new CollectingSink();
+        var logger = new LoggerConfiguration().WriteTo.Sink(sink).CreateLogger();
+        var options = new NdiVideoPipelineOptions
+        {
+            EnableBuffering = false,
+            TelemetryInterval = TimeSpan.FromMilliseconds(1),
+            EnableCadenceTelemetry = false,
+            EnablePacedInvalidation = false,
+            DisablePacedInvalidation = true,
+            EnableCompositorCapture = true,
+        };
+
+        var pipeline = new NdiVideoPipeline(sender, new FrameRate(60, 1), options, logger);
+        try
+        {
+            pipeline.SkipTelemetryWarmupForTesting();
+
+            var buffer = Marshal.AllocHGlobal(16);
+            try
+            {
+                var baseTimestamp = Stopwatch.GetTimestamp();
+                var ticksPerFrame = Stopwatch.Frequency / 60d;
+                const int frameCount = 200;
+                for (var i = 0; i < frameCount; i++)
+                {
+                    var timestamp = baseTimestamp + (long)Math.Round(ticksPerFrame * i);
+                    var frame = new CapturedFrame(buffer, 2, 2, 8, timestamp, DateTime.UtcNow);
+                    pipeline.HandleCompositorFrame(frame);
+                }
+            }
+            finally
+            {
+                Marshal.FreeHGlobal(buffer);
+            }
+
+            var telemetryMessage = sink.Events
+                .Select(e => e.RenderMessage())
+                .FirstOrDefault(m => m.Contains("NDI video pipeline stats", StringComparison.Ordinal));
+
+            Assert.NotNull(telemetryMessage);
+            var message = telemetryMessage!;
+            Assert.Contains("captureCadencePercent=", message, StringComparison.Ordinal);
+            Assert.Contains("compositorCapture=True", message, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("compositorFrames=", message, StringComparison.Ordinal);
+        }
+        finally
+        {
+            pipeline.Dispose();
+        }
+    }
 }
 
 internal sealed class NullSink : ILogEventSink
