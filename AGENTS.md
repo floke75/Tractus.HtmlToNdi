@@ -188,9 +188,8 @@ When adding routes, update **both** this table and `Tractus.HtmlToNdi.http` samp
 * `ChromiumWebBrowser` is constructed with `AudioHandler = new CustomAudioHandler()` and a fixed `System.Drawing.Size(width,height)`.
 * A pacing-aware `FramePump` invalidates Chromium on the cadence derived from `--fps` (or `--windowless-frame-rate`). When paced
   invalidation is enabled the pump runs in on-demand mode and waits for `NdiVideoPipeline` to request each capture slot; otherwise
-  it free-runs on the configured interval. The watchdog issues recovery invalidations if paints stall, and each successful
-  invalidate refreshes the watchdog timestamp so queued requests resumed after a pause do not immediately trigger an extra
-  watchdog invalidate.
+  it free-runs on the configured interval. The watchdog issues recovery invalidations if paints stall, refreshing its timestamp
+  only on real paint callbacks (or after `Resume`) so Chromium must produce a frame before the stall timer resets.
 * **Experimental compositor capture** lives behind the `--enable-compositor-capture` CLI flag and the matching launcher checkbox
   (labelled “Compositor Capture (Experimental)”). The helper disables Chromium’s auto begin frames before starting the native
   session and restores them when the bridge stops. If the native DLL is missing or refuses to start, CefWrapper falls back to the
