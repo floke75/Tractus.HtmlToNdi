@@ -58,6 +58,26 @@ public class CefWrapperInputValidationTests
         Assert.Null(exception);
     }
 
+    [Fact]
+    public void ScrollBy_DoesNotThrow_WhenBrowserIsNull()
+    {
+        var wrapper = CreateWrapper();
+
+        var exception = Record.Exception(() => wrapper.ScrollBy(120));
+
+        Assert.Null(exception);
+    }
+
+    [Fact]
+    public void RefreshPage_DoesNotThrow_WhenBrowserIsNull()
+    {
+        var wrapper = CreateWrapper();
+
+        var exception = Record.Exception(() => wrapper.RefreshPage());
+
+        Assert.Null(exception);
+    }
+
     private static CefWrapper CreateWrapper()
     {
         var wrapper = (CefWrapper)RuntimeHelpers.GetUninitializedObject(typeof(CefWrapper));
