@@ -7,6 +7,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Serilog;
 using Serilog.Core;
+using Serilog.Events;
 using Tractus.HtmlToNdi.Chromium;
 using Tractus.HtmlToNdi.Video;
 using Xunit;
@@ -1512,11 +1513,149 @@ public class NdiVideoPipelineTests
         Array.Fill(data, value);
         Marshal.Copy(data, 0, buffer, size);
     }
+
+    [Fact]
+    public void TelemetryLogsCaptureCadencePercentAfterSettling()
+    {
+        var sender = new CollectingSender();
+        var sink = new CollectingSink();
+        var logger = new LoggerConfiguration().WriteTo.Sink(sink).CreateLogger();
+        var options = new NdiVideoPipelineOptions
+        {
+            EnableBuffering = false,
+            TelemetryInterval = TimeSpan.FromMilliseconds(1),
+            EnableCadenceTelemetry = false,
+            EnablePacedInvalidation = false,
+            DisablePacedInvalidation = true,
+        };
+
+        var pipeline = new NdiVideoPipeline(sender, new FrameRate(60, 1), options, logger);
+        try
+        {
+            pipeline.SkipTelemetryWarmupForTesting();
+
+            var buffer = Marshal.AllocHGlobal(16);
+            try
+            {
+                var baseTimestamp = Stopwatch.GetTimestamp();
+                var ticksPerFrame = Stopwatch.Frequency / 60d;
+                const int frameCount = 200;
+                for (var i = 0; i < frameCount; i++)
+                {
+                    var timestamp = baseTimestamp + (long)Math.Round(ticksPerFrame * i);
+                    var frame = new CapturedFrame(buffer, 2, 2, 8, timestamp, DateTime.UtcNow);
+                    pipeline.HandleFrame(frame);
+                }
+            }
+            finally
+            {
+                Marshal.FreeHGlobal(buffer);
+            }
+
+            var telemetryMessage = sink.Events
+                .Select(e => e.RenderMessage())
+                .FirstOrDefault(m => m.Contains("NDI video pipeline stats", StringComparison.Ordinal));
+
+            Assert.NotNull(telemetryMessage);
+            var message = telemetryMessage!;
+            Assert.Contains("captureCadencePercent=", message, StringComparison.Ordinal);
+            Assert.Contains("captureCadenceShortfallPercent=", message, StringComparison.Ordinal);
+        }
+        finally
+        {
+            pipeline.Dispose();
+        }
+    }
+
+    [Fact]
+    public void TelemetryIncludesCompositorCadenceMetrics()
+    {
+        var sender = new CollectingSender();
+        var sink = new CollectingSink();
+        var logger = new LoggerConfiguration().WriteTo.Sink(sink).CreateLogger();
+        var options = new NdiVideoPipelineOptions
+        {
+            EnableBuffering = false,
+            TelemetryInterval = TimeSpan.FromMilliseconds(1),
+            EnableCadenceTelemetry = false,
+            EnablePacedInvalidation = false,
+            DisablePacedInvalidation = true,
+            EnableCompositorCapture = true,
+        };
+
+        var pipeline = new NdiVideoPipeline(sender, new FrameRate(60, 1), options, logger);
+        try
+        {
+            pipeline.SkipTelemetryWarmupForTesting();
+
+            var buffer = Marshal.AllocHGlobal(16);
+            try
+            {
+                var baseTimestamp = Stopwatch.GetTimestamp();
+                var ticksPerFrame = Stopwatch.Frequency / 60d;
+                const int frameCount = 200;
+                for (var i = 0; i < frameCount; i++)
+                {
+                    var timestamp = baseTimestamp + (long)Math.Round(ticksPerFrame * i);
+                    var frame = new CapturedFrame(buffer, 2, 2, 8, timestamp, DateTime.UtcNow);
+                    pipeline.HandleCompositorFrame(frame);
+                }
+            }
+            finally
+            {
+                Marshal.FreeHGlobal(buffer);
+            }
+
+            var telemetryMessage = sink.Events
+                .Select(e => e.RenderMessage())
+                .FirstOrDefault(m => m.Contains("NDI video pipeline stats", StringComparison.Ordinal));
+
+            Assert.NotNull(telemetryMessage);
+            var message = telemetryMessage!;
+            Assert.Contains("captureCadencePercent=", message, StringComparison.Ordinal);
+            Assert.Contains("compositorCapture=True", message, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("compositorFrames=", message, StringComparison.Ordinal);
+        }
+        finally
+        {
+            pipeline.Dispose();
+        }
+    }
 }
 
 internal sealed class NullSink : ILogEventSink
 {
     public void Emit(Serilog.Events.LogEvent logEvent)
     {
+    }
+}
+
+internal sealed class CollectingSink : ILogEventSink
+{
+    private readonly object gate = new();
+    private readonly List<LogEvent> events = new();
+
+    public IReadOnlyList<LogEvent> Events
+    {
+        get
+        {
+            lock (gate)
+            {
+                return events.ToList();
+            }
+        }
+    }
+
+    public void Emit(LogEvent logEvent)
+    {
+        if (logEvent is null)
+        {
+            return;
+        }
+
+        lock (gate)
+        {
+            events.Add(logEvent);
+        }
     }
 }
