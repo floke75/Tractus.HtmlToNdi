@@ -132,8 +132,9 @@ public class CustomAudioHandler : IAudioHandler
             return;
         }
 
-        var bytesPerChannel = this.audioBufferLengthInBytes / this.channelCount;
-        var channelStride = (long)bytesPerChannel;
+        var bytesPerChannelLong = (long)sizeof(float) * noOfFrames;
+        var bytesPerChannel = (int)bytesPerChannelLong;
+        var channelStride = bytesPerChannelLong;
         var destinationBase = (byte*)this.audioBufferPtr;
         var channelSources = (float**)data;
 
