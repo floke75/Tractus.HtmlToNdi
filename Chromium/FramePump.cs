@@ -168,6 +168,8 @@ internal sealed class FramePump : IPacedInvalidationScheduler
 
         paused = false;
 
+        Interlocked.Exchange(ref lastPaintTicks, DateTime.UtcNow.Ticks);
+
         while (pausedQueue.TryDequeue(out var pending))
         {
             if (pending.IsCancellationRequested)

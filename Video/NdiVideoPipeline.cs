@@ -1061,11 +1061,6 @@ internal sealed class NdiVideoPipeline : IDisposable
             return;
         }
 
-        if (invalidationScheduler?.IsPaused ?? false)
-        {
-            return;
-        }
-
         var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellation.Token);
         ticket.ArmTimeout(linkedCts);
 
