@@ -1069,7 +1069,28 @@ internal sealed class NdiVideoPipeline : IDisposable
             var shouldExpire = true;
             try
             {
-                await Task.Delay(timeout, linkedCts.Token).ConfigureAwait(false);
+                var elapsed = TimeSpan.Zero;
+                var step = TimeSpan.FromMilliseconds(25);
+
+                while (elapsed < timeout)
+                {
+                    var remaining = timeout - elapsed;
+                    if (remaining <= TimeSpan.Zero)
+                    {
+                        break;
+                    }
+
+                    var delay = remaining < step ? remaining : step;
+                    await Task.Delay(delay, linkedCts.Token).ConfigureAwait(false);
+
+                    var scheduler = invalidationScheduler;
+                    if (scheduler is not null && scheduler.IsPaused)
+                    {
+                        continue;
+                    }
+
+                    elapsed += delay;
+                }
             }
             catch (TaskCanceledException)
             {
