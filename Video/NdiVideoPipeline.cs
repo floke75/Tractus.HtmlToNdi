@@ -301,7 +301,8 @@ internal sealed class NdiVideoPipeline : IDisposable
 
     /// <summary>
     /// Attaches the pacing-aware invalidation scheduler, resets capture gating state, and restarts
-    /// maintenance loops so telemetry and Chromium demand stay aligned.
+    /// direct pacing maintenance loops so telemetry and Chromium demand stay aligned when a scheduler
+    /// is present.
     /// </summary>
     /// <param name="scheduler">The scheduler responsible for coordinating Chromium invalidations.</param>
     internal void AttachInvalidationScheduler(IPacedInvalidationScheduler? scheduler)
@@ -2011,6 +2012,12 @@ internal sealed class NdiVideoPipeline : IDisposable
         };
     }
 
+    /// <summary>
+    /// Computes a stable capture cadence summary once enough monotonic samples have been observed.
+    /// Requires roughly two seconds of paint history (at least <see cref="cadencePercentMinimumIntervals"/>)
+    /// and, when buffering is active, a primed ring buffer so the reported cadence reflects the steady
+    /// state pipeline behaviour.
+    /// </summary>
     private bool TryGetCaptureCadenceSummary(CadenceSnapshot captureSnapshot, out double percentOfTarget, out double averageIntervalTicks)
     {
         percentOfTarget = 0;
