@@ -1,5 +1,7 @@
 # AGENTS.md — Project briefing for Tractus.HtmlToNdi
 
+> **LLM Agent instruction:** Whenever you add new functionality or change existing behaviour, update this document to keep it accurate.
+
 > Repository: [`tractusevents/Tractus.HtmlToNdi`](https://github.com/tractusevents/Tractus.HtmlToNdi)
 > Purpose: Windows-only utility that renders a Chromium page off-screen and publishes video/audio plus limited KVM over the NDI
 protocol, with a minimal HTTP control API.
@@ -241,6 +243,9 @@ When adding routes, update **both** this table and `Tractus.HtmlToNdi.http` samp
 * Direct paced sends run a maintenance loop that periodically tops up pending invalidations whenever pacing is active. The loop
   honours the capture gate and scheduler pause state so it never overloads Chromium while still preventing the demand counter from
   draining to zero when receivers slow down.
+* Paced output deadlines are driven by a high-resolution waitable timer created with `CreateWaitableTimerEx` / `SetWaitableTimerEx`.
+  When the platform cannot honour those APIs the scheduler falls back to the stopwatch/busy-wait path while logging the downgrade
+  once.
 
 ### Logging & diagnostics (`AppManagement.cs`)
 * `AppManagement.InstanceName` composes `<os>_<arch>_<machinename>` for telemetry or metadata (not currently used elsewhere).

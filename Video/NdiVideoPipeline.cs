@@ -22,7 +22,7 @@ internal sealed class NdiVideoPipeline : IDisposable
     private readonly CancellationTokenSource cancellation = new();
     private readonly FrameRingBuffer<NdiVideoFrame>? ringBuffer;
     private readonly ILogger logger;
-    private static readonly TimeSpan BusyWaitThreshold = TimeSpan.FromMilliseconds(1);
+    private static readonly TimeSpan BusyWaitThreshold = TimeSpan.FromMilliseconds(0.5);
     private static readonly TimeSpan TelemetryWarmupPeriod = TimeSpan.FromSeconds(30);
     private static readonly double StopwatchTicksToTimeSpanTicks = TimeSpan.TicksPerSecond / (double)Stopwatch.Frequency;
 

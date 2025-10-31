@@ -16,12 +16,17 @@ internal sealed class HighResolutionWaitableTimer : IDisposable
 
     private readonly SafeWaitHandle handle;
     private readonly WaitableTimerHandle waitHandle;
+    private readonly WaitHandle[] waitHandles;
+    private readonly ILogger logger;
     private bool disposed;
 
-    private HighResolutionWaitableTimer(SafeWaitHandle handle)
+    private HighResolutionWaitableTimer(SafeWaitHandle handle, ILogger logger)
     {
         this.handle = handle ?? throw new ArgumentNullException(nameof(handle));
+        this.logger = logger ?? throw new ArgumentNullException(nameof(logger));
         waitHandle = new WaitableTimerHandle(handle);
+        waitHandles = new WaitHandle[2];
+        waitHandles[0] = waitHandle;
     }
 
     internal static HighResolutionWaitableTimer? TryCreate(ILogger logger)
@@ -30,7 +35,7 @@ internal sealed class HighResolutionWaitableTimer : IDisposable
         if (timerHandle is not null)
         {
             logger.Debug("Using high-resolution waitable timer for paced output.");
-            return new HighResolutionWaitableTimer(timerHandle);
+            return new HighResolutionWaitableTimer(timerHandle, logger);
         }
 
         if (Interlocked.CompareExchange(ref highResolutionUnavailableLogged, 1, 0) == 0)
@@ -68,12 +73,10 @@ internal sealed class HighResolutionWaitableTimer : IDisposable
             QuadPart = -ticks,
         };
 
-        if (!NativeMethods.SetWaitableTimer(handle, ref dueTime, 0, IntPtr.Zero, IntPtr.Zero, false))
-        {
-            throw new Win32Exception(Marshal.GetLastWin32Error());
-        }
+        SetTimer(dueTime);
 
-        var signaled = WaitHandle.WaitAny(new WaitHandle[] { waitHandle, token.WaitHandle });
+        waitHandles[1] = token.WaitHandle;
+        var signaled = WaitHandle.WaitAny(waitHandles);
         if (signaled == WaitHandle.WaitTimeout)
         {
             return;
@@ -83,6 +86,45 @@ internal sealed class HighResolutionWaitableTimer : IDisposable
         {
             NativeMethods.CancelWaitableTimer(handle);
             token.ThrowIfCancellationRequested();
+        }
+    }
+
+    private static int setWaitableTimerExUnavailable;
+    private static int setWaitableTimerExDowngradeLogged;
+
+    private void SetTimer(LargeInteger dueTime)
+    {
+        if (Volatile.Read(ref setWaitableTimerExUnavailable) == 0)
+        {
+            if (NativeMethods.SetWaitableTimerEx(handle, ref dueTime, 0, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, 0))
+            {
+                return;
+            }
+
+            var error = Marshal.GetLastWin32Error();
+            if (error != NativeMethods.ErrorCallNotImplemented && error != NativeMethods.ErrorInvalidParameter)
+            {
+                throw new Win32Exception(error);
+            }
+
+            if (Interlocked.CompareExchange(ref setWaitableTimerExUnavailable, 1, 0) == 0)
+            {
+                if (Interlocked.CompareExchange(ref setWaitableTimerExDowngradeLogged, 1, 0) == 0)
+                {
+                    logger.Warning(
+                        "SetWaitableTimerEx is unavailable (Win32 error {Error}); using SetWaitableTimer fallback for paced output.",
+                        error);
+                }
+            }
+            else
+            {
+                Interlocked.Exchange(ref setWaitableTimerExUnavailable, 1);
+            }
+        }
+
+        if (!NativeMethods.SetWaitableTimer(handle, ref dueTime, 0, IntPtr.Zero, IntPtr.Zero, false))
+        {
+            throw new Win32Exception(Marshal.GetLastWin32Error());
         }
     }
 
@@ -129,8 +171,22 @@ internal sealed class HighResolutionWaitableTimer : IDisposable
 
     private static class NativeMethods
     {
+        internal const int ErrorCallNotImplemented = 120;
+        internal const int ErrorInvalidParameter = 87;
+
         [DllImport("kernel32.dll", EntryPoint = "CreateWaitableTimerExW", SetLastError = true, CharSet = CharSet.Unicode)]
         internal static extern SafeWaitHandle CreateWaitableTimerEx(IntPtr lpTimerAttributes, string? lpTimerName, uint dwFlags, uint dwDesiredAccess);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        internal static extern bool SetWaitableTimerEx(
+            SafeWaitHandle hTimer,
+            [In] ref LargeInteger lpDueTime,
+            int lPeriod,
+            IntPtr pfnCompletionRoutine,
+            IntPtr lpArgToCompletionRoutine,
+            IntPtr wakeContext,
+            uint tolerableDelay);
 
         [DllImport("kernel32.dll", SetLastError = true)]
         [return: MarshalAs(UnmanagedType.Bool)]
