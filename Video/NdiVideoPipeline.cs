@@ -66,12 +66,14 @@ internal sealed class NdiVideoPipeline : IDisposable
     private long sentFrames;
     private long repeatedFrames;
     private DateTime lastTelemetry = DateTime.UtcNow;
-    private readonly DateTime telemetryWarmupDeadline;
+    private DateTime telemetryWarmupDeadline;
     private readonly CadenceTracker captureCadenceTracker;
     private readonly CadenceTracker outputCadenceTracker;
     private readonly bool alignWithCaptureTimestamps;
     private readonly bool cadenceTelemetryEnabled;
     private readonly bool cadenceTrackingEnabled;
+    private readonly long cadencePercentMinimumIntervals;
+    private readonly double cadencePercentMinimumDurationTicks;
     private double cadenceAlignmentDeltaFrames;
     private readonly bool pacedInvalidationEnabled;
     private readonly bool captureBackpressureEnabled;
@@ -231,6 +233,11 @@ internal sealed class NdiVideoPipeline : IDisposable
         alignWithCaptureTimestamps = options.AlignWithCaptureTimestamps;
         cadenceTelemetryEnabled = options.EnableCadenceTelemetry;
         cadenceTrackingEnabled = alignWithCaptureTimestamps || cadenceTelemetryEnabled;
+        cadencePercentMinimumIntervals = Math.Max(10L, (long)Math.Ceiling(frameRate.Value * 2d));
+        var settleDurationTicks = Math.Max(
+            (double)TimeSpan.FromSeconds(2).Ticks,
+            frameInterval.Ticks * (double)cadencePercentMinimumIntervals);
+        cadencePercentMinimumDurationTicks = settleDurationTicks;
         var pacingRequested = options.DisablePacedInvalidation ? false : options.EnablePacedInvalidation;
         pacedInvalidationEnabled = pacingRequested;
         captureBackpressureEnabled = options.EnableBuffering
@@ -293,7 +300,8 @@ internal sealed class NdiVideoPipeline : IDisposable
     internal NdiVideoPipelineOptions Options => options;
 
     /// <summary>
-    /// Attaches the pacing-aware invalidation scheduler and resets gating state so telemetry stays in sync.
+    /// Attaches the pacing-aware invalidation scheduler, resets capture gating state, and restarts
+    /// maintenance loops so telemetry and Chromium demand stay aligned.
     /// </summary>
     /// <param name="scheduler">The scheduler responsible for coordinating Chromium invalidations.</param>
     internal void AttachInvalidationScheduler(IPacedInvalidationScheduler? scheduler)
@@ -329,7 +337,18 @@ internal sealed class NdiVideoPipeline : IDisposable
     }
 
     /// <summary>
-    /// Starts the paced sender loop when buffering is enabled and primes the scheduler for warm-up.
+    /// Forces the telemetry warmup window to be considered elapsed and clears the emission interval so
+    /// the next telemetry check can log immediately. Intended for test scenarios.
+    /// </summary>
+    internal void SkipTelemetryWarmupForTesting()
+    {
+        telemetryWarmupDeadline = DateTime.MinValue;
+        lastTelemetry = DateTime.MinValue;
+    }
+
+    /// <summary>
+    /// Starts the paced sender loop when buffering is enabled by resetting buffering state and launching
+    /// the background pacing worker.
     /// </summary>
     public void Start()
     {
@@ -393,6 +412,7 @@ internal sealed class NdiVideoPipeline : IDisposable
     private void HandleFrameInternal(CapturedFrame frame, bool compositorDriven)
     {
         Interlocked.Increment(ref capturedFrames);
+        captureCadenceTracker.Record(frame.MonotonicTimestamp);
         if (compositorDriven)
         {
             Interlocked.Increment(ref compositorFrames);
@@ -406,11 +426,6 @@ internal sealed class NdiVideoPipeline : IDisposable
                 frame.Dispose();
                 return;
             }
-        }
-
-        if (cadenceTrackingEnabled)
-        {
-            captureCadenceTracker.Record(frame.MonotonicTimestamp);
         }
 
         if (!EnsureCpuAccessible(ref frame, compositorDriven))
@@ -1720,6 +1735,8 @@ internal sealed class NdiVideoPipeline : IDisposable
         isWarmingUp = true;
         hasPrimedOnce = false;
         warmupStarted = DateTime.UtcNow;
+        telemetryWarmupDeadline = DateTime.UtcNow + TelemetryWarmupPeriod;
+        lastTelemetry = DateTime.UtcNow;
         latencyError = 0;
         consecutiveLowBacklogTicks = 0;
         latencyExpansionActive = false;
@@ -1904,7 +1921,7 @@ internal sealed class NdiVideoPipeline : IDisposable
 
                 if (intervalSamples == 0)
                 {
-                    return new CadenceSnapshot(0, 0, 0, 0, 0, targetIntervalTicks);
+                    return new CadenceSnapshot(0, 0, 0, 0, 0, targetIntervalTicks, lastRelativeTicks);
                 }
 
                 var expectedTicks = intervalSamples * targetIntervalTicks;
@@ -1915,16 +1932,16 @@ internal sealed class NdiVideoPipeline : IDisposable
                     rms = 0;
                 }
 
-                return new CadenceSnapshot(intervalSamples, rms, maxIntervalErrorTicks, minIntervalErrorTicks, driftTicks, targetIntervalTicks);
+                return new CadenceSnapshot(intervalSamples, rms, maxIntervalErrorTicks, minIntervalErrorTicks, driftTicks, targetIntervalTicks, lastRelativeTicks);
             }
         }
     }
 
     private readonly struct CadenceSnapshot
     {
-        public static CadenceSnapshot Empty { get; } = new CadenceSnapshot(0, 0, 0, 0, 0, 1);
+        public static CadenceSnapshot Empty { get; } = new CadenceSnapshot(0, 0, 0, 0, 0, 1, 0);
 
-        public CadenceSnapshot(long intervalSamples, double rmsTicks, double maxTicks, double minTicks, double driftTicks, double targetIntervalTicks)
+        public CadenceSnapshot(long intervalSamples, double rmsTicks, double maxTicks, double minTicks, double driftTicks, double targetIntervalTicks, double totalDurationTicks)
         {
             IntervalSamples = intervalSamples;
             IntervalRmsTicks = rmsTicks;
@@ -1932,6 +1949,7 @@ internal sealed class NdiVideoPipeline : IDisposable
             MinIntervalErrorTicks = minTicks;
             DriftTicks = driftTicks;
             TargetIntervalTicks = targetIntervalTicks;
+            TotalDurationTicks = totalDurationTicks;
         }
 
         public long IntervalSamples { get; }
@@ -1945,6 +1963,8 @@ internal sealed class NdiVideoPipeline : IDisposable
         public double DriftTicks { get; }
 
         public double TargetIntervalTicks { get; }
+
+        public double TotalDurationTicks { get; }
 
         public double IntervalRmsMilliseconds => IntervalSamples == 0 ? 0 : IntervalRmsTicks / TimeSpan.TicksPerMillisecond;
 
@@ -1989,6 +2009,46 @@ internal sealed class NdiVideoPipeline : IDisposable
             xres = frame.Width,
             yres = frame.Height,
         };
+    }
+
+    private bool TryGetCaptureCadenceSummary(CadenceSnapshot captureSnapshot, out double percentOfTarget, out double averageIntervalTicks)
+    {
+        percentOfTarget = 0;
+        averageIntervalTicks = 0;
+
+        if (captureSnapshot.IntervalSamples < cadencePercentMinimumIntervals)
+        {
+            return false;
+        }
+
+        if (options.EnableBuffering && !Volatile.Read(ref bufferPrimed))
+        {
+            return false;
+        }
+
+        if (captureSnapshot.TotalDurationTicks < cadencePercentMinimumDurationTicks)
+        {
+            return false;
+        }
+
+        if (captureSnapshot.TargetIntervalTicks <= 0)
+        {
+            return false;
+        }
+
+        averageIntervalTicks = captureSnapshot.TotalDurationTicks / captureSnapshot.IntervalSamples;
+        if (!double.IsFinite(averageIntervalTicks) || averageIntervalTicks <= 0)
+        {
+            return false;
+        }
+
+        percentOfTarget = captureSnapshot.TargetIntervalTicks / averageIntervalTicks * 100d;
+        if (!double.IsFinite(percentOfTarget))
+        {
+            return false;
+        }
+
+        return true;
     }
 
     private void EmitTelemetryIfNeeded([CallerMemberName] string? caller = null)
@@ -2040,9 +2100,24 @@ internal sealed class NdiVideoPipeline : IDisposable
         }
 
         var cadenceStats = string.Empty;
+        var captureSnapshot = captureCadenceTracker.GetSnapshot();
+        if (TryGetCaptureCadenceSummary(captureSnapshot, out var capturePercent, out var captureAverageIntervalTicks))
+        {
+            var shortfallPercent = Math.Max(0d, 100d - capturePercent);
+            var captureFps = captureAverageIntervalTicks <= 0
+                ? 0
+                : TimeSpan.TicksPerSecond / captureAverageIntervalTicks;
+            if (!double.IsFinite(captureFps) || captureFps < 0)
+            {
+                captureFps = 0;
+            }
+
+            cadenceStats += System.FormattableString.Invariant(
+                $", captureCadencePercent={capturePercent:F2}, captureCadenceShortfallPercent={shortfallPercent:F2}, captureCadenceFps={captureFps:F4}");
+        }
+
         if (cadenceTelemetryEnabled)
         {
-            var captureSnapshot = captureCadenceTracker.GetSnapshot();
             var outputSnapshot = outputCadenceTracker.GetSnapshot();
             var alignmentDelta = Interlocked.CompareExchange(ref cadenceAlignmentDeltaFrames, 0d, 0d);
             if (!double.IsFinite(alignmentDelta))
@@ -2050,7 +2125,7 @@ internal sealed class NdiVideoPipeline : IDisposable
                 alignmentDelta = 0;
             }
 
-            cadenceStats = System.FormattableString.Invariant(
+            cadenceStats += System.FormattableString.Invariant(
                 $", captureJitterRmsMs={captureSnapshot.IntervalRmsMilliseconds:F4}, captureJitterPkMs={captureSnapshot.PeakIntervalErrorMilliseconds:F4}, captureDriftMs={captureSnapshot.DriftMilliseconds:F4}, captureIntervals={captureSnapshot.IntervalSamples}, outputJitterRmsMs={outputSnapshot.IntervalRmsMilliseconds:F4}, outputJitterPkMs={outputSnapshot.PeakIntervalErrorMilliseconds:F4}, outputDriftMs={outputSnapshot.DriftMilliseconds:F4}, outputIntervals={outputSnapshot.IntervalSamples}, driftDeltaFrames={alignmentDelta:F4}");
         }
 

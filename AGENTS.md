@@ -245,6 +245,7 @@ When adding routes, update **both** this table and `Tractus.HtmlToNdi.http` samp
 ### Logging & diagnostics (`AppManagement.cs`)
 * `AppManagement.InstanceName` composes `<os>_<arch>_<machinename>` for telemetry or metadata (not currently used elsewhere).
 * On fatal `AppDomain` exceptions, details are logged but the process is not explicitly terminated beyond .NET’s default behaviour.
+* Telemetry entries now include `captureCadencePercent`, `captureCadenceShortfallPercent`, and `captureCadenceFps` once Chromium paints have settled (buffer primed and roughly two seconds of cadence history), even when cadence jitter telemetry is disabled, so operators can spot paint-stage drops immediately.
 
 ---
 
