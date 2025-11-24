@@ -22,7 +22,6 @@ internal sealed class NdiVideoPipeline : IDisposable
     private readonly CancellationTokenSource cancellation = new();
     private readonly FrameRingBuffer<NdiVideoFrame>? ringBuffer;
     private readonly ILogger logger;
-    private static readonly TimeSpan BusyWaitThreshold = TimeSpan.FromMilliseconds(0.5);
     private static readonly TimeSpan TelemetryWarmupPeriod = TimeSpan.FromSeconds(30);
     private static readonly double StopwatchTicksToTimeSpanTicks = TimeSpan.TicksPerSecond / (double)Stopwatch.Frequency;
 
@@ -528,7 +527,7 @@ internal sealed class NdiVideoPipeline : IDisposable
             var nextSequence = pacingSequence + 1;
             var deadline = CalculateNextDeadline(pacingOrigin, nextSequence);
 
-            WaitUntil(pacingClock, deadline, token, highResolutionTimer);
+            TimingHelpers.WaitUntil(pacingClock, deadline, token, highResolutionTimer);
 
             if (token.IsCancellationRequested)
             {
@@ -1412,69 +1411,6 @@ internal sealed class NdiVideoPipeline : IDisposable
         return Math.Clamp(delta * 0.15d, -0.75d, 0.75d);
     }
 
-    private static void WaitUntil(
-        Stopwatch clock,
-        TimeSpan deadline,
-        CancellationToken token,
-        HighResolutionWaitableTimer? highResolutionTimer)
-    {
-        while (!token.IsCancellationRequested)
-        {
-            var remaining = deadline - clock.Elapsed;
-            if (remaining <= TimeSpan.Zero)
-            {
-                return;
-            }
-
-            if (remaining <= BusyWaitThreshold)
-            {
-                while (deadline > clock.Elapsed)
-                {
-                    token.ThrowIfCancellationRequested();
-                    Thread.SpinWait(64);
-                }
-
-                return;
-            }
-
-            var coarse = remaining - BusyWaitThreshold;
-            if (coarse <= TimeSpan.Zero)
-            {
-                continue;
-            }
-
-            if (highResolutionTimer is not null)
-            {
-                try
-                {
-                    highResolutionTimer.Wait(coarse, token);
-                }
-                catch (OperationCanceledException)
-                {
-                    return;
-                }
-
-                continue;
-            }
-
-            // If high-resolution timers are unavailable, we must avoid Task.Delay for small intervals
-            // because the system timer resolution (often ~15ms) will cause massive oversleeping.
-            // We fall back to spinning for anything less than 10ms to ensure we meet the deadline.
-            if (coarse < TimeSpan.FromMilliseconds(10))
-            {
-                continue;
-            }
-
-            try
-            {
-                Task.Delay(coarse, token).GetAwaiter().GetResult();
-            }
-            catch (OperationCanceledException)
-            {
-                return;
-            }
-        }
-    }
 
     private bool TrySendBufferedFrame()
     {

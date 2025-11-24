@@ -48,7 +48,6 @@ internal sealed class FramePump : IPacedInvalidationScheduler
     private readonly CancellationTokenSource cancellation = new();
     private readonly object stateGate = new();
     private readonly ConcurrentQueue<InvalidationRequest> pausedQueue = new();
-    private static readonly TimeSpan BusyWaitThreshold = TimeSpan.FromMilliseconds(0.5);
 
     private Task? processingTask;
     private Task? periodicTask;
@@ -420,7 +419,7 @@ internal sealed class FramePump : IPacedInvalidationScheduler
                 nextDeadline += interval;
                 try
                 {
-                    WaitUntil(stopwatch, nextDeadline, token);
+                    TimingHelpers.WaitUntil(stopwatch, nextDeadline, token, highResolutionTimer);
                 }
                 catch (OperationCanceledException)
                 {
@@ -547,70 +546,10 @@ internal sealed class FramePump : IPacedInvalidationScheduler
         var sw = Stopwatch.StartNew();
         try
         {
-            WaitUntil(sw, delay, token);
+            TimingHelpers.WaitUntil(sw, delay, token, highResolutionTimer);
         }
         catch (OperationCanceledException)
         {
-        }
-    }
-
-    private void WaitUntil(Stopwatch clock, TimeSpan deadline, CancellationToken token)
-    {
-        while (!token.IsCancellationRequested)
-        {
-            var remaining = deadline - clock.Elapsed;
-            if (remaining <= TimeSpan.Zero)
-            {
-                return;
-            }
-
-            if (remaining <= BusyWaitThreshold)
-            {
-                while (deadline > clock.Elapsed)
-                {
-                    token.ThrowIfCancellationRequested();
-                    Thread.SpinWait(64);
-                }
-
-                return;
-            }
-
-            var coarse = remaining - BusyWaitThreshold;
-            if (coarse <= TimeSpan.Zero)
-            {
-                continue;
-            }
-
-            if (highResolutionTimer is not null)
-            {
-                try
-                {
-                    highResolutionTimer.Wait(coarse, token);
-                }
-                catch (OperationCanceledException)
-                {
-                    return;
-                }
-
-                continue;
-            }
-
-            // If high-resolution timers are unavailable, we must avoid Task.Delay for small intervals
-            // because the system timer resolution (often ~15ms) will cause massive oversleeping.
-            // We fall back to spinning for anything less than 10ms to ensure we meet the deadline.
-            if (coarse < TimeSpan.FromMilliseconds(10))
-            {
-                continue;
-            }
-
-            try
-            {
-                Task.Delay(coarse, token).GetAwaiter().GetResult();
-            }
-            catch (OperationCanceledException)
-            {
-                return;
-            }
         }
     }
 

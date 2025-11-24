@@ -90,7 +90,7 @@ internal class CefWrapper : IDisposable
             // If we are pacing invalidations, we want the browser to be ready to paint immediately
             // upon request, rather than waiting for its own internal timer.
             // Double the rate to provide headroom for burst refills, up to the 240fps cap.
-            defaultRate = Math.Clamp(defaultRate * 2, 60, 240);
+            defaultRate = Math.Clamp(defaultRate * 2, 1, 240);
         }
 
         var targetWindowlessRate = this.windowlessFrameRateOverride ?? Math.Clamp(defaultRate, 1, 240);
