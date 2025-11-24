@@ -1457,9 +1457,12 @@ internal sealed class NdiVideoPipeline : IDisposable
                 continue;
             }
 
-            if (coarse < TimeSpan.FromMilliseconds(1))
+            // If high-resolution timers are unavailable, we must avoid Task.Delay for small intervals
+            // because the system timer resolution (often ~15ms) will cause massive oversleeping.
+            // We fall back to spinning for anything less than 10ms to ensure we meet the deadline.
+            if (coarse < TimeSpan.FromMilliseconds(10))
             {
-                coarse = TimeSpan.FromMilliseconds(1);
+                continue;
             }
 
             try
