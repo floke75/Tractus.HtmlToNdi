@@ -222,8 +222,12 @@ internal sealed class NdiVideoPipeline : IDisposable
         telemetryWarmupDeadline = DateTime.UtcNow + TelemetryWarmupPeriod;
 
         targetDepth = Math.Max(1, options.BufferDepth);
-        lowWatermark = Math.Max(0, targetDepth - 1.5);
-        highWatermark = targetDepth + 1;
+
+        // Use 10% hysteresis for deep buffers, but keep tight bounds for shallow ones
+        var hysteresis = Math.Max(1.5, targetDepth * 0.1);
+        lowWatermark = Math.Max(0, targetDepth - hysteresis);
+        highWatermark = targetDepth + Math.Max(1.0, hysteresis);
+
         allowLatencyExpansion = options.AllowLatencyExpansion && options.EnableBuffering;
         frameInterval = frameRate.FrameDuration;
         maxPacingAdjustmentTicks = Math.Max(1, frameInterval.Ticks / 2);
@@ -975,16 +979,12 @@ internal sealed class NdiVideoPipeline : IDisposable
             return 1;
         }
 
-        var primed = Volatile.Read(ref bufferPrimed);
-        var warming = Volatile.Read(ref isWarmingUp);
-        var expanding = Volatile.Read(ref latencyExpansionActive);
-
-        if (!primed || warming || expanding)
-        {
-            return Math.Max(2, targetDepth + 1);
-        }
-
-        return Math.Max(1, targetDepth);
+        // Cap pending requests to a small number to prevent "invalidation flooding".
+        // If we request too many frames at once (e.g. targetDepth=300), the browser
+        // will coalesce them into a single paint, causing the pipeline to stall
+        // waiting for frames that will never arrive.
+        // 4 is sufficient to saturate the Request->Render->Paint->Handle pipeline.
+        return 4;
     }
 
     /// <summary>
