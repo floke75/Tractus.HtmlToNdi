@@ -10,8 +10,11 @@ internal static class TimingHelpers
     private static readonly TimeSpan BusyWaitThreshold = TimeSpan.FromMilliseconds(0.5);
 
     // Threshold below which we avoid Task.Delay on systems without high-res timers
-    // to prevent oversleeping due to the 15ms system timer quantum.
-    private static readonly TimeSpan SpinFallbackThreshold = TimeSpan.FromMilliseconds(10);
+    // to prevent oversleeping due to the ~15.6ms system timer quantum. If the coarse
+    // delay falls under this value we busy-wait to preserve deadline precision even
+    // though it costs CPU when a high-resolution timer is absent. Keep this at or
+    // above the Windows timer resolution so short waits cannot overshoot.
+    private static readonly TimeSpan SpinFallbackThreshold = TimeSpan.FromMilliseconds(16);
 
     public static void WaitUntil(
         Stopwatch clock,
