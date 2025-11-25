@@ -62,8 +62,6 @@ internal sealed class FramePump : IPacedInvalidationScheduler
     private long lastPaintTicks = DateTime.UtcNow.Ticks;
     private bool disposed;
     private HighResolutionWaitableTimer? highResolutionTimer;
-    private readonly ConcurrentQueue<long> requestTimestamps = new();
-    private double lastPaintLatencyMs;
 
     public FramePump(
         ChromiumWebBrowser browser,
