@@ -59,4 +59,14 @@ internal sealed record NdiVideoPipelineOptions
     /// Gets or sets a value indicating whether compositor-driven capture should be used instead of invalidation-driven paints.
     /// </summary>
     public bool EnableCompositorCapture { get; init; }
+
+    /// <summary>
+    /// Gets or sets a value indicating whether the NDI sender should use the asynchronous send method.
+    /// </summary>
+    public bool NdiSendAsync { get; init; }
+
+    /// <summary>
+    /// Gets or sets the pacing mode for the video pipeline.
+    /// </summary>
+    public Tractus.HtmlToNdi.Launcher.PacingMode PacingMode { get; init; } = Tractus.HtmlToNdi.Launcher.PacingMode.Latency;
 }

@@ -176,6 +176,8 @@ public class Program
             EnableCaptureBackpressure = parameters.EnableCaptureBackpressure,
             EnablePumpCadenceAdaptation = parameters.EnablePumpCadenceAdaptation,
             EnableCompositorCapture = parameters.EnableCompositorCapture,
+            NdiSendAsync = parameters.NdiSendAsync,
+            PacingMode = parameters.PacingMode,
         };
 
         NativeNdiVideoSender? ndiSender = null;
@@ -226,7 +228,7 @@ public class Program
         {
             Log.Information("NDI sender created successfully");
 
-            ndiSender = new NativeNdiVideoSender(Program.NdiSenderPtr);
+            ndiSender = new NativeNdiVideoSender(Program.NdiSenderPtr, parameters.NdiSendAsync);
             videoPipeline = new NdiVideoPipeline(ndiSender, frameRate, pipelineOptions, Log.Logger);
 
             try
@@ -1103,6 +1105,8 @@ public class Program
         "--disable-gpu-vsync",
         "--disable-frame-rate-limit",
         "--preset-high-performance",
+        "--ndi-send-async",
+        "--pacing-mode",
     };
 }
 
