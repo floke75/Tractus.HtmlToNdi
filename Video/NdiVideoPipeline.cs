@@ -1580,11 +1580,6 @@ internal sealed class NdiVideoPipeline : IDisposable
         var timestamp = frame.TimestampUtc != default ? frame.TimestampUtc : DateTime.UtcNow;
         var (numerator, denominator) = ResolveFrameRate(timestamp);
 
-        if (senderRequiresFrameRetention)
-        {
-            lastDirectFrame?.Dispose();
-        }
-
         var ndiFrame = CreateVideoFrame(frame, numerator, denominator);
         sender.Send(ref ndiFrame);
         Interlocked.Increment(ref sentFrames);
@@ -1596,7 +1591,9 @@ internal sealed class NdiVideoPipeline : IDisposable
 
         if (senderRequiresFrameRetention)
         {
+            var frameToDispose = lastDirectFrame;
             lastDirectFrame = frame;
+            frameToDispose?.Dispose();
             return;
         }
 
