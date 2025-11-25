@@ -36,6 +36,8 @@ public sealed class LauncherForm : Form
     private readonly CheckBox _enableOutOfProcessRasterizationCheckBox;
     private readonly CheckBox _disableBackgroundThrottlingCheckBox;
     private readonly CheckBox _presetHighPerformanceCheckBox;
+    private readonly CheckBox _ndiSendAsyncCheckBox;
+    private readonly ComboBox _pacingModeComboBox;
     private bool _suppressPacingCheckboxUpdates;
 
     /// <summary>
@@ -120,6 +122,16 @@ public sealed class LauncherForm : Form
         _frameRateTextBox = new TextBox { Dock = DockStyle.Fill };
         AddRow(table, "Frame Rate (fps)", _frameRateTextBox);
 
+        AddSectionHeader(table, "Pacing");
+
+        _pacingModeComboBox = new ComboBox
+        {
+            Dock = DockStyle.Fill,
+            DropDownStyle = ComboBoxStyle.DropDownList
+        };
+        _pacingModeComboBox.Items.AddRange(Enum.GetNames(typeof(PacingMode)));
+        AddRow(table, "Pacing Mode", _pacingModeComboBox);
+
         _enableBufferingCheckBox = new CheckBox
         {
             Text = "Enable paced output buffer",
@@ -131,7 +143,7 @@ public sealed class LauncherForm : Form
         _bufferDepthNumericUpDown = new NumericUpDown
         {
             Minimum = 1,
-            Maximum = 1000,
+            Maximum = 3000,
             Dock = DockStyle.Fill,
             Increment = 1,
         };
@@ -226,6 +238,16 @@ public sealed class LauncherForm : Form
 
         _windowlessFrameRateTextBox = new TextBox { Dock = DockStyle.Fill };
         AddRow(table, "Windowless Frame Rate", _windowlessFrameRateTextBox);
+
+        AddSectionHeader(table, "NDI SDK");
+
+        _ndiSendAsyncCheckBox = new CheckBox
+        {
+            Text = "Use asynchronous NDI sending",
+            Dock = DockStyle.Fill,
+            AutoSize = true,
+        };
+        AddRow(table, "Asynchronous Sending", _ndiSendAsyncCheckBox);
 
         AddSectionHeader(table, "Chromium Performance Flags");
 
@@ -363,6 +385,8 @@ public sealed class LauncherForm : Form
         _enableOutOfProcessRasterizationCheckBox.Checked = settings.EnableOutOfProcessRasterization;
         _disableBackgroundThrottlingCheckBox.Checked = settings.DisableBackgroundThrottling;
         _presetHighPerformanceCheckBox.Checked = settings.PresetHighPerformance;
+        _ndiSendAsyncCheckBox.Checked = settings.NdiSendAsync;
+        _pacingModeComboBox.SelectedItem = settings.PacingMode.ToString();
 
         UpdateBufferingDependentControls();
         UpdateHighPerformancePresetControls();
@@ -520,7 +544,9 @@ public sealed class LauncherForm : Form
             EnableZeroCopy = _enableZeroCopyCheckBox.Checked,
             EnableOutOfProcessRasterization = _enableOutOfProcessRasterizationCheckBox.Checked,
             DisableBackgroundThrottling = _disableBackgroundThrottlingCheckBox.Checked,
-            PresetHighPerformance = _presetHighPerformanceCheckBox.Checked
+            PresetHighPerformance = _presetHighPerformanceCheckBox.Checked,
+            NdiSendAsync = _ndiSendAsyncCheckBox.Checked,
+            PacingMode = (PacingMode)Enum.Parse(typeof(PacingMode), (string)_pacingModeComboBox.SelectedItem)
         };
 
         try

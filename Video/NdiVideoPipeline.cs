@@ -221,6 +221,17 @@ internal sealed class NdiVideoPipeline : IDisposable
         this.logger = logger;
         telemetryWarmupDeadline = DateTime.UtcNow + TelemetryWarmupPeriod;
 
+        if (this.options.PacingMode == Tractus.HtmlToNdi.Launcher.PacingMode.Smoothness)
+        {
+            this.options = this.options with
+            {
+                AllowLatencyExpansion = true,
+                EnableCaptureBackpressure = false,
+                EnablePacedInvalidation = false,
+                DisablePacedInvalidation = true
+            };
+        }
+
         targetDepth = Math.Max(1, options.BufferDepth);
 
         // Use 10% hysteresis for deep buffers, but keep tight bounds for shallow ones
@@ -555,7 +566,7 @@ internal sealed class NdiVideoPipeline : IDisposable
         Volatile.Write(ref lastPacingOffsetTicks, 0);
         var baseline = origin + TimeSpan.FromTicks(frameInterval.Ticks * nextSequence);
 
-        if (!BufferingEnabled || ringBuffer is null)
+        if (!BufferingEnabled || ringBuffer is null || options.PacingMode == Tractus.HtmlToNdi.Launcher.PacingMode.Smoothness)
         {
             return baseline;
         }
@@ -1417,6 +1428,19 @@ internal sealed class NdiVideoPipeline : IDisposable
         if (ringBuffer is null)
         {
             return false;
+        }
+
+        if (options.PacingMode == Tractus.HtmlToNdi.Launcher.PacingMode.Smoothness)
+        {
+            if (ringBuffer.TryDequeue(out var frame) && frame is not null)
+            {
+                SendBufferedFrame(frame);
+                return true;
+            }
+            else
+            {
+                return false;
+            }
         }
 
         var backlog = ringBuffer.Count;

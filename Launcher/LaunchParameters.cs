@@ -36,7 +36,9 @@ public sealed class LaunchParameters
         bool enableZeroCopy,
         bool enableOutOfProcessRasterization,
         bool disableBackgroundThrottling,
-        bool presetHighPerformance)
+        bool presetHighPerformance,
+        bool ndiSendAsync,
+        PacingMode pacingMode)
     {
         NdiName = ndiName;
         Port = port;
@@ -63,6 +65,8 @@ public sealed class LaunchParameters
         EnableOutOfProcessRasterization = enableOutOfProcessRasterization;
         DisableBackgroundThrottling = disableBackgroundThrottling;
         PresetHighPerformance = presetHighPerformance;
+        NdiSendAsync = ndiSendAsync;
+        PacingMode = pacingMode;
     }
 
     /// <summary>
@@ -189,6 +193,16 @@ public sealed class LaunchParameters
     /// Gets a value indicating whether the high-performance preset should be enabled.
     /// </summary>
     public bool PresetHighPerformance { get; }
+
+    /// <summary>
+    /// Gets a value indicating whether the NDI sender should use the asynchronous send method.
+    /// </summary>
+    public bool NdiSendAsync { get; }
+
+    /// <summary>
+    /// Gets the pacing mode for the video pipeline.
+    /// </summary>
+    public PacingMode PacingMode { get; }
 
     /// <summary>
     /// Attempts to create a <see cref="LaunchParameters"/> instance from command-line arguments.
@@ -366,6 +380,15 @@ public sealed class LaunchParameters
         var enableOutOfProcessRasterization = HasFlag("--enable-oop-rasterization") || HasFlag("--enable-out-of-process-rasterization");
         var disableBackgroundThrottling = HasFlag("--disable-background-throttling") || HasFlag("--disable-renderer-backgrounding");
         var presetHighPerformance = HasFlag("--preset-high-performance");
+        var ndiSendAsync = HasFlag("--ndi-send-async");
+
+        var pacingMode = PacingMode.Latency;
+        var pacingModeArg = GetArgValue("--pacing-mode");
+        if (pacingModeArg is not null && !Enum.TryParse(pacingModeArg, true, out pacingMode))
+        {
+            Log.Error("Could not parse the --pacing-mode parameter. Exiting.");
+            return false;
+        }
 
         int? windowlessFrameRateOverride = null;
         var windowlessRateArg = GetArgValue("--windowless-frame-rate");
@@ -407,7 +430,9 @@ public sealed class LaunchParameters
             enableZeroCopy,
             enableOutOfProcessRasterization,
             disableBackgroundThrottling,
-            presetHighPerformance);
+            presetHighPerformance,
+            ndiSendAsync,
+            pacingMode);
 
         return true;
     }
@@ -504,6 +529,8 @@ public sealed class LaunchParameters
             settings.EnableZeroCopy,
             settings.EnableOutOfProcessRasterization,
             settings.DisableBackgroundThrottling,
-            settings.PresetHighPerformance);
+            settings.PresetHighPerformance,
+            settings.NdiSendAsync,
+            settings.PacingMode);
     }
 }
