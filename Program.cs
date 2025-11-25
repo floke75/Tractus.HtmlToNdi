@@ -226,7 +226,7 @@ public class Program
         {
             Log.Information("NDI sender created successfully");
 
-            ndiSender = new NativeNdiVideoSender(Program.NdiSenderPtr, parameters.NdiSendAsync);
+            ndiSender = new NativeNdiVideoSender(Program.NdiSenderPtr);
             videoPipeline = new NdiVideoPipeline(ndiSender, frameRate, pipelineOptions, Log.Logger);
 
             try
@@ -1103,7 +1103,6 @@ public class Program
         "--disable-gpu-vsync",
         "--disable-frame-rate-limit",
         "--preset-high-performance",
-        "--ndi-send-async",
     };
 }
 

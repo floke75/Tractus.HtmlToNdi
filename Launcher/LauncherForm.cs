@@ -36,7 +36,6 @@ public sealed class LauncherForm : Form
     private readonly CheckBox _enableOutOfProcessRasterizationCheckBox;
     private readonly CheckBox _disableBackgroundThrottlingCheckBox;
     private readonly CheckBox _presetHighPerformanceCheckBox;
-    private readonly CheckBox _ndiSendAsyncCheckBox;
     private bool _suppressPacingCheckboxUpdates;
 
     /// <summary>
@@ -228,16 +227,6 @@ public sealed class LauncherForm : Form
         _windowlessFrameRateTextBox = new TextBox { Dock = DockStyle.Fill };
         AddRow(table, "Windowless Frame Rate", _windowlessFrameRateTextBox);
 
-        AddSectionHeader(table, "NDI SDK");
-
-        _ndiSendAsyncCheckBox = new CheckBox
-        {
-            Text = "Use asynchronous NDI sending",
-            Dock = DockStyle.Fill,
-            AutoSize = true,
-        };
-        AddRow(table, "Asynchronous Sending", _ndiSendAsyncCheckBox);
-
         AddSectionHeader(table, "Chromium Performance Flags");
 
         _presetHighPerformanceCheckBox = new CheckBox
@@ -374,7 +363,6 @@ public sealed class LauncherForm : Form
         _enableOutOfProcessRasterizationCheckBox.Checked = settings.EnableOutOfProcessRasterization;
         _disableBackgroundThrottlingCheckBox.Checked = settings.DisableBackgroundThrottling;
         _presetHighPerformanceCheckBox.Checked = settings.PresetHighPerformance;
-        _ndiSendAsyncCheckBox.Checked = settings.NdiSendAsync;
 
         UpdateBufferingDependentControls();
         UpdateHighPerformancePresetControls();
@@ -532,8 +520,7 @@ public sealed class LauncherForm : Form
             EnableZeroCopy = _enableZeroCopyCheckBox.Checked,
             EnableOutOfProcessRasterization = _enableOutOfProcessRasterizationCheckBox.Checked,
             DisableBackgroundThrottling = _disableBackgroundThrottlingCheckBox.Checked,
-            PresetHighPerformance = _presetHighPerformanceCheckBox.Checked,
-            NdiSendAsync = _ndiSendAsyncCheckBox.Checked
+            PresetHighPerformance = _presetHighPerformanceCheckBox.Checked
         };
 
         try

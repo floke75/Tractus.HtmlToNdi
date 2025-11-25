@@ -144,9 +144,4 @@ public class LauncherSettings
     /// </summary>
     public bool PresetHighPerformance { get; set; }
         = false;
-
-    /// <summary>
-    /// Gets or sets a value indicating whether the NDI sender should use the asynchronous send method.
-    /// </summary>
-    public bool NdiSendAsync { get; set; }
 }

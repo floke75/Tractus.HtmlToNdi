@@ -21,15 +21,13 @@ internal interface INdiVideoSender
 internal sealed class NativeNdiVideoSender : INdiVideoSender
 {
     private readonly nint senderPtr;
-    private readonly bool sendAsync;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="NativeNdiVideoSender"/> class.
     /// </summary>
     /// <param name="senderPtr">A pointer to the NDI sender instance.</param>
-    /// <param name="sendAsync">A value indicating whether to use asynchronous sending.</param>
     /// <exception cref="ArgumentException">Thrown if the sender pointer is invalid.</exception>
-    public NativeNdiVideoSender(nint senderPtr, bool sendAsync)
+    public NativeNdiVideoSender(nint senderPtr)
     {
         if (senderPtr == nint.Zero)
         {
@@ -37,7 +35,6 @@ internal sealed class NativeNdiVideoSender : INdiVideoSender
         }
 
         this.senderPtr = senderPtr;
-        this.sendAsync = sendAsync;
     }
 
     /// <summary>
@@ -46,13 +43,6 @@ internal sealed class NativeNdiVideoSender : INdiVideoSender
     /// <param name="frame">The video frame to send.</param>
     public void Send(ref NDIlib.video_frame_v2_t frame)
     {
-        if (sendAsync)
-        {
-            NDIlib.send_send_video_async_v2(senderPtr, ref frame);
-        }
-        else
-        {
-            NDIlib.send_send_video_v2(senderPtr, ref frame);
-        }
+        NDIlib.send_send_video_v2(senderPtr, ref frame);
     }
 }

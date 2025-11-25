@@ -36,8 +36,7 @@ public sealed class LaunchParameters
         bool enableZeroCopy,
         bool enableOutOfProcessRasterization,
         bool disableBackgroundThrottling,
-        bool presetHighPerformance,
-        bool ndiSendAsync)
+        bool presetHighPerformance)
     {
         NdiName = ndiName;
         Port = port;
@@ -64,7 +63,6 @@ public sealed class LaunchParameters
         EnableOutOfProcessRasterization = enableOutOfProcessRasterization;
         DisableBackgroundThrottling = disableBackgroundThrottling;
         PresetHighPerformance = presetHighPerformance;
-        NdiSendAsync = ndiSendAsync;
     }
 
     /// <summary>
@@ -191,11 +189,6 @@ public sealed class LaunchParameters
     /// Gets a value indicating whether the high-performance preset should be enabled.
     /// </summary>
     public bool PresetHighPerformance { get; }
-
-    /// <summary>
-    /// Gets a value indicating whether the NDI sender should use the asynchronous send method.
-    /// </summary>
-    public bool NdiSendAsync { get; }
 
     /// <summary>
     /// Attempts to create a <see cref="LaunchParameters"/> instance from command-line arguments.
@@ -373,7 +366,6 @@ public sealed class LaunchParameters
         var enableOutOfProcessRasterization = HasFlag("--enable-oop-rasterization") || HasFlag("--enable-out-of-process-rasterization");
         var disableBackgroundThrottling = HasFlag("--disable-background-throttling") || HasFlag("--disable-renderer-backgrounding");
         var presetHighPerformance = HasFlag("--preset-high-performance");
-        var ndiSendAsync = HasFlag("--ndi-send-async");
 
         int? windowlessFrameRateOverride = null;
         var windowlessRateArg = GetArgValue("--windowless-frame-rate");
@@ -415,8 +407,7 @@ public sealed class LaunchParameters
             enableZeroCopy,
             enableOutOfProcessRasterization,
             disableBackgroundThrottling,
-            presetHighPerformance,
-            ndiSendAsync);
+            presetHighPerformance);
 
         return true;
     }
@@ -513,7 +504,6 @@ public sealed class LaunchParameters
             settings.EnableZeroCopy,
             settings.EnableOutOfProcessRasterization,
             settings.DisableBackgroundThrottling,
-            settings.PresetHighPerformance,
-            settings.NdiSendAsync);
+            settings.PresetHighPerformance);
     }
 }
