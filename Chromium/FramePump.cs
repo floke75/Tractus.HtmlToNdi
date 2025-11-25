@@ -7,6 +7,7 @@ using System.Threading.Tasks;
 using CefSharp;
 using CefSharp.OffScreen;
 using Serilog;
+using Tractus.HtmlToNdi.Video;
 
 namespace Tractus.HtmlToNdi.Chromium;
 
@@ -56,6 +57,7 @@ internal sealed class FramePump : IPacedInvalidationScheduler
     private double cadenceAlignmentDeltaFrames;
     private long lastPaintTicks = DateTime.UtcNow.Ticks;
     private bool disposed;
+    private HighResolutionWaitableTimer? highResolutionTimer;
 
     public FramePump(
         ChromiumWebBrowser browser,
@@ -99,6 +101,7 @@ internal sealed class FramePump : IPacedInvalidationScheduler
                 return;
             }
 
+            highResolutionTimer = HighResolutionWaitableTimer.TryCreate(logger);
             processingTask = StartDedicatedTask(ProcessRequestsAsync);
             if (mode == FramePumpMode.Periodic)
             {
@@ -236,6 +239,7 @@ internal sealed class FramePump : IPacedInvalidationScheduler
         }
 
         cancellation.Dispose();
+        highResolutionTimer?.Dispose();
 
         while (pausedQueue.TryDequeue(out var pending))
         {
@@ -285,7 +289,7 @@ internal sealed class FramePump : IPacedInvalidationScheduler
         {
             if (mode == FramePumpMode.OnDemand)
             {
-                await ApplyOnDemandCadenceDelayAsync(token).ConfigureAwait(false);
+                ApplyOnDemandCadenceDelay(token);
             }
 
             Task invalidateTask;
@@ -413,17 +417,13 @@ internal sealed class FramePump : IPacedInvalidationScheduler
                 }
 
                 nextDeadline += interval;
-                var delay = nextDeadline - stopwatch.Elapsed;
-                if (delay > TimeSpan.Zero)
+                try
                 {
-                    try
-                    {
-                        await Task.Delay(delay, token).ConfigureAwait(false);
-                    }
-                    catch (TaskCanceledException)
-                    {
-                        break;
-                    }
+                    TimingHelpers.WaitUntil(stopwatch, nextDeadline, token, highResolutionTimer);
+                }
+                catch (OperationCanceledException)
+                {
+                    break;
                 }
 
                 try
@@ -517,7 +517,7 @@ internal sealed class FramePump : IPacedInvalidationScheduler
         return TimeSpan.FromTicks(adjustedTicks);
     }
 
-    private async Task ApplyOnDemandCadenceDelayAsync(CancellationToken token)
+    private void ApplyOnDemandCadenceDelay(CancellationToken token)
     {
         if (!cadenceAdaptationEnabled)
         {
@@ -543,11 +543,12 @@ internal sealed class FramePump : IPacedInvalidationScheduler
         }
 
         var delay = TimeSpan.FromTicks(delayTicks);
+        var sw = Stopwatch.StartNew();
         try
         {
-            await Task.Delay(delay, token).ConfigureAwait(false);
+            TimingHelpers.WaitUntil(sw, delay, token, highResolutionTimer);
         }
-        catch (TaskCanceledException)
+        catch (OperationCanceledException)
         {
         }
     }

@@ -22,7 +22,6 @@ internal sealed class NdiVideoPipeline : IDisposable
     private readonly CancellationTokenSource cancellation = new();
     private readonly FrameRingBuffer<NdiVideoFrame>? ringBuffer;
     private readonly ILogger logger;
-    private static readonly TimeSpan BusyWaitThreshold = TimeSpan.FromMilliseconds(0.5);
     private static readonly TimeSpan TelemetryWarmupPeriod = TimeSpan.FromSeconds(30);
     private static readonly double StopwatchTicksToTimeSpanTicks = TimeSpan.TicksPerSecond / (double)Stopwatch.Frequency;
 
@@ -223,8 +222,12 @@ internal sealed class NdiVideoPipeline : IDisposable
         telemetryWarmupDeadline = DateTime.UtcNow + TelemetryWarmupPeriod;
 
         targetDepth = Math.Max(1, options.BufferDepth);
-        lowWatermark = Math.Max(0, targetDepth - 1.5);
-        highWatermark = targetDepth + 1;
+
+        // Use 10% hysteresis for deep buffers, but keep tight bounds for shallow ones
+        var hysteresis = Math.Max(1.5, targetDepth * 0.1);
+        lowWatermark = Math.Max(0, targetDepth - hysteresis);
+        highWatermark = targetDepth + Math.Max(1.0, hysteresis);
+
         allowLatencyExpansion = options.AllowLatencyExpansion && options.EnableBuffering;
         frameInterval = frameRate.FrameDuration;
         maxPacingAdjustmentTicks = Math.Max(1, frameInterval.Ticks / 2);
@@ -528,7 +531,7 @@ internal sealed class NdiVideoPipeline : IDisposable
             var nextSequence = pacingSequence + 1;
             var deadline = CalculateNextDeadline(pacingOrigin, nextSequence);
 
-            WaitUntil(pacingClock, deadline, token, highResolutionTimer);
+            TimingHelpers.WaitUntil(pacingClock, deadline, token, highResolutionTimer);
 
             if (token.IsCancellationRequested)
             {
@@ -976,16 +979,12 @@ internal sealed class NdiVideoPipeline : IDisposable
             return 1;
         }
 
-        var primed = Volatile.Read(ref bufferPrimed);
-        var warming = Volatile.Read(ref isWarmingUp);
-        var expanding = Volatile.Read(ref latencyExpansionActive);
-
-        if (!primed || warming || expanding)
-        {
-            return Math.Max(2, targetDepth + 1);
-        }
-
-        return Math.Max(1, targetDepth);
+        // Cap pending requests to a small number to prevent "invalidation flooding".
+        // If we request too many frames at once (e.g. targetDepth=300), the browser
+        // will coalesce them into a single paint, causing the pipeline to stall
+        // waiting for frames that will never arrive.
+        // 4 is sufficient to saturate the Request->Render->Paint->Handle pipeline.
+        return 4;
     }
 
     /// <summary>
@@ -1412,66 +1411,6 @@ internal sealed class NdiVideoPipeline : IDisposable
         return Math.Clamp(delta * 0.15d, -0.75d, 0.75d);
     }
 
-    private static void WaitUntil(
-        Stopwatch clock,
-        TimeSpan deadline,
-        CancellationToken token,
-        HighResolutionWaitableTimer? highResolutionTimer)
-    {
-        while (!token.IsCancellationRequested)
-        {
-            var remaining = deadline - clock.Elapsed;
-            if (remaining <= TimeSpan.Zero)
-            {
-                return;
-            }
-
-            if (remaining <= BusyWaitThreshold)
-            {
-                while (deadline > clock.Elapsed)
-                {
-                    token.ThrowIfCancellationRequested();
-                    Thread.SpinWait(64);
-                }
-
-                return;
-            }
-
-            var coarse = remaining - BusyWaitThreshold;
-            if (coarse <= TimeSpan.Zero)
-            {
-                continue;
-            }
-
-            if (highResolutionTimer is not null)
-            {
-                try
-                {
-                    highResolutionTimer.Wait(coarse, token);
-                }
-                catch (OperationCanceledException)
-                {
-                    return;
-                }
-
-                continue;
-            }
-
-            if (coarse < TimeSpan.FromMilliseconds(1))
-            {
-                coarse = TimeSpan.FromMilliseconds(1);
-            }
-
-            try
-            {
-                Task.Delay(coarse, token).GetAwaiter().GetResult();
-            }
-            catch (OperationCanceledException)
-            {
-                return;
-            }
-        }
-    }
 
     private bool TrySendBufferedFrame()
     {
