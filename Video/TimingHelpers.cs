@@ -11,8 +11,8 @@ internal static class TimingHelpers
 
     // Threshold below which we avoid Task.Delay on systems without high-res timers
     // to prevent oversleeping due to the 15ms system timer quantum. If the coarse
-    // delay falls under this value we fall back to short sleeps so we do not burn
-    // an entire frame interval spinning when a high-resolution timer is absent.
+    // delay falls under this value we busy-wait to preserve deadline precision even
+    // though it costs CPU when a high-resolution timer is absent.
     private static readonly TimeSpan SpinFallbackThreshold = TimeSpan.FromMilliseconds(10);
 
     public static void WaitUntil(
@@ -62,19 +62,9 @@ internal static class TimingHelpers
 
             if (coarse < SpinFallbackThreshold)
             {
-                // Use short sleeps to avoid chewing CPU for long intervals when
-                // the platform timer has coarse resolution. `Task.Delay` can still
-                // overshoot, but spreading the wait across multiple 1ms sleeps is
-                // less disruptive than a tight spin loop.
-                try
-                {
-                    Task.Delay(TimeSpan.FromMilliseconds(1), token).GetAwaiter().GetResult();
-                }
-                catch (OperationCanceledException)
-                {
-                    return;
-                }
-
+                // Skip sleeping on coarse timers to avoid overshooting short waits.
+                // The loop will fall back to a pure spin, sacrificing CPU for
+                // deadline precision when high-resolution timers are unavailable.
                 continue;
             }
 
