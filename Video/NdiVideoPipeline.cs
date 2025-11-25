@@ -2141,8 +2141,12 @@ internal sealed class NdiVideoPipeline : IDisposable
         var compositorStats = System.FormattableString.Invariant(
             $", compositorCapture={compositorCaptureEnabled}, compositorFrames={Interlocked.Read(ref compositorFrames)}, legacyInvalidationFrames={Interlocked.Read(ref invalidationFrames)}");
 
+        var clockPrecisionNs = 1_000_000_000d / Stopwatch.Frequency;
+        var clockStats = System.FormattableString.Invariant(
+            $", clockPrecisionNs={clockPrecisionNs:F3}, stopwatchHighResolution={Stopwatch.IsHighResolution}");
+
         logger.Information(
-            "NDI video pipeline stats: captured={Captured}, sent={Sent}, repeated={Repeated}{BufferStats}{PacingStats}{CadenceStats}{CompositorStats} (caller={Caller})",
+            "NDI video pipeline stats: captured={Captured}, sent={Sent}, repeated={Repeated}{BufferStats}{PacingStats}{CadenceStats}{CompositorStats}{ClockStats} (caller={Caller})",
             Interlocked.Read(ref capturedFrames),
             Interlocked.Read(ref sentFrames),
             Interlocked.Read(ref repeatedFrames),
@@ -2150,6 +2154,7 @@ internal sealed class NdiVideoPipeline : IDisposable
             pacingStats,
             cadenceStats,
             compositorStats,
+            clockStats,
             caller);
     }
 

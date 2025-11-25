@@ -1,4 +1,5 @@
 using System;
+using System.Diagnostics;
 using System.Drawing;
 using System.Windows.Forms;
 
@@ -19,6 +20,7 @@ public sealed class LauncherForm : Form
     private readonly NumericUpDown _bufferDepthNumericUpDown;
     private readonly CheckBox _allowLatencyExpansionCheckBox;
     private readonly NumericUpDown _telemetryNumericUpDown;
+    private readonly Label _clockPrecisionLabel;
     private readonly TextBox _windowlessFrameRateTextBox;
     private readonly CheckBox _disableGpuVsyncCheckBox;
     private readonly CheckBox _disableFrameRateLimitCheckBox;
@@ -151,6 +153,19 @@ public sealed class LauncherForm : Form
             Dock = DockStyle.Fill,
         };
         AddRow(table, "Telemetry Interval (s)", _telemetryNumericUpDown);
+
+        var stopwatchPrecisionNs = 1_000_000_000d / Stopwatch.Frequency;
+        var clockPrecisionText = System.FormattableString.Invariant(
+            $"{stopwatchPrecisionNs:F3} ns ({(Stopwatch.IsHighResolution ? "high" : "standard")} resolution clock)");
+        _clockPrecisionLabel = new Label
+        {
+            Text = clockPrecisionText,
+            Dock = DockStyle.Fill,
+            TextAlign = ContentAlignment.MiddleLeft,
+            AutoSize = true,
+            Padding = new Padding(0, 4, 0, 4)
+        };
+        AddRow(table, "Clock Precision", _clockPrecisionLabel);
 
         _alignWithCaptureTimestampsCheckBox = new CheckBox
         {
