@@ -49,6 +49,7 @@ internal sealed class FramePump : IPacedInvalidationScheduler
     private readonly bool cadenceAdaptationEnabled;
     private readonly Func<CancellationToken, Task> invalidateBrowserAsync;
     private readonly Channel<InvalidationRequest> requestChannel;
+    private readonly ConcurrentQueue<long> requestTimestamps = new();
     private readonly CancellationTokenSource cancellation = new();
     private readonly object stateGate = new();
     private readonly ConcurrentQueue<InvalidationRequest> pausedQueue = new();
@@ -60,6 +61,7 @@ internal sealed class FramePump : IPacedInvalidationScheduler
     private volatile bool started;
     private double cadenceAlignmentDeltaFrames;
     private long lastPaintTicks = DateTime.UtcNow.Ticks;
+    private double lastPaintLatencyMs;
     private bool disposed;
     private HighResolutionWaitableTimer? highResolutionTimer;
 
