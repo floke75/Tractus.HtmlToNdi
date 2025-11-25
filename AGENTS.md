@@ -246,6 +246,8 @@ When adding routes, update **both** this table and `Tractus.HtmlToNdi.http` samp
 * Direct paced sends run a maintenance loop that periodically tops up pending invalidations whenever pacing is active. The loop
   honours the capture gate and scheduler pause state so it never overloads Chromium while still preventing the demand counter from
   draining to zero when receivers slow down.
+* Direct sends keep the most recently transmitted frame alive when the NDI sender requires buffer retention (e.g., async sends)
+  and dispose it on the next transmission or pipeline stop, preventing freed memory from being reused by the native async API.
 * Paced output deadlines are driven by a high-resolution waitable timer created with `CreateWaitableTimerEx` / `SetWaitableTimerEx`.
   When the platform cannot honour those APIs the scheduler falls back to the stopwatch path and busy-waits through the final
   ~16 ms instead of calling `Task.Delay`, sidestepping the coarse Windows timer quantum so short waits do not overshoot while

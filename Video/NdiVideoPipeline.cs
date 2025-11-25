@@ -61,6 +61,7 @@ internal sealed class NdiVideoPipeline : IDisposable
 
     private Task? pacingTask;
     private NdiVideoFrame? lastSentFrame;
+    private CapturedFrame? lastDirectFrame;
     private long capturedFrames;
     private long sentFrames;
     private long repeatedFrames;
@@ -75,6 +76,7 @@ internal sealed class NdiVideoPipeline : IDisposable
     private readonly double cadencePercentMinimumDurationTicks;
     private double cadenceAlignmentDeltaFrames;
     private readonly bool pacedInvalidationEnabled;
+    private readonly bool senderRequiresFrameRetention;
     private readonly bool captureBackpressureEnabled;
     private readonly bool directPacedInvalidationEnabled;
     private readonly bool pumpCadenceAdaptationEnabled;
@@ -219,6 +221,7 @@ internal sealed class NdiVideoPipeline : IDisposable
         configuredFrameRate = frameRate;
         this.options = options ?? throw new ArgumentNullException(nameof(options));
         this.logger = logger;
+        senderRequiresFrameRetention = sender.RequiresFrameRetention;
         telemetryWarmupDeadline = DateTime.UtcNow + TelemetryWarmupPeriod;
 
         targetDepth = Math.Max(1, options.BufferDepth);
@@ -393,6 +396,8 @@ internal sealed class NdiVideoPipeline : IDisposable
         Interlocked.Exchange(ref directInvalidationPending, 0);
         ResetInvalidationTickets();
         Interlocked.Exchange(ref pendingInvalidations, 0);
+        lastDirectFrame?.Dispose();
+        lastDirectFrame = null;
     }
 
     /// <summary>
@@ -450,7 +455,6 @@ internal sealed class NdiVideoPipeline : IDisposable
             }
 
             SendDirect(frame);
-            frame.Dispose();
 
             if (!compositorDriven)
             {
@@ -1569,11 +1573,17 @@ internal sealed class NdiVideoPipeline : IDisposable
     {
         if (frame.Buffer == IntPtr.Zero)
         {
+            frame.Dispose();
             return;
         }
 
         var timestamp = frame.TimestampUtc != default ? frame.TimestampUtc : DateTime.UtcNow;
         var (numerator, denominator) = ResolveFrameRate(timestamp);
+
+        if (senderRequiresFrameRetention)
+        {
+            lastDirectFrame?.Dispose();
+        }
 
         var ndiFrame = CreateVideoFrame(frame, numerator, denominator);
         sender.Send(ref ndiFrame);
@@ -1583,6 +1593,14 @@ internal sealed class NdiVideoPipeline : IDisposable
             outputCadenceTracker.Record(Stopwatch.GetTimestamp());
         }
         EmitTelemetryIfNeeded();
+
+        if (senderRequiresFrameRetention)
+        {
+            lastDirectFrame = frame;
+            return;
+        }
+
+        frame.Dispose();
     }
 
     private void SendBufferedFrame(NdiVideoFrame frame)
@@ -2166,6 +2184,7 @@ internal sealed class NdiVideoPipeline : IDisposable
         Stop();
         ringBuffer?.Clear();
         lastSentFrame?.Dispose();
+        lastDirectFrame?.Dispose();
         cancellation.Dispose();
     }
 }

@@ -13,6 +13,12 @@ internal interface INdiVideoSender
     /// </summary>
     /// <param name="frame">The video frame to send.</param>
     void Send(ref NDIlib.video_frame_v2_t frame);
+
+    /// <summary>
+    /// Gets a value indicating whether the caller must retain the frame buffer
+    /// until the next send completes (as required by the async NDI APIs).
+    /// </summary>
+    bool RequiresFrameRetention { get; }
 }
 
 /// <summary>
@@ -55,4 +61,7 @@ internal sealed class NativeNdiVideoSender : INdiVideoSender
             NDIlib.send_send_video_v2(senderPtr, ref frame);
         }
     }
+
+    /// <inheritdoc />
+    public bool RequiresFrameRetention => sendAsync;
 }
