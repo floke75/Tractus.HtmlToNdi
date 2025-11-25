@@ -128,7 +128,7 @@ public sealed class LauncherForm : Form
         _bufferDepthNumericUpDown = new NumericUpDown
         {
             Minimum = 1,
-            Maximum = 60,
+            Maximum = 1000,
             Dock = DockStyle.Fill,
             Increment = 1,
         };
@@ -346,9 +346,9 @@ public sealed class LauncherForm : Form
         var bufferingEnabled = _enableBufferingCheckBox.Checked;
         _bufferDepthNumericUpDown.Enabled = bufferingEnabled;
         _allowLatencyExpansionCheckBox.Enabled = bufferingEnabled;
-        _enablePacedInvalidationCheckBox.Enabled = bufferingEnabled;
+        _enablePacedInvalidationCheckBox.Enabled = true;
         _disablePacedInvalidationCheckBox.Enabled = true;
-        _enablePumpCadenceAdaptationCheckBox.Enabled = bufferingEnabled;
+        _enablePumpCadenceAdaptationCheckBox.Enabled = true;
 
         var backpressureAllowed = bufferingEnabled
             && _enablePacedInvalidationCheckBox.Checked
@@ -457,10 +457,10 @@ public sealed class LauncherForm : Form
             DisableGpuVsync = _disableGpuVsyncCheckBox.Checked,
             DisableFrameRateLimit = _disableFrameRateLimitCheckBox.Checked,
             AllowLatencyExpansion = _allowLatencyExpansionCheckBox.Checked,
-            EnablePacedInvalidation = _enableBufferingCheckBox.Checked && _enablePacedInvalidationCheckBox.Checked,
+            EnablePacedInvalidation = _enablePacedInvalidationCheckBox.Checked,
             DisablePacedInvalidation = _disablePacedInvalidationCheckBox.Checked,
             EnableCaptureBackpressure = _enableBufferingCheckBox.Checked && _enableCaptureBackpressureCheckBox.Checked,
-            EnablePumpCadenceAdaptation = _enableBufferingCheckBox.Checked && _enablePumpCadenceAdaptationCheckBox.Checked,
+            EnablePumpCadenceAdaptation = _enablePumpCadenceAdaptationCheckBox.Checked,
             EnableCompositorCapture = _enableCompositorCaptureCheckBox.Checked,
             EnableGpuRasterization = _enableGpuRasterizationCheckBox.Checked,
             EnableZeroCopy = _enableZeroCopyCheckBox.Checked,

@@ -11,7 +11,7 @@ internal static class TimingHelpers
 
     // Threshold below which we avoid Task.Delay on systems without high-res timers
     // to prevent oversleeping due to the 15ms system timer quantum.
-    private static readonly TimeSpan SpinFallbackThreshold = TimeSpan.FromMilliseconds(10);
+    private static readonly TimeSpan SpinFallbackThreshold = TimeSpan.FromMilliseconds(16);
 
     public static void WaitUntil(
         Stopwatch clock,

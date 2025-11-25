@@ -24,6 +24,10 @@ public interface IPacedInvalidationScheduler : IDisposable
     void UpdateCadenceAlignment(double deltaFrames);
 
     bool IsPaused { get; }
+
+    bool IsHighPrecision { get; }
+
+    double LastPaintLatencyMs { get; }
 }
 
 internal enum FramePumpMode
@@ -58,6 +62,8 @@ internal sealed class FramePump : IPacedInvalidationScheduler
     private long lastPaintTicks = DateTime.UtcNow.Ticks;
     private bool disposed;
     private HighResolutionWaitableTimer? highResolutionTimer;
+    private readonly ConcurrentQueue<long> requestTimestamps = new();
+    private double lastPaintLatencyMs;
 
     public FramePump(
         ChromiumWebBrowser browser,
@@ -85,6 +91,10 @@ internal sealed class FramePump : IPacedInvalidationScheduler
     }
 
     public bool IsPaused => paused;
+
+    public bool IsHighPrecision => highResolutionTimer != null;
+
+    public double LastPaintLatencyMs => Volatile.Read(ref lastPaintLatencyMs);
 
     public void Start()
     {
@@ -117,6 +127,8 @@ internal sealed class FramePump : IPacedInvalidationScheduler
     {
         ThrowIfDisposed();
         cancellationToken.ThrowIfCancellationRequested();
+
+        requestTimestamps.Enqueue(Stopwatch.GetTimestamp());
 
         var linkedCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellation.Token, cancellationToken);
         var request = new InvalidationRequest(linkedCancellation.Token);
@@ -191,6 +203,14 @@ internal sealed class FramePump : IPacedInvalidationScheduler
     public void NotifyPaint()
     {
         Interlocked.Exchange(ref lastPaintTicks, DateTime.UtcNow.Ticks);
+
+        var now = Stopwatch.GetTimestamp();
+        if (requestTimestamps.TryDequeue(out var requestTimestamp))
+        {
+            var latencyTicks = now - requestTimestamp;
+            var latencyMs = latencyTicks / (double)Stopwatch.Frequency * 1000.0;
+            Volatile.Write(ref lastPaintLatencyMs, latencyMs);
+        }
     }
 
     public void UpdateCadenceAlignment(double deltaFrames)
