@@ -1,0 +1,5 @@
+https://rive-file-renderer-2947879764.us-west1.run.app/
+
+
+PS C:\Users\AX-6\Documents\GitHub\textscroller-test> npm run dev
+http://localhost:5173/

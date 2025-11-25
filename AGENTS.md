@@ -246,8 +246,9 @@ When adding routes, update **both** this table and `Tractus.HtmlToNdi.http` samp
   honours the capture gate and scheduler pause state so it never overloads Chromium while still preventing the demand counter from
   draining to zero when receivers slow down.
 * Paced output deadlines are driven by a high-resolution waitable timer created with `CreateWaitableTimerEx` / `SetWaitableTimerEx`.
-  When the platform cannot honour those APIs the scheduler falls back to the stopwatch/busy-wait path while logging the downgrade
-  once.
+  When the platform cannot honour those APIs the scheduler falls back to the stopwatch path and busy-waits through the final
+  ~16 ms instead of calling `Task.Delay`, sidestepping the coarse Windows timer quantum so short waits do not overshoot while
+  still logging the downgrade once.
 
 ### Logging & diagnostics (`AppManagement.cs`)
 * `AppManagement.InstanceName` composes `<os>_<arch>_<machinename>` for telemetry or metadata (not currently used elsewhere).
