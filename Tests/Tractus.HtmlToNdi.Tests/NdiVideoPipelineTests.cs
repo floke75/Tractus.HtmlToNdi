@@ -64,12 +64,16 @@ public class NdiVideoPipelineTests
     {
         private readonly object gate = new();
         private readonly List<TaskCompletionSource<bool>> pending = new();
+        private readonly Stopwatch stopwatch = Stopwatch.StartNew();
         private bool paused;
         private bool disposed;
         private int requestCount;
         private int pauseTransitions;
         private int resumeTransitions;
         private double cadenceDelta;
+        private bool isHighPrecision;
+        private long lastRequestTicks;
+        private double lastPaintLatencyMs;
 
         public int RequestCount => Volatile.Read(ref requestCount);
 
@@ -78,6 +82,14 @@ public class NdiVideoPipelineTests
         public int ResumeCount => Volatile.Read(ref resumeTransitions);
 
         public bool IsPaused => Volatile.Read(ref paused);
+
+        public bool IsHighPrecision
+        {
+            get => Volatile.Read(ref isHighPrecision);
+            set => Volatile.Write(ref isHighPrecision, value);
+        }
+
+        public double LastPaintLatencyMs => Volatile.Read(ref lastPaintLatencyMs);
 
         public Task RequestInvalidateAsync(CancellationToken cancellationToken = default)
         {
@@ -89,6 +101,7 @@ public class NdiVideoPipelineTests
             }
 
             Interlocked.Increment(ref requestCount);
+            Volatile.Write(ref lastRequestTicks, stopwatch.ElapsedTicks);
 
             if (!IsPaused)
             {
@@ -173,6 +186,13 @@ public class NdiVideoPipelineTests
 
         public void NotifyPaint()
         {
+            var requestTicks = Volatile.Read(ref lastRequestTicks);
+            if (requestTicks != 0)
+            {
+                var elapsed = stopwatch.ElapsedTicks - requestTicks;
+                var latencyMs = (double)elapsed / Stopwatch.Frequency * 1000.0d;
+                Volatile.Write(ref lastPaintLatencyMs, latencyMs);
+            }
         }
 
         public void UpdateCadenceAlignment(double deltaFrames)
