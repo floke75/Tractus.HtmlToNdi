@@ -78,6 +78,7 @@ user types a non-empty name. Initial default is "HTML5" before prompting. |
 | `--enable-zero-copy` | `--enable-zero-copy` | Enables Chromium's zero-copy raster uploads so textures can be shared without an extra copy. |
 | `--enable-oop-rasterization` | `--enable-oop-rasterization` | Moves raster work to the out-of-process raster thread. Alias: `--enable-out-of-process-rasterization`. |
 | `--disable-background-throttling` | `--disable-background-throttling` | Prevents Chromium from throttling timers or hidden renderers. Also sets `--disable-renderer-backgrounding`. |
+| `--preset-high-performance` | `--preset-high-performance` | Enables a preset of Chromium flags for maximum rendering throughput. This is equivalent to enabling `--enable-gpu-rasterization`, `--enable-zero-copy`, `--enable-oop-rasterization`, `--disable-gpu-vsync`, `--disable-frame-rate-limit`, and `--disable-background-throttling`. |
 | `--enable-compositor-capture` / `--disable-compositor-capture` | `--enable-compositor-capture` | Opts into the compositor capture experiment guarded by `CompositorCaptureBridge`. When the helper DLL is missing or the toggle is off the app reverts to the legacy paint path. |
 | `-debug` | `-debug` | Raises Serilog minimum level to `Debug`. |
 | `-quiet` | `-quiet` | Disables console logging (file logging remains). |

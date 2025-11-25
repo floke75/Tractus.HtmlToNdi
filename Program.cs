@@ -143,6 +143,8 @@ public class Program
     {
         Log.Information("RunApplication starting with {@Parameters} (cache={CachePath})", parameters, launchCachePath);
 
+        var useHighPerformancePreset = parameters.PresetHighPerformance;
+
         var frameRate = parameters.FrameRate;
         var width = parameters.Width;
         var height = parameters.Height;
@@ -244,32 +246,32 @@ public class Program
                     var targetWindowlessRate = windowlessFrameRateOverride ?? Math.Clamp((int)Math.Round(frameRate.Value), 1, 240);
                     settings.CefCommandLineArgs.Add("off-screen-frame-rate", targetWindowlessRate.ToString(CultureInfo.InvariantCulture));
 
-                    if (parameters.DisableGpuVsync)
+                    if (parameters.DisableGpuVsync || useHighPerformancePreset)
                     {
                         settings.CefCommandLineArgs.Add("disable-gpu-vsync", "1");
                     }
 
-                    if (parameters.DisableFrameRateLimit)
+                    if (parameters.DisableFrameRateLimit || useHighPerformancePreset)
                     {
                         settings.CefCommandLineArgs.Add("disable-frame-rate-limit", "1");
                     }
 
-                    if (parameters.EnableGpuRasterization)
+                    if (parameters.EnableGpuRasterization || useHighPerformancePreset)
                     {
                         settings.CefCommandLineArgs.Add("enable-gpu-rasterization", "1");
                     }
 
-                    if (parameters.EnableZeroCopy)
+                    if (parameters.EnableZeroCopy || useHighPerformancePreset)
                     {
                         settings.CefCommandLineArgs.Add("enable-zero-copy", "1");
                     }
 
-                    if (parameters.EnableOutOfProcessRasterization)
+                    if (parameters.EnableOutOfProcessRasterization || useHighPerformancePreset)
                     {
                         settings.CefCommandLineArgs.Add("enable-oop-rasterization", "1");
                     }
 
-                    if (parameters.DisableBackgroundThrottling)
+                    if (parameters.DisableBackgroundThrottling || useHighPerformancePreset)
                     {
                         settings.CefCommandLineArgs.Add("disable-background-timer-throttling", "1");
                         settings.CefCommandLineArgs.Add("disable-renderer-backgrounding", "1");
@@ -1100,6 +1102,7 @@ public class Program
         "--enable-output-buffer",
         "--disable-gpu-vsync",
         "--disable-frame-rate-limit",
+        "--preset-high-performance",
     };
 }
 

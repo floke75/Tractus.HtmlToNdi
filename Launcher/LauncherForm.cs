@@ -35,6 +35,7 @@ public sealed class LauncherForm : Form
     private readonly CheckBox _enableZeroCopyCheckBox;
     private readonly CheckBox _enableOutOfProcessRasterizationCheckBox;
     private readonly CheckBox _disableBackgroundThrottlingCheckBox;
+    private readonly CheckBox _presetHighPerformanceCheckBox;
     private bool _suppressPacingCheckboxUpdates;
 
     /// <summary>
@@ -228,6 +229,14 @@ public sealed class LauncherForm : Form
 
         AddSectionHeader(table, "Chromium Performance Flags");
 
+        _presetHighPerformanceCheckBox = new CheckBox
+        {
+            Text = "High-Performance Preset",
+            Dock = DockStyle.Fill,
+            AutoSize = true,
+        };
+        AddRow(table, "Preset", _presetHighPerformanceCheckBox);
+
         _enableGpuRasterizationCheckBox = new CheckBox
         {
             Text = "Enable GPU rasterization",
@@ -314,6 +323,7 @@ public sealed class LauncherForm : Form
         _enableBufferingCheckBox.CheckedChanged += (_, _) => UpdateBufferingDependentControls();
         _enablePacedInvalidationCheckBox.CheckedChanged += OnEnablePacedInvalidationCheckedChanged;
         _disablePacedInvalidationCheckBox.CheckedChanged += OnDisablePacedInvalidationCheckedChanged;
+        _presetHighPerformanceCheckBox.CheckedChanged += OnPresetHighPerformanceCheckedChanged;
 
         ApplySettings(initialSettings);
     }
@@ -352,8 +362,37 @@ public sealed class LauncherForm : Form
         _enableZeroCopyCheckBox.Checked = settings.EnableZeroCopy;
         _enableOutOfProcessRasterizationCheckBox.Checked = settings.EnableOutOfProcessRasterization;
         _disableBackgroundThrottlingCheckBox.Checked = settings.DisableBackgroundThrottling;
+        _presetHighPerformanceCheckBox.Checked = settings.PresetHighPerformance;
 
         UpdateBufferingDependentControls();
+        UpdateHighPerformancePresetControls();
+    }
+
+    private void OnPresetHighPerformanceCheckedChanged(object? sender, EventArgs e)
+    {
+        UpdateHighPerformancePresetControls();
+    }
+
+    private void UpdateHighPerformancePresetControls()
+    {
+        var presetEnabled = _presetHighPerformanceCheckBox.Checked;
+
+        _enableGpuRasterizationCheckBox.Enabled = !presetEnabled;
+        _enableZeroCopyCheckBox.Enabled = !presetEnabled;
+        _enableOutOfProcessRasterizationCheckBox.Enabled = !presetEnabled;
+        _disableGpuVsyncCheckBox.Enabled = !presetEnabled;
+        _disableFrameRateLimitCheckBox.Enabled = !presetEnabled;
+        _disableBackgroundThrottlingCheckBox.Enabled = !presetEnabled;
+
+        if (presetEnabled)
+        {
+            _enableGpuRasterizationCheckBox.Checked = true;
+            _enableZeroCopyCheckBox.Checked = true;
+            _enableOutOfProcessRasterizationCheckBox.Checked = true;
+            _disableGpuVsyncCheckBox.Checked = true;
+            _disableFrameRateLimitCheckBox.Checked = true;
+            _disableBackgroundThrottlingCheckBox.Checked = true;
+        }
     }
 
     private void UpdateBufferingDependentControls()
@@ -480,7 +519,8 @@ public sealed class LauncherForm : Form
             EnableGpuRasterization = _enableGpuRasterizationCheckBox.Checked,
             EnableZeroCopy = _enableZeroCopyCheckBox.Checked,
             EnableOutOfProcessRasterization = _enableOutOfProcessRasterizationCheckBox.Checked,
-            DisableBackgroundThrottling = _disableBackgroundThrottlingCheckBox.Checked
+            DisableBackgroundThrottling = _disableBackgroundThrottlingCheckBox.Checked,
+            PresetHighPerformance = _presetHighPerformanceCheckBox.Checked
         };
 
         try
