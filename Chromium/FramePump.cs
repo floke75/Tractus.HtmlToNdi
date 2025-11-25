@@ -7,6 +7,7 @@ using System.Threading.Tasks;
 using CefSharp;
 using CefSharp.OffScreen;
 using Serilog;
+using Tractus.HtmlToNdi.Video;
 
 namespace Tractus.HtmlToNdi.Chromium;
 
@@ -23,6 +24,10 @@ public interface IPacedInvalidationScheduler : IDisposable
     void UpdateCadenceAlignment(double deltaFrames);
 
     bool IsPaused { get; }
+
+    bool IsHighPrecision { get; }
+
+    double LastPaintLatencyMs { get; }
 }
 
 internal enum FramePumpMode
@@ -56,6 +61,9 @@ internal sealed class FramePump : IPacedInvalidationScheduler
     private double cadenceAlignmentDeltaFrames;
     private long lastPaintTicks = DateTime.UtcNow.Ticks;
     private bool disposed;
+    private HighResolutionWaitableTimer? highResolutionTimer;
+    private readonly ConcurrentQueue<long> requestTimestamps = new();
+    private double lastPaintLatencyMs;
 
     public FramePump(
         ChromiumWebBrowser browser,
@@ -84,6 +92,10 @@ internal sealed class FramePump : IPacedInvalidationScheduler
 
     public bool IsPaused => paused;
 
+    public bool IsHighPrecision => highResolutionTimer != null;
+
+    public double LastPaintLatencyMs => Volatile.Read(ref lastPaintLatencyMs);
+
     public void Start()
     {
         ThrowIfDisposed();
@@ -99,6 +111,7 @@ internal sealed class FramePump : IPacedInvalidationScheduler
                 return;
             }
 
+            highResolutionTimer = HighResolutionWaitableTimer.TryCreate(logger);
             processingTask = StartDedicatedTask(ProcessRequestsAsync);
             if (mode == FramePumpMode.Periodic)
             {
@@ -114,6 +127,8 @@ internal sealed class FramePump : IPacedInvalidationScheduler
     {
         ThrowIfDisposed();
         cancellationToken.ThrowIfCancellationRequested();
+
+        requestTimestamps.Enqueue(Stopwatch.GetTimestamp());
 
         var linkedCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellation.Token, cancellationToken);
         var request = new InvalidationRequest(linkedCancellation.Token);
@@ -188,6 +203,14 @@ internal sealed class FramePump : IPacedInvalidationScheduler
     public void NotifyPaint()
     {
         Interlocked.Exchange(ref lastPaintTicks, DateTime.UtcNow.Ticks);
+
+        var now = Stopwatch.GetTimestamp();
+        if (requestTimestamps.TryDequeue(out var requestTimestamp))
+        {
+            var latencyTicks = now - requestTimestamp;
+            var latencyMs = latencyTicks / (double)Stopwatch.Frequency * 1000.0;
+            Volatile.Write(ref lastPaintLatencyMs, latencyMs);
+        }
     }
 
     public void UpdateCadenceAlignment(double deltaFrames)
@@ -236,6 +259,7 @@ internal sealed class FramePump : IPacedInvalidationScheduler
         }
 
         cancellation.Dispose();
+        highResolutionTimer?.Dispose();
 
         while (pausedQueue.TryDequeue(out var pending))
         {
@@ -285,7 +309,7 @@ internal sealed class FramePump : IPacedInvalidationScheduler
         {
             if (mode == FramePumpMode.OnDemand)
             {
-                await ApplyOnDemandCadenceDelayAsync(token).ConfigureAwait(false);
+                ApplyOnDemandCadenceDelay(token);
             }
 
             Task invalidateTask;
@@ -413,17 +437,13 @@ internal sealed class FramePump : IPacedInvalidationScheduler
                 }
 
                 nextDeadline += interval;
-                var delay = nextDeadline - stopwatch.Elapsed;
-                if (delay > TimeSpan.Zero)
+                try
                 {
-                    try
-                    {
-                        await Task.Delay(delay, token).ConfigureAwait(false);
-                    }
-                    catch (TaskCanceledException)
-                    {
-                        break;
-                    }
+                    TimingHelpers.WaitUntil(stopwatch, nextDeadline, token, highResolutionTimer);
+                }
+                catch (OperationCanceledException)
+                {
+                    break;
                 }
 
                 try
@@ -517,7 +537,7 @@ internal sealed class FramePump : IPacedInvalidationScheduler
         return TimeSpan.FromTicks(adjustedTicks);
     }
 
-    private async Task ApplyOnDemandCadenceDelayAsync(CancellationToken token)
+    private void ApplyOnDemandCadenceDelay(CancellationToken token)
     {
         if (!cadenceAdaptationEnabled)
         {
@@ -543,11 +563,12 @@ internal sealed class FramePump : IPacedInvalidationScheduler
         }
 
         var delay = TimeSpan.FromTicks(delayTicks);
+        var sw = Stopwatch.StartNew();
         try
         {
-            await Task.Delay(delay, token).ConfigureAwait(false);
+            TimingHelpers.WaitUntil(sw, delay, token, highResolutionTimer);
         }
-        catch (TaskCanceledException)
+        catch (OperationCanceledException)
         {
         }
     }

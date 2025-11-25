@@ -82,7 +82,18 @@ internal class CefWrapper : IDisposable
         await this.browser.WaitForInitialLoadAsync();
 
         var host = this.browser.GetBrowserHost();
-        var targetWindowlessRate = this.windowlessFrameRateOverride ?? Math.Clamp((int)Math.Round(this.frameRate.Value), 1, 240);
+        var pipelineOptions = this.videoPipeline.Options;
+
+        var defaultRate = (int)Math.Round(this.frameRate.Value);
+        if (pipelineOptions.EnablePacedInvalidation)
+        {
+            // If we are pacing invalidations, we want the browser to be ready to paint immediately
+            // upon request, rather than waiting for its own internal timer.
+            // Double the rate to provide headroom for burst refills, up to the 240fps cap.
+            defaultRate = Math.Clamp(defaultRate * 2, 1, 240);
+        }
+
+        var targetWindowlessRate = this.windowlessFrameRateOverride ?? Math.Clamp(defaultRate, 1, 240);
         host.WindowlessFrameRate = targetWindowlessRate;
         this.browser.ToggleAudioMute();
 
@@ -95,7 +106,6 @@ internal class CefWrapper : IDisposable
 
         this.browser.Paint += this.OnBrowserPaint;
 
-        var pipelineOptions = this.videoPipeline.Options;
         var pumpMode = pipelineOptions.EnablePacedInvalidation
             ? FramePumpMode.OnDemand
             : FramePumpMode.Periodic;

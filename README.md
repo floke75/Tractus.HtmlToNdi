@@ -22,6 +22,9 @@ Launching the executable without command-line parameters now opens a simple laun
 
 If the web page you are loading has a transparent background, NDI will honor that transparency.
 
+See [`Docs/configuration-recipes.md`](Docs/configuration-recipes.md) for ready-made flag combinations tailored to low-latency,
+broadcast-smooth, deep-buffer, and compositor-driven scenarios.
+
 ## Command Line Parameters
 
 Parameter|Description
