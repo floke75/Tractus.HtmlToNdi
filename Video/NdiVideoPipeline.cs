@@ -2099,7 +2099,7 @@ internal sealed class NdiVideoPipeline : IDisposable
                 var offsetTicks = Interlocked.Read(ref lastPacingOffsetTicks);
                 var offsetMs = offsetTicks / (double)TimeSpan.TicksPerMillisecond;
                 bufferStats += System.FormattableString.Invariant(
-                    $", pacedInvalidation=true, pacedPaused={pausedSnapshot}, pacedOffsetMs={offsetMs:F4}, cadenceAdaptation={pumpCadenceAdaptationEnabled}");
+                    $", pacedInvalidation=true, pacedPaused={pausedSnapshot}, pacedOffsetMs={offsetMs:F4}, cadenceAdaptation={pumpCadenceAdaptationEnabled}, pacedHighResTimer={scheduler.IsHighPrecision}, pacedLatencyMs={scheduler.LastPaintLatencyMs:F2}");
             }
         }
 
