@@ -35,7 +35,8 @@ public sealed class LaunchParameters
         bool enableGpuRasterization,
         bool enableZeroCopy,
         bool enableOutOfProcessRasterization,
-        bool disableBackgroundThrottling)
+        bool disableBackgroundThrottling,
+        bool presetHighPerformance)
     {
         NdiName = ndiName;
         Port = port;
@@ -61,6 +62,7 @@ public sealed class LaunchParameters
         EnableZeroCopy = enableZeroCopy;
         EnableOutOfProcessRasterization = enableOutOfProcessRasterization;
         DisableBackgroundThrottling = disableBackgroundThrottling;
+        PresetHighPerformance = presetHighPerformance;
     }
 
     /// <summary>
@@ -182,6 +184,11 @@ public sealed class LaunchParameters
     /// Gets a value indicating whether Chromium should keep renderers active even when hidden.
     /// </summary>
     public bool DisableBackgroundThrottling { get; }
+
+    /// <summary>
+    /// Gets a value indicating whether the high-performance preset should be enabled.
+    /// </summary>
+    public bool PresetHighPerformance { get; }
 
     /// <summary>
     /// Attempts to create a <see cref="LaunchParameters"/> instance from command-line arguments.
@@ -358,6 +365,7 @@ public sealed class LaunchParameters
         var enableZeroCopy = HasFlag("--enable-zero-copy");
         var enableOutOfProcessRasterization = HasFlag("--enable-oop-rasterization") || HasFlag("--enable-out-of-process-rasterization");
         var disableBackgroundThrottling = HasFlag("--disable-background-throttling") || HasFlag("--disable-renderer-backgrounding");
+        var presetHighPerformance = HasFlag("--preset-high-performance");
 
         int? windowlessFrameRateOverride = null;
         var windowlessRateArg = GetArgValue("--windowless-frame-rate");
@@ -398,7 +406,8 @@ public sealed class LaunchParameters
             enableGpuRasterization,
             enableZeroCopy,
             enableOutOfProcessRasterization,
-            disableBackgroundThrottling);
+            disableBackgroundThrottling,
+            presetHighPerformance);
 
         return true;
     }
@@ -494,6 +503,7 @@ public sealed class LaunchParameters
             settings.EnableGpuRasterization,
             settings.EnableZeroCopy,
             settings.EnableOutOfProcessRasterization,
-            settings.DisableBackgroundThrottling);
+            settings.DisableBackgroundThrottling,
+            settings.PresetHighPerformance);
     }
 }

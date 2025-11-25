@@ -138,4 +138,10 @@ public class LauncherSettings
     /// </summary>
     public bool DisableBackgroundThrottling { get; set; }
         = false;
+
+    /// <summary>
+    /// Gets or sets a value indicating whether the high-performance preset should be enabled.
+    /// </summary>
+    public bool PresetHighPerformance { get; set; }
+        = false;
 }
