@@ -53,7 +53,6 @@ internal sealed class FramePump : IPacedInvalidationScheduler
     private readonly CancellationTokenSource cancellation = new();
     private readonly object stateGate = new();
     private readonly ConcurrentQueue<InvalidationRequest> pausedQueue = new();
-    private readonly ConcurrentQueue<long> requestTimestamps = new();
 
     private Task? processingTask;
     private Task? periodicTask;
