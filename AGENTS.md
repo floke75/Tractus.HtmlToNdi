@@ -79,6 +79,7 @@ user types a non-empty name. Initial default is "HTML5" before prompting. |
 | `--enable-oop-rasterization` | `--enable-oop-rasterization` | Moves raster work to the out-of-process raster thread. Alias: `--enable-out-of-process-rasterization`. |
 | `--disable-background-throttling` | `--disable-background-throttling` | Prevents Chromium from throttling timers or hidden renderers. Also sets `--disable-renderer-backgrounding`. |
 | `--preset-high-performance` | `--preset-high-performance` | Enables a preset of Chromium flags for maximum rendering throughput. This is equivalent to enabling `--enable-gpu-rasterization`, `--enable-zero-copy`, `--enable-oop-rasterization`, `--disable-gpu-vsync`, `--disable-frame-rate-limit`, and `--disable-background-throttling`. |
+| `--pacing-mode=<Latency|Smoothness>` | `--pacing-mode=Smoothness` | Selects the paced sender strategy. The default `Latency` mode keeps the shallow paced buffer contract, while `Smoothness` tries to prioritise continuous motion with a deep buffer and high windowless render rate. |
 | `--enable-compositor-capture` / `--disable-compositor-capture` | `--enable-compositor-capture` | Opts into the compositor capture experiment guarded by `CompositorCaptureBridge`. When the helper DLL is missing or the toggle is off the app reverts to the legacy paint path. |
 | `-debug` | `-debug` | Raises Serilog minimum level to `Debug`. |
 | `-quiet` | `-quiet` | Disables console logging (file logging remains). |
@@ -273,6 +274,7 @@ When adding routes, update **both** this table and `Tractus.HtmlToNdi.http` samp
 6. **Compositor capture packaging:** The experimental path requires `CompositorCapture.dll` alongside the executable and currently
    drops GPU-only frames. Expect the flag to fall back silently if the helper is missing or incompatible.
 7. **Logging noise:** All incoming KVM metadata is logged at warning level, which may clutter logs under active control.
+8. **Smoothness pacing overrides:** The new `Smoothness` pacing mode only updates the exposed `Options` record; derived runtime flags like latency expansion and capture backpressure still follow the original inputs, so behaviour may not match the advertised mode.
 
 ---
 

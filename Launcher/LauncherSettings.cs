@@ -146,6 +146,11 @@ public class LauncherSettings
         = false;
 
     /// <summary>
+    /// Gets or sets the pacing mode for the video pipeline.
+    /// </summary>
+    public PacingMode PacingMode { get; set; } = PacingMode.Latency;
+
+    /// <summary>
     /// Gets or sets a value indicating whether the NDI sender should use the asynchronous send method.
     /// </summary>
     public bool NdiSendAsync { get; set; }

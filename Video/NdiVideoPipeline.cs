@@ -25,6 +25,7 @@ internal sealed class NdiVideoPipeline : IDisposable
     private static readonly TimeSpan TelemetryWarmupPeriod = TimeSpan.FromSeconds(30);
     private static readonly double StopwatchTicksToTimeSpanTicks = TimeSpan.TicksPerSecond / (double)Stopwatch.Frequency;
 
+    private const double SmoothnessRecoveryFactor = 0.1;
     private readonly int targetDepth;
     private readonly double lowWatermark;
     private readonly double highWatermark;
@@ -223,6 +224,18 @@ internal sealed class NdiVideoPipeline : IDisposable
         this.logger = logger;
         senderRequiresFrameRetention = sender.RequiresFrameRetention;
         telemetryWarmupDeadline = DateTime.UtcNow + TelemetryWarmupPeriod;
+
+        if (this.options.PacingMode ==
+            Tractus.HtmlToNdi.Launcher.PacingMode.Smoothness)
+        {
+            this.options = this.options with
+            {
+                AllowLatencyExpansion = true,
+                EnableCaptureBackpressure = false,
+                EnablePacedInvalidation = false,
+                DisablePacedInvalidation = true
+            };
+        }
 
         targetDepth = Math.Max(1, options.BufferDepth);
 
@@ -561,6 +574,19 @@ internal sealed class NdiVideoPipeline : IDisposable
 
         if (!BufferingEnabled || ringBuffer is null)
         {
+            return baseline;
+        }
+
+        if (options.PacingMode ==
+            Tractus.HtmlToNdi.Launcher.PacingMode.Smoothness)
+        {
+            // In Smoothness mode, latencyError is repurposed to track "time debt" in frames.
+            var debt = Volatile.Read(ref latencyError);
+            if (debt < 0)
+            {
+                var adjustmentTicks = (long)Math.Clamp(debt * SmoothnessRecoveryFactor * frameInterval.Ticks, -maxPacingAdjustmentTicks, 0);
+                return baseline + TimeSpan.FromTicks(adjustmentTicks);
+            }
             return baseline;
         }
 
@@ -1421,6 +1447,33 @@ internal sealed class NdiVideoPipeline : IDisposable
         if (ringBuffer is null)
         {
             return false;
+        }
+
+        if (options.PacingMode ==
+            Tractus.HtmlToNdi.Launcher.PacingMode.Smoothness)
+        {
+            var warmupThreshold = Math.Max(1, targetDepth / 2);
+            if (isWarmingUp && ringBuffer.Count < warmupThreshold)
+            {
+                latencyError = 0;
+                return false;
+            }
+            else if (isWarmingUp)
+            {
+                ExitWarmup();
+            }
+            if (ringBuffer.TryDequeue(out var frame) && frame is not null)
+            {
+                if (latencyError < 0)
+                    latencyError += 1;
+                SendBufferedFrame(frame);
+                return true;
+            }
+            else
+            {
+                latencyError -= 1;
+                return false;
+            }
         }
 
         var backlog = ringBuffer.Count;

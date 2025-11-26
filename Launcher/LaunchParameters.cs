@@ -37,6 +37,7 @@ public sealed class LaunchParameters
         bool enableOutOfProcessRasterization,
         bool disableBackgroundThrottling,
         bool presetHighPerformance,
+        PacingMode pacingMode,
         bool ndiSendAsync)
     {
         NdiName = ndiName;
@@ -64,6 +65,7 @@ public sealed class LaunchParameters
         EnableOutOfProcessRasterization = enableOutOfProcessRasterization;
         DisableBackgroundThrottling = disableBackgroundThrottling;
         PresetHighPerformance = presetHighPerformance;
+        PacingMode = pacingMode;
         NdiSendAsync = ndiSendAsync;
     }
 
@@ -191,6 +193,11 @@ public sealed class LaunchParameters
     /// Gets a value indicating whether the high-performance preset should be enabled.
     /// </summary>
     public bool PresetHighPerformance { get; }
+
+    /// <summary>
+    /// Gets the pacing mode for the video pipeline.
+    /// </summary>
+    public PacingMode PacingMode { get; }
 
     /// <summary>
     /// Gets a value indicating whether the NDI sender should use the asynchronous send method.
@@ -374,6 +381,13 @@ public sealed class LaunchParameters
         var disableBackgroundThrottling = HasFlag("--disable-background-throttling") || HasFlag("--disable-renderer-backgrounding");
         var presetHighPerformance = HasFlag("--preset-high-performance");
         var ndiSendAsync = HasFlag("--ndi-send-async");
+        var pacingMode = PacingMode.Latency;
+        var pacingModeArg = GetArgValue("--pacing-mode");
+        if (pacingModeArg is not null && !Enum.TryParse(pacingModeArg, true, out pacingMode))
+        {
+            Log.Error("Could not parse the --pacing-mode parameter. Exiting.");
+            return false;
+        }
 
         int? windowlessFrameRateOverride = null;
         var windowlessRateArg = GetArgValue("--windowless-frame-rate");
@@ -416,6 +430,7 @@ public sealed class LaunchParameters
             enableOutOfProcessRasterization,
             disableBackgroundThrottling,
             presetHighPerformance,
+            pacingMode,
             ndiSendAsync);
 
         return true;
@@ -514,6 +529,7 @@ public sealed class LaunchParameters
             settings.EnableOutOfProcessRasterization,
             settings.DisableBackgroundThrottling,
             settings.PresetHighPerformance,
+            settings.PacingMode,
             settings.NdiSendAsync);
     }
 }
