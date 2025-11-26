@@ -175,6 +175,7 @@ public class Program
             DisablePacedInvalidation = parameters.DisablePacedInvalidation,
             EnableCaptureBackpressure = parameters.EnableCaptureBackpressure,
             EnablePumpCadenceAdaptation = parameters.EnablePumpCadenceAdaptation,
+            SmoothnessPumpAtWindowlessRate = parameters.SmoothnessPumpAtWindowlessRate,
             EnableCompositorCapture = parameters.EnableCompositorCapture,
             PacingMode = parameters.PacingMode,
         };

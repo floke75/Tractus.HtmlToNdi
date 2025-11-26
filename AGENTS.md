@@ -27,8 +27,9 @@ historical evaluation in `Docs/paced-buffer-pr-evaluation.md`.
   * enables the experimental compositor path when `--enable-compositor-capture` is set and `CompositorCaptureBridge` can load
     the helper DLL, or
   * subscribes to `ChromiumWebBrowser.Paint` and starts a `FramePump` watchdog. On-demand pacing is used when the pipeline asks
-    for paced invalidations; otherwise the pump free-runs at the requested cadence (Smoothness rides the 240 fps windowless rate)
-    and the watchdog injects recovery paints when timestamps stall.
+    for paced invalidations; otherwise the pump free-runs at the requested cadence (Smoothness rides the 240 fps windowless rate
+    by default, or the NDI cadence when `--smoothness-pump-output-rate` is set) and the watchdog injects recovery paints when
+    timestamps stall.
 * **Video path:** Both paint- and compositor-driven captures surface a `CapturedFrame`. When buffering is disabled the pipeline
   sends those frames directly to `INdiVideoSender` (one frame per pacing slot). With buffering enabled, frames are copied into a
   pooled `FrameRingBuffer<NdiVideoFrame>` once the buffer is primed. `EnsureCpuAccessible` currently drops GPU-only textures,
@@ -70,6 +71,7 @@ user types a non-empty name. Initial default is "HTML5" before prompting. |
 | `--enable-paced-invalidation` / `--disable-paced-invalidation` | `--enable-paced-invalidation` | Couples Chromium invalidation with the paced sender. Each send slot triggers at most one capture. The disable form forces legacy free-run invalidation even if other inputs request pacing. |
 | `--enable-capture-backpressure` / `--disable-capture-backpressure` | `--enable-capture-backpressure` | Pauses Chromium invalidation while the paced buffer sits above its high-water mark. Ignored when pacing is disabled. |
 | `--enable-pump-cadence-adaptation` / `--disable-pump-cadence-adaptation` | `--enable-pump-cadence-adaptation` | Allows the pacing scheduler to stretch or delay invalidations using capture/output drift telemetry. |
+| `--smoothness-pump-windowless-rate` / `--smoothness-pump-output-rate` | `--smoothness-pump-windowless-rate` | Chooses whether Smoothness mode drives the frame pump from the ~240 fps windowless render cadence (default) or the NDI output cadence. |
 | `--telemetry-interval=<seconds>` | `--telemetry-interval=10` | Seconds between video pipeline telemetry log entries. Defaults to 10. |
 | `--windowless-frame-rate=<double>` | `--windowless-frame-rate=60` | Overrides Chromium's internal repaint cadence. Defaults to the rounded value of `--fps`. |
 | `--disable-gpu-vsync` | `--disable-gpu-vsync` | Passes `--disable-gpu-vsync` to Chromium to remove GPU vsync throttling. |

@@ -31,6 +31,7 @@ public sealed class LaunchParameters
         bool disablePacedInvalidation,
         bool enableCaptureBackpressure,
         bool enablePumpCadenceAdaptation,
+        bool smoothnessPumpAtWindowlessRate,
         bool enableCompositorCapture,
         bool enableGpuRasterization,
         bool enableZeroCopy,
@@ -59,6 +60,7 @@ public sealed class LaunchParameters
         DisablePacedInvalidation = disablePacedInvalidation;
         EnableCaptureBackpressure = enableCaptureBackpressure;
         EnablePumpCadenceAdaptation = enablePumpCadenceAdaptation;
+        SmoothnessPumpAtWindowlessRate = smoothnessPumpAtWindowlessRate;
         EnableCompositorCapture = enableCompositorCapture;
         EnableGpuRasterization = enableGpuRasterization;
         EnableZeroCopy = enableZeroCopy;
@@ -163,6 +165,11 @@ public sealed class LaunchParameters
     /// Gets a value indicating whether the Chromium pump adapts its cadence using pipeline telemetry.
     /// </summary>
     public bool EnablePumpCadenceAdaptation { get; }
+
+    /// <summary>
+    /// Gets a value indicating whether the Smoothness frame pump should run at the windowless render cadence.
+    /// </summary>
+    public bool SmoothnessPumpAtWindowlessRate { get; }
 
     /// <summary>
     /// Gets a value indicating whether the compositor capture path should be enabled.
@@ -374,6 +381,10 @@ public sealed class LaunchParameters
         var disablePacedInvalidation = pacedInvalidationToggle == false;
         var enableCaptureBackpressure = ResolveToggle("--enable-capture-backpressure", "--disable-capture-backpressure", false);
         var enablePumpCadenceAdaptation = ResolveToggle("--enable-pump-cadence-adaptation", "--disable-pump-cadence-adaptation", false);
+        var smoothnessPumpAtWindowlessRate = ResolveToggle(
+            "--smoothness-pump-windowless-rate",
+            "--smoothness-pump-output-rate",
+            true);
         var enableCompositorCapture = ResolveToggle("--enable-compositor-capture", "--disable-compositor-capture", false);
         var enableGpuRasterization = HasFlag("--enable-gpu-rasterization");
         var enableZeroCopy = HasFlag("--enable-zero-copy");
@@ -424,6 +435,7 @@ public sealed class LaunchParameters
             disablePacedInvalidation,
             enableCaptureBackpressure,
             enablePumpCadenceAdaptation,
+            smoothnessPumpAtWindowlessRate,
             enableCompositorCapture,
             enableGpuRasterization,
             enableZeroCopy,
@@ -523,6 +535,7 @@ public sealed class LaunchParameters
             settings.DisablePacedInvalidation,
             settings.EnableCaptureBackpressure,
             settings.EnablePumpCadenceAdaptation,
+            settings.SmoothnessPumpAtWindowlessRate,
             settings.EnableCompositorCapture,
             settings.EnableGpuRasterization,
             settings.EnableZeroCopy,

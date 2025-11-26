@@ -30,6 +30,7 @@ public sealed class LauncherForm : Form
     private readonly CheckBox _disablePacedInvalidationCheckBox;
     private readonly CheckBox _enableCaptureBackpressureCheckBox;
     private readonly CheckBox _enablePumpCadenceAdaptationCheckBox;
+    private readonly CheckBox _smoothnessPumpAtWindowlessRateCheckBox;
     private readonly CheckBox _enableCompositorCaptureCheckBox;
     private readonly CheckBox _enableGpuRasterizationCheckBox;
     private readonly CheckBox _enableZeroCopyCheckBox;
@@ -230,6 +231,14 @@ public sealed class LauncherForm : Form
         };
         AddRow(table, "Pump Cadence Adaptation", _enablePumpCadenceAdaptationCheckBox);
 
+        _smoothnessPumpAtWindowlessRateCheckBox = new CheckBox
+        {
+            Text = "Drive Smoothness pump from windowless render rate",
+            Dock = DockStyle.Fill,
+            AutoSize = true,
+        };
+        AddRow(table, "Smoothness Pump Cadence", _smoothnessPumpAtWindowlessRateCheckBox);
+
         _enableCompositorCaptureCheckBox = new CheckBox
         {
             Text = "Capture frames from Chromium compositor (experimental)",
@@ -379,6 +388,7 @@ public sealed class LauncherForm : Form
         _suppressPacingCheckboxUpdates = false;
         _enableCaptureBackpressureCheckBox.Checked = settings.EnableCaptureBackpressure;
         _enablePumpCadenceAdaptationCheckBox.Checked = settings.EnablePumpCadenceAdaptation;
+        _smoothnessPumpAtWindowlessRateCheckBox.Checked = settings.SmoothnessPumpAtWindowlessRate;
         _enableCompositorCaptureCheckBox.Checked = settings.EnableCompositorCapture;
         _windowlessFrameRateTextBox.Text = settings.WindowlessFrameRateOverride ?? string.Empty;
         _disableGpuVsyncCheckBox.Checked = settings.DisableGpuVsync;
@@ -550,6 +560,7 @@ public sealed class LauncherForm : Form
             DisablePacedInvalidation = _disablePacedInvalidationCheckBox.Checked,
             EnableCaptureBackpressure = _enableBufferingCheckBox.Checked && _enableCaptureBackpressureCheckBox.Checked,
             EnablePumpCadenceAdaptation = _enablePumpCadenceAdaptationCheckBox.Checked,
+            SmoothnessPumpAtWindowlessRate = _smoothnessPumpAtWindowlessRateCheckBox.Checked,
             EnableCompositorCapture = _enableCompositorCaptureCheckBox.Checked,
             EnableGpuRasterization = _enableGpuRasterizationCheckBox.Checked,
             EnableZeroCopy = _enableZeroCopyCheckBox.Checked,

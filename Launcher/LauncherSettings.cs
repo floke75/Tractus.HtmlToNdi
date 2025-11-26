@@ -110,6 +110,11 @@ public class LauncherSettings
         = false;
 
     /// <summary>
+    /// Gets or sets a value indicating whether the Smoothness frame pump should run at the windowless render cadence.
+    /// </summary>
+    public bool SmoothnessPumpAtWindowlessRate { get; set; } = true;
+
+    /// <summary>
     /// Gets or sets a value indicating whether compositor-driven capture should be enabled.
     /// </summary>
     public bool EnableCompositorCapture { get; set; }

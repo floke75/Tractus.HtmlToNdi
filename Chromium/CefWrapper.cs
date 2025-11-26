@@ -120,7 +120,7 @@ internal class CefWrapper : IDisposable
 
         var pumpInterval = pipelineOptions.PacingMode ==
             Tractus.HtmlToNdi.Launcher.PacingMode.Smoothness
-            ? TimeSpan.FromSeconds(1d / targetWindowlessRate)
+            ? TimeSpan.FromSeconds(1d / (pipelineOptions.SmoothnessPumpAtWindowlessRate ? targetWindowlessRate : this.frameRate.Value))
             : this.frameRate.FrameDuration;
 
         this.framePump = new FramePump(
