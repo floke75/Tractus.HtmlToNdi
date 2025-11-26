@@ -27,8 +27,8 @@ historical evaluation in `Docs/paced-buffer-pr-evaluation.md`.
   * enables the experimental compositor path when `--enable-compositor-capture` is set and `CompositorCaptureBridge` can load
     the helper DLL, or
   * subscribes to `ChromiumWebBrowser.Paint` and starts a `FramePump` watchdog. On-demand pacing is used when the pipeline asks
-    for paced invalidations; otherwise the pump free-runs at the requested cadence and the watchdog injects recovery paints when
-    timestamps stall.
+    for paced invalidations; otherwise the pump free-runs at the requested cadence (Smoothness rides the 240 fps windowless rate)
+    and the watchdog injects recovery paints when timestamps stall.
 * **Video path:** Both paint- and compositor-driven captures surface a `CapturedFrame`. When buffering is disabled the pipeline
   sends those frames directly to `INdiVideoSender` (one frame per pacing slot). With buffering enabled, frames are copied into a
   pooled `FrameRingBuffer<NdiVideoFrame>` once the buffer is primed. `EnsureCpuAccessible` currently drops GPU-only textures,

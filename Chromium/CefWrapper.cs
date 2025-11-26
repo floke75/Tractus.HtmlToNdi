@@ -118,9 +118,14 @@ internal class CefWrapper : IDisposable
             ? FramePumpMode.OnDemand
             : FramePumpMode.Periodic;
 
+        var pumpInterval = pipelineOptions.PacingMode ==
+            Tractus.HtmlToNdi.Launcher.PacingMode.Smoothness
+            ? TimeSpan.FromSeconds(1d / targetWindowlessRate)
+            : this.frameRate.FrameDuration;
+
         this.framePump = new FramePump(
             this.browser,
-            this.frameRate.FrameDuration,
+            pumpInterval,
             TimeSpan.FromSeconds(1),
             this.logger,
             pumpMode,
