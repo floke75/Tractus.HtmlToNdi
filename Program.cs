@@ -176,6 +176,7 @@ public class Program
             EnableCaptureBackpressure = parameters.EnableCaptureBackpressure,
             EnablePumpCadenceAdaptation = parameters.EnablePumpCadenceAdaptation,
             EnableCompositorCapture = parameters.EnableCompositorCapture,
+            PacingMode = parameters.PacingMode,
         };
 
         NativeNdiVideoSender? ndiSender = null;
@@ -1103,6 +1104,7 @@ public class Program
         "--disable-gpu-vsync",
         "--disable-frame-rate-limit",
         "--preset-high-performance",
+        "--pacing-mode",
         "--ndi-send-async",
     };
 }
