@@ -30,6 +30,8 @@ internal class CefWrapper : IDisposable
     /// </summary>
     public string? Url { get; private set; }
 
+    private const int SmoothnessRenderRate = 240;
+
     private readonly NdiVideoPipeline videoPipeline;
     private readonly FrameRate frameRate;
     private readonly int? windowlessFrameRateOverride;
@@ -85,7 +87,11 @@ internal class CefWrapper : IDisposable
         var pipelineOptions = this.videoPipeline.Options;
 
         var defaultRate = (int)Math.Round(this.frameRate.Value);
-        if (pipelineOptions.EnablePacedInvalidation)
+        if (pipelineOptions.PacingMode == Tractus.HtmlToNdi.Launcher.PacingMode.Smoothness)
+        {
+            defaultRate = SmoothnessRenderRate;
+        }
+        else if (pipelineOptions.EnablePacedInvalidation)
         {
             // If we are pacing invalidations, we want the browser to be ready to paint immediately
             // upon request, rather than waiting for its own internal timer.
@@ -106,7 +112,7 @@ internal class CefWrapper : IDisposable
 
         this.browser.Paint += this.OnBrowserPaint;
 
-        var pumpMode = pipelineOptions.EnablePacedInvalidation
+        var pumpMode = pipelineOptions.EnablePacedInvalidation && pipelineOptions.PacingMode != Tractus.HtmlToNdi.Launcher.PacingMode.Smoothness
             ? FramePumpMode.OnDemand
             : FramePumpMode.Periodic;
 
@@ -118,7 +124,12 @@ internal class CefWrapper : IDisposable
             pumpMode,
             pipelineOptions.EnablePumpCadenceAdaptation);
         this.framePump.Start();
-        this.videoPipeline.AttachInvalidationScheduler(this.framePump);
+
+        if (pipelineOptions.PacingMode != Tractus.HtmlToNdi.Launcher.PacingMode.Smoothness)
+        {
+            this.videoPipeline.AttachInvalidationScheduler(this.framePump);
+        }
+
         this.videoPipeline.Start();
     }
 

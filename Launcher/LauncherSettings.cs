@@ -144,4 +144,9 @@ public class LauncherSettings
     /// </summary>
     public bool PresetHighPerformance { get; set; }
         = false;
+
+    /// <summary>
+    /// Gets or sets the pacing mode for the video pipeline.
+    /// </summary>
+    public PacingMode PacingMode { get; set; } = PacingMode.Latency;
 }
