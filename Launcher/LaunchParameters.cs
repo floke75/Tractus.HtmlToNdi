@@ -11,6 +11,8 @@ namespace Tractus.HtmlToNdi.Launcher;
 /// </summary>
 public sealed class LaunchParameters
 {
+    public const int SmoothnessDefaultBufferDepth = 300;
+
     private LaunchParameters(
         string ndiName,
         int port,
@@ -398,6 +400,12 @@ public sealed class LaunchParameters
         {
             Log.Error("Could not parse the --pacing-mode parameter. Exiting.");
             return false;
+        }
+
+        if (pacingMode == PacingMode.Smoothness && !enableBuffering && bufferDepth == 0)
+        {
+            enableBuffering = true;
+            bufferDepth = SmoothnessDefaultBufferDepth;
         }
 
         int? windowlessFrameRateOverride = null;

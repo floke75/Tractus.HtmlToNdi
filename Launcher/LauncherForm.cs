@@ -41,8 +41,6 @@ public sealed class LauncherForm : Form
     private readonly CheckBox _ndiSendAsyncCheckBox;
     private bool _suppressPacingCheckboxUpdates;
 
-    private const int SmoothnessDefaultBufferDepth = 300;
-
     /// <summary>
     /// Gets the selected launch parameters.
     /// </summary>
@@ -436,7 +434,12 @@ public sealed class LauncherForm : Form
     {
         if (_pacingModeComboBox.SelectedItem is "Smoothness")
         {
-            _bufferDepthNumericUpDown.Value = SmoothnessDefaultBufferDepth;
+            if (!_enableBufferingCheckBox.Checked)
+            {
+                _enableBufferingCheckBox.Checked = true;
+            }
+
+            _bufferDepthNumericUpDown.Value = LaunchParameters.SmoothnessDefaultBufferDepth;
         }
     }
 
