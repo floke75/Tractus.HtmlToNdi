@@ -274,7 +274,7 @@ When adding routes, update **both** this table and `Tractus.HtmlToNdi.http` samp
 6. **Compositor capture packaging:** The experimental path requires `CompositorCapture.dll` alongside the executable and currently
    drops GPU-only frames. Expect the flag to fall back silently if the helper is missing or incompatible.
 7. **Logging noise:** All incoming KVM metadata is logged at warning level, which may clutter logs under active control.
-8. **Smoothness pacing overrides:** The new `Smoothness` pacing mode only updates the exposed `Options` record; derived runtime flags like latency expansion and capture backpressure still follow the original inputs, so behaviour may not match the advertised mode.
+8. **Smoothness pacing overrides:** Smoothness now rebinds derived runtime flags (paced invalidation, capture backpressure, and latency expansion) to the overridden options so the mode's behaviour aligns with its advertised defaults.
 
 ---
 

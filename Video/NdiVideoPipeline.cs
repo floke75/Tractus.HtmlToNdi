@@ -237,44 +237,46 @@ internal sealed class NdiVideoPipeline : IDisposable
             };
         }
 
-        targetDepth = Math.Max(1, options.BufferDepth);
+        var effectiveOptions = this.options;
+
+        targetDepth = Math.Max(1, effectiveOptions.BufferDepth);
 
         // Use 10% hysteresis for deep buffers, but keep tight bounds for shallow ones
         var hysteresis = Math.Max(1.5, targetDepth * 0.1);
         lowWatermark = Math.Max(0, targetDepth - hysteresis);
         highWatermark = targetDepth + Math.Max(1.0, hysteresis);
 
-        allowLatencyExpansion = options.AllowLatencyExpansion && options.EnableBuffering;
+        allowLatencyExpansion = effectiveOptions.AllowLatencyExpansion && effectiveOptions.EnableBuffering;
         frameInterval = frameRate.FrameDuration;
         maxPacingAdjustmentTicks = Math.Max(1, frameInterval.Ticks / 2);
         invalidationTicketTimeout = CalculateInvalidationTicketTimeout(frameInterval);
         captureDemandCheckInterval = CalculateCaptureDemandCheckInterval(frameInterval, invalidationTicketTimeout);
-        alignWithCaptureTimestamps = options.AlignWithCaptureTimestamps;
-        cadenceTelemetryEnabled = options.EnableCadenceTelemetry;
+        alignWithCaptureTimestamps = effectiveOptions.AlignWithCaptureTimestamps;
+        cadenceTelemetryEnabled = effectiveOptions.EnableCadenceTelemetry;
         cadenceTrackingEnabled = alignWithCaptureTimestamps || cadenceTelemetryEnabled;
         cadencePercentMinimumIntervals = Math.Max(10L, (long)Math.Ceiling(frameRate.Value * 2d));
         var settleDurationTicks = Math.Max(
             (double)TimeSpan.FromSeconds(2).Ticks,
             frameInterval.Ticks * (double)cadencePercentMinimumIntervals);
         cadencePercentMinimumDurationTicks = settleDurationTicks;
-        var pacingRequested = options.DisablePacedInvalidation ? false : options.EnablePacedInvalidation;
+        var pacingRequested = effectiveOptions.DisablePacedInvalidation ? false : effectiveOptions.EnablePacedInvalidation;
         pacedInvalidationEnabled = pacingRequested;
-        captureBackpressureEnabled = options.EnableBuffering
-            && options.EnableCaptureBackpressure
+        captureBackpressureEnabled = effectiveOptions.EnableBuffering
+            && effectiveOptions.EnableCaptureBackpressure
             && pacingRequested;
-        directPacedInvalidationEnabled = !options.EnableBuffering && pacingRequested;
-        if (options.DisablePacedInvalidation && options.EnablePacedInvalidation)
+        directPacedInvalidationEnabled = !effectiveOptions.EnableBuffering && pacingRequested;
+        if (effectiveOptions.DisablePacedInvalidation && effectiveOptions.EnablePacedInvalidation)
         {
             logger.Information("Paced invalidation disable request overrides enable flag.");
         }
 
-        if (options.EnableBuffering && options.EnableCaptureBackpressure && !pacingRequested)
+        if (effectiveOptions.EnableBuffering && effectiveOptions.EnableCaptureBackpressure && !pacingRequested)
         {
             logger.Warning(
                 "Capture backpressure requires paced invalidation; disabling backpressure until paced invalidation is enabled.");
         }
-        pumpCadenceAdaptationEnabled = options.EnablePumpCadenceAdaptation;
-        compositorCaptureEnabled = options.EnableCompositorCapture;
+        pumpCadenceAdaptationEnabled = effectiveOptions.EnablePumpCadenceAdaptation;
+        compositorCaptureEnabled = effectiveOptions.EnableCompositorCapture;
         if (compositorCaptureEnabled)
         {
             if (pacingRequested)
