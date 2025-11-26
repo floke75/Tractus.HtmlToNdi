@@ -402,7 +402,7 @@ public sealed class LaunchParameters
             return false;
         }
 
-        if (pacingMode == PacingMode.Smoothness && !enableBuffering && bufferDepth == 0)
+        if (pacingMode == PacingMode.Smoothness && bufferDepth == 0)
         {
             enableBuffering = true;
             bufferDepth = SmoothnessDefaultBufferDepth;
