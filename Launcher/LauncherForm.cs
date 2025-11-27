@@ -40,6 +40,7 @@ public sealed class LauncherForm : Form
     private readonly ComboBox _pacingModeComboBox;
     private readonly CheckBox _ndiSendAsyncCheckBox;
     private bool _suppressPacingCheckboxUpdates;
+    private bool _suppressPacingModeUpdates;
 
     /// <summary>
     /// Gets the selected launch parameters.
@@ -396,7 +397,9 @@ public sealed class LauncherForm : Form
         _enableOutOfProcessRasterizationCheckBox.Checked = settings.EnableOutOfProcessRasterization;
         _disableBackgroundThrottlingCheckBox.Checked = settings.DisableBackgroundThrottling;
         _presetHighPerformanceCheckBox.Checked = settings.PresetHighPerformance;
+        _suppressPacingModeUpdates = true;
         _pacingModeComboBox.SelectedItem = settings.PacingMode.ToString();
+        _suppressPacingModeUpdates = false;
         _ndiSendAsyncCheckBox.Checked = settings.NdiSendAsync;
 
         UpdateBufferingDependentControls();
@@ -434,6 +437,11 @@ public sealed class LauncherForm : Form
     {
         if (_pacingModeComboBox.SelectedItem is "Smoothness")
         {
+            if (_suppressPacingModeUpdates)
+            {
+                return;
+            }
+
             if (!_enableBufferingCheckBox.Checked)
             {
                 _enableBufferingCheckBox.Checked = true;
