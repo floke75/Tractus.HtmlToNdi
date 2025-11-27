@@ -27,7 +27,8 @@ historical evaluation in `Docs/paced-buffer-pr-evaluation.md`.
   * enables the experimental compositor path when `--enable-compositor-capture` is set and `CompositorCaptureBridge` can load
     the helper DLL, or
   * subscribes to `ChromiumWebBrowser.Paint` and starts a `FramePump` watchdog. On-demand pacing is used when the pipeline asks
-    for paced invalidations; otherwise the pump free-runs at the requested cadence and the watchdog injects recovery paints when
+    for paced invalidations; otherwise the pump free-runs at the requested cadence (Smoothness rides the 240 fps windowless rate
+    by default, or the NDI cadence when `--smoothness-pump-output-rate` is set) and the watchdog injects recovery paints when
     timestamps stall.
 * **Video path:** Both paint- and compositor-driven captures surface a `CapturedFrame`. When buffering is disabled the pipeline
   sends those frames directly to `INdiVideoSender` (one frame per pacing slot). With buffering enabled, frames are copied into a
@@ -70,6 +71,7 @@ user types a non-empty name. Initial default is "HTML5" before prompting. |
 | `--enable-paced-invalidation` / `--disable-paced-invalidation` | `--enable-paced-invalidation` | Couples Chromium invalidation with the paced sender. Each send slot triggers at most one capture. The disable form forces legacy free-run invalidation even if other inputs request pacing. |
 | `--enable-capture-backpressure` / `--disable-capture-backpressure` | `--enable-capture-backpressure` | Pauses Chromium invalidation while the paced buffer sits above its high-water mark. Ignored when pacing is disabled. |
 | `--enable-pump-cadence-adaptation` / `--disable-pump-cadence-adaptation` | `--enable-pump-cadence-adaptation` | Allows the pacing scheduler to stretch or delay invalidations using capture/output drift telemetry. |
+| `--smoothness-pump-windowless-rate` / `--smoothness-pump-output-rate` | `--smoothness-pump-windowless-rate` | Chooses whether Smoothness mode drives the frame pump from the ~240 fps windowless render cadence (default) or the NDI output cadence. |
 | `--telemetry-interval=<seconds>` | `--telemetry-interval=10` | Seconds between video pipeline telemetry log entries. Defaults to 10. |
 | `--windowless-frame-rate=<double>` | `--windowless-frame-rate=60` | Overrides Chromium's internal repaint cadence. Defaults to the rounded value of `--fps`. |
 | `--disable-gpu-vsync` | `--disable-gpu-vsync` | Passes `--disable-gpu-vsync` to Chromium to remove GPU vsync throttling. |
@@ -79,6 +81,7 @@ user types a non-empty name. Initial default is "HTML5" before prompting. |
 | `--enable-oop-rasterization` | `--enable-oop-rasterization` | Moves raster work to the out-of-process raster thread. Alias: `--enable-out-of-process-rasterization`. |
 | `--disable-background-throttling` | `--disable-background-throttling` | Prevents Chromium from throttling timers or hidden renderers. Also sets `--disable-renderer-backgrounding`. |
 | `--preset-high-performance` | `--preset-high-performance` | Enables a preset of Chromium flags for maximum rendering throughput. This is equivalent to enabling `--enable-gpu-rasterization`, `--enable-zero-copy`, `--enable-oop-rasterization`, `--disable-gpu-vsync`, `--disable-frame-rate-limit`, and `--disable-background-throttling`. |
+| `--pacing-mode=<Latency|Smoothness>` | `--pacing-mode=Smoothness` | Selects the paced sender strategy. The default `Latency` mode keeps the shallow paced buffer contract, while `Smoothness` tries to prioritise continuous motion with a deep buffer and high windowless render rate; when Smoothness is chosen without an explicit depth it now forces paced buffering with a 300-frame capacity even if buffering was already enabled via flag, and the launcher preserves previously saved Smoothness buffer depths when reopening settings (only reapplying the 300-frame default after the user reselects Smoothness). |
 | `--enable-compositor-capture` / `--disable-compositor-capture` | `--enable-compositor-capture` | Opts into the compositor capture experiment guarded by `CompositorCaptureBridge`. When the helper DLL is missing or the toggle is off the app reverts to the legacy paint path. |
 | `-debug` | `-debug` | Raises Serilog minimum level to `Debug`. |
 | `-quiet` | `-quiet` | Disables console logging (file logging remains). |
@@ -273,6 +276,7 @@ When adding routes, update **both** this table and `Tractus.HtmlToNdi.http` samp
 6. **Compositor capture packaging:** The experimental path requires `CompositorCapture.dll` alongside the executable and currently
    drops GPU-only frames. Expect the flag to fall back silently if the helper is missing or incompatible.
 7. **Logging noise:** All incoming KVM metadata is logged at warning level, which may clutter logs under active control.
+8. **Smoothness pacing overrides:** Smoothness now rebinds derived runtime flags (paced invalidation, capture backpressure, and latency expansion) to the overridden options so the mode's behaviour aligns with its advertised defaults.
 
 ---
 

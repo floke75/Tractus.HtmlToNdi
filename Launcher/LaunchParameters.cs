@@ -11,6 +11,8 @@ namespace Tractus.HtmlToNdi.Launcher;
 /// </summary>
 public sealed class LaunchParameters
 {
+    public const int SmoothnessDefaultBufferDepth = 300;
+
     private LaunchParameters(
         string ndiName,
         int port,
@@ -31,12 +33,14 @@ public sealed class LaunchParameters
         bool disablePacedInvalidation,
         bool enableCaptureBackpressure,
         bool enablePumpCadenceAdaptation,
+        bool smoothnessPumpAtWindowlessRate,
         bool enableCompositorCapture,
         bool enableGpuRasterization,
         bool enableZeroCopy,
         bool enableOutOfProcessRasterization,
         bool disableBackgroundThrottling,
         bool presetHighPerformance,
+        PacingMode pacingMode,
         bool ndiSendAsync)
     {
         NdiName = ndiName;
@@ -58,12 +62,14 @@ public sealed class LaunchParameters
         DisablePacedInvalidation = disablePacedInvalidation;
         EnableCaptureBackpressure = enableCaptureBackpressure;
         EnablePumpCadenceAdaptation = enablePumpCadenceAdaptation;
+        SmoothnessPumpAtWindowlessRate = smoothnessPumpAtWindowlessRate;
         EnableCompositorCapture = enableCompositorCapture;
         EnableGpuRasterization = enableGpuRasterization;
         EnableZeroCopy = enableZeroCopy;
         EnableOutOfProcessRasterization = enableOutOfProcessRasterization;
         DisableBackgroundThrottling = disableBackgroundThrottling;
         PresetHighPerformance = presetHighPerformance;
+        PacingMode = pacingMode;
         NdiSendAsync = ndiSendAsync;
     }
 
@@ -163,6 +169,11 @@ public sealed class LaunchParameters
     public bool EnablePumpCadenceAdaptation { get; }
 
     /// <summary>
+    /// Gets a value indicating whether the Smoothness frame pump should run at the windowless render cadence.
+    /// </summary>
+    public bool SmoothnessPumpAtWindowlessRate { get; }
+
+    /// <summary>
     /// Gets a value indicating whether the compositor capture path should be enabled.
     /// </summary>
     public bool EnableCompositorCapture { get; }
@@ -191,6 +202,11 @@ public sealed class LaunchParameters
     /// Gets a value indicating whether the high-performance preset should be enabled.
     /// </summary>
     public bool PresetHighPerformance { get; }
+
+    /// <summary>
+    /// Gets the pacing mode for the video pipeline.
+    /// </summary>
+    public PacingMode PacingMode { get; }
 
     /// <summary>
     /// Gets a value indicating whether the NDI sender should use the asynchronous send method.
@@ -367,6 +383,10 @@ public sealed class LaunchParameters
         var disablePacedInvalidation = pacedInvalidationToggle == false;
         var enableCaptureBackpressure = ResolveToggle("--enable-capture-backpressure", "--disable-capture-backpressure", false);
         var enablePumpCadenceAdaptation = ResolveToggle("--enable-pump-cadence-adaptation", "--disable-pump-cadence-adaptation", false);
+        var smoothnessPumpAtWindowlessRate = ResolveToggle(
+            "--smoothness-pump-windowless-rate",
+            "--smoothness-pump-output-rate",
+            true);
         var enableCompositorCapture = ResolveToggle("--enable-compositor-capture", "--disable-compositor-capture", false);
         var enableGpuRasterization = HasFlag("--enable-gpu-rasterization");
         var enableZeroCopy = HasFlag("--enable-zero-copy");
@@ -374,6 +394,19 @@ public sealed class LaunchParameters
         var disableBackgroundThrottling = HasFlag("--disable-background-throttling") || HasFlag("--disable-renderer-backgrounding");
         var presetHighPerformance = HasFlag("--preset-high-performance");
         var ndiSendAsync = HasFlag("--ndi-send-async");
+        var pacingMode = PacingMode.Latency;
+        var pacingModeArg = GetArgValue("--pacing-mode");
+        if (pacingModeArg is not null && !Enum.TryParse(pacingModeArg, true, out pacingMode))
+        {
+            Log.Error("Could not parse the --pacing-mode parameter. Exiting.");
+            return false;
+        }
+
+        if (pacingMode == PacingMode.Smoothness && bufferDepth == 0)
+        {
+            enableBuffering = true;
+            bufferDepth = SmoothnessDefaultBufferDepth;
+        }
 
         int? windowlessFrameRateOverride = null;
         var windowlessRateArg = GetArgValue("--windowless-frame-rate");
@@ -410,12 +443,14 @@ public sealed class LaunchParameters
             disablePacedInvalidation,
             enableCaptureBackpressure,
             enablePumpCadenceAdaptation,
+            smoothnessPumpAtWindowlessRate,
             enableCompositorCapture,
             enableGpuRasterization,
             enableZeroCopy,
             enableOutOfProcessRasterization,
             disableBackgroundThrottling,
             presetHighPerformance,
+            pacingMode,
             ndiSendAsync);
 
         return true;
@@ -508,12 +543,14 @@ public sealed class LaunchParameters
             settings.DisablePacedInvalidation,
             settings.EnableCaptureBackpressure,
             settings.EnablePumpCadenceAdaptation,
+            settings.SmoothnessPumpAtWindowlessRate,
             settings.EnableCompositorCapture,
             settings.EnableGpuRasterization,
             settings.EnableZeroCopy,
             settings.EnableOutOfProcessRasterization,
             settings.DisableBackgroundThrottling,
             settings.PresetHighPerformance,
+            settings.PacingMode,
             settings.NdiSendAsync);
     }
 }

@@ -30,14 +30,17 @@ public sealed class LauncherForm : Form
     private readonly CheckBox _disablePacedInvalidationCheckBox;
     private readonly CheckBox _enableCaptureBackpressureCheckBox;
     private readonly CheckBox _enablePumpCadenceAdaptationCheckBox;
+    private readonly CheckBox _smoothnessPumpAtWindowlessRateCheckBox;
     private readonly CheckBox _enableCompositorCaptureCheckBox;
     private readonly CheckBox _enableGpuRasterizationCheckBox;
     private readonly CheckBox _enableZeroCopyCheckBox;
     private readonly CheckBox _enableOutOfProcessRasterizationCheckBox;
     private readonly CheckBox _disableBackgroundThrottlingCheckBox;
     private readonly CheckBox _presetHighPerformanceCheckBox;
+    private readonly ComboBox _pacingModeComboBox;
     private readonly CheckBox _ndiSendAsyncCheckBox;
     private bool _suppressPacingCheckboxUpdates;
+    private bool _suppressPacingModeUpdates;
 
     /// <summary>
     /// Gets the selected launch parameters.
@@ -121,6 +124,16 @@ public sealed class LauncherForm : Form
         _frameRateTextBox = new TextBox { Dock = DockStyle.Fill };
         AddRow(table, "Frame Rate (fps)", _frameRateTextBox);
 
+        AddSectionHeader(table, "Pacing");
+
+        _pacingModeComboBox = new ComboBox
+        {
+            Dock = DockStyle.Fill,
+            DropDownStyle = ComboBoxStyle.DropDownList
+        };
+        _pacingModeComboBox.Items.AddRange(Enum.GetNames(typeof(PacingMode)));
+        AddRow(table, "Pacing Mode", _pacingModeComboBox);
+
         _enableBufferingCheckBox = new CheckBox
         {
             Text = "Enable paced output buffer",
@@ -132,7 +145,7 @@ public sealed class LauncherForm : Form
         _bufferDepthNumericUpDown = new NumericUpDown
         {
             Minimum = 1,
-            Maximum = 1000,
+            Maximum = 3000,
             Dock = DockStyle.Fill,
             Increment = 1,
         };
@@ -216,6 +229,14 @@ public sealed class LauncherForm : Form
             AutoSize = true,
         };
         AddRow(table, "Pump Cadence Adaptation", _enablePumpCadenceAdaptationCheckBox);
+
+        _smoothnessPumpAtWindowlessRateCheckBox = new CheckBox
+        {
+            Text = "Drive Smoothness pump from windowless render rate",
+            Dock = DockStyle.Fill,
+            AutoSize = true,
+        };
+        AddRow(table, "Smoothness Pump Cadence", _smoothnessPumpAtWindowlessRateCheckBox);
 
         _enableCompositorCaptureCheckBox = new CheckBox
         {
@@ -335,6 +356,7 @@ public sealed class LauncherForm : Form
         _enablePacedInvalidationCheckBox.CheckedChanged += OnEnablePacedInvalidationCheckedChanged;
         _disablePacedInvalidationCheckBox.CheckedChanged += OnDisablePacedInvalidationCheckedChanged;
         _presetHighPerformanceCheckBox.CheckedChanged += OnPresetHighPerformanceCheckedChanged;
+        _pacingModeComboBox.SelectedIndexChanged += OnPacingModeChanged;
 
         ApplySettings(initialSettings);
     }
@@ -365,6 +387,7 @@ public sealed class LauncherForm : Form
         _suppressPacingCheckboxUpdates = false;
         _enableCaptureBackpressureCheckBox.Checked = settings.EnableCaptureBackpressure;
         _enablePumpCadenceAdaptationCheckBox.Checked = settings.EnablePumpCadenceAdaptation;
+        _smoothnessPumpAtWindowlessRateCheckBox.Checked = settings.SmoothnessPumpAtWindowlessRate;
         _enableCompositorCaptureCheckBox.Checked = settings.EnableCompositorCapture;
         _windowlessFrameRateTextBox.Text = settings.WindowlessFrameRateOverride ?? string.Empty;
         _disableGpuVsyncCheckBox.Checked = settings.DisableGpuVsync;
@@ -374,6 +397,9 @@ public sealed class LauncherForm : Form
         _enableOutOfProcessRasterizationCheckBox.Checked = settings.EnableOutOfProcessRasterization;
         _disableBackgroundThrottlingCheckBox.Checked = settings.DisableBackgroundThrottling;
         _presetHighPerformanceCheckBox.Checked = settings.PresetHighPerformance;
+        _suppressPacingModeUpdates = true;
+        _pacingModeComboBox.SelectedItem = settings.PacingMode.ToString();
+        _suppressPacingModeUpdates = false;
         _ndiSendAsyncCheckBox.Checked = settings.NdiSendAsync;
 
         UpdateBufferingDependentControls();
@@ -404,6 +430,27 @@ public sealed class LauncherForm : Form
             _disableGpuVsyncCheckBox.Checked = true;
             _disableFrameRateLimitCheckBox.Checked = true;
             _disableBackgroundThrottlingCheckBox.Checked = true;
+        }
+    }
+
+    private void OnPacingModeChanged(object? sender, EventArgs e)
+    {
+        if (_pacingModeComboBox.SelectedItem is "Smoothness")
+        {
+            if (_suppressPacingModeUpdates)
+            {
+                return;
+            }
+
+            if (!_enableBufferingCheckBox.Checked)
+            {
+                _enableBufferingCheckBox.Checked = true;
+            }
+
+            // Manual user selection should always reapply the Smoothness default depth; suppressed
+            // programmatic updates (e.g., loading persisted settings) bypass this path so saved
+            // values are preserved.
+            _bufferDepthNumericUpDown.Value = LaunchParameters.SmoothnessDefaultBufferDepth;
         }
     }
 
@@ -527,12 +574,14 @@ public sealed class LauncherForm : Form
             DisablePacedInvalidation = _disablePacedInvalidationCheckBox.Checked,
             EnableCaptureBackpressure = _enableBufferingCheckBox.Checked && _enableCaptureBackpressureCheckBox.Checked,
             EnablePumpCadenceAdaptation = _enablePumpCadenceAdaptationCheckBox.Checked,
+            SmoothnessPumpAtWindowlessRate = _smoothnessPumpAtWindowlessRateCheckBox.Checked,
             EnableCompositorCapture = _enableCompositorCaptureCheckBox.Checked,
             EnableGpuRasterization = _enableGpuRasterizationCheckBox.Checked,
             EnableZeroCopy = _enableZeroCopyCheckBox.Checked,
             EnableOutOfProcessRasterization = _enableOutOfProcessRasterizationCheckBox.Checked,
             DisableBackgroundThrottling = _disableBackgroundThrottlingCheckBox.Checked,
             PresetHighPerformance = _presetHighPerformanceCheckBox.Checked,
+            PacingMode = (PacingMode)Enum.Parse(typeof(PacingMode), (string)_pacingModeComboBox.SelectedItem),
             NdiSendAsync = _ndiSendAsyncCheckBox.Checked
         };
 

@@ -309,6 +309,30 @@ public class NdiVideoPipelineTests
     }
 
     [Fact]
+    public void SmoothnessModeOverridesPipelineOptions()
+    {
+        var sender = new CollectingSender();
+        var options = new NdiVideoPipelineOptions
+        {
+            EnableBuffering = true,
+            BufferDepth = 3,
+            TelemetryInterval = TimeSpan.FromDays(1),
+            PacingMode = Launcher.PacingMode.Smoothness,
+            AllowLatencyExpansion = false,
+            EnableCaptureBackpressure = true,
+            EnablePacedInvalidation = true,
+            DisablePacedInvalidation = false
+        };
+
+        var pipeline = new NdiVideoPipeline(sender, new FrameRate(60, 1), options, CreateNullLogger());
+        Assert.True(pipeline.Options.AllowLatencyExpansion);
+        Assert.False(pipeline.Options.EnableCaptureBackpressure);
+        Assert.False(pipeline.Options.EnablePacedInvalidation);
+        Assert.True(pipeline.Options.DisablePacedInvalidation);
+        pipeline.Dispose();
+    }
+
+    [Fact]
     public async Task BufferedModeWaitsForWarmupBeforeSending()
     {
         var sender = new CollectingSender();
