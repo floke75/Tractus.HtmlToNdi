@@ -447,6 +447,9 @@ public sealed class LauncherForm : Form
                 _enableBufferingCheckBox.Checked = true;
             }
 
+            // Manual user selection should always reapply the Smoothness default depth; suppressed
+            // programmatic updates (e.g., loading persisted settings) bypass this path so saved
+            // values are preserved.
             _bufferDepthNumericUpDown.Value = LaunchParameters.SmoothnessDefaultBufferDepth;
         }
     }
