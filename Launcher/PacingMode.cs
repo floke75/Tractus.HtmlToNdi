@@ -6,12 +6,12 @@ public enum PacingMode
 {
     /// <summary>
     /// Prioritizes strict, low latency at the risk of less smooth
-    playback.
+    /// playback.
     /// </summary>
     Latency,
     /// <summary>
     /// Prioritizes smooth playback by allowing for a deep buffer and
-    variable latency.
+    /// variable latency.
     /// </summary>
     Smoothness
 }
