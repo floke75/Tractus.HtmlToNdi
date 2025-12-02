@@ -551,6 +551,14 @@ public sealed class LauncherForm : Form
             frameRateText = "60";
         }
 
+        var pacingModeSelection = _pacingModeComboBox.SelectedItem as string;
+        if (string.IsNullOrWhiteSpace(pacingModeSelection))
+        {
+            MessageBox.Show(this, "Please choose a pacing mode.", "Validation", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            _pacingModeComboBox.Focus();
+            return;
+        }
+
         var settings = new LauncherSettings
         {
             NdiName = ndiName,
@@ -581,7 +589,7 @@ public sealed class LauncherForm : Form
             EnableOutOfProcessRasterization = _enableOutOfProcessRasterizationCheckBox.Checked,
             DisableBackgroundThrottling = _disableBackgroundThrottlingCheckBox.Checked,
             PresetHighPerformance = _presetHighPerformanceCheckBox.Checked,
-            PacingMode = (PacingMode)Enum.Parse(typeof(PacingMode), (string)_pacingModeComboBox.SelectedItem),
+            PacingMode = Enum.Parse<PacingMode>(pacingModeSelection),
             NdiSendAsync = _ndiSendAsyncCheckBox.Checked
         };
 

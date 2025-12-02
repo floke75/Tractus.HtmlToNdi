@@ -586,8 +586,8 @@ internal sealed class NdiVideoPipeline : IDisposable
             var debt = Volatile.Read(ref latencyError);
             if (debt < 0)
             {
-                var adjustmentTicks = (long)Math.Clamp(debt * SmoothnessRecoveryFactor * frameInterval.Ticks, -maxPacingAdjustmentTicks, 0);
-                return baseline + TimeSpan.FromTicks(adjustmentTicks);
+                var smoothnessAdjustmentTicks = (long)Math.Clamp(debt * SmoothnessRecoveryFactor * frameInterval.Ticks, -maxPacingAdjustmentTicks, 0);
+                return baseline + TimeSpan.FromTicks(smoothnessAdjustmentTicks);
             }
             return baseline;
         }
@@ -1464,11 +1464,11 @@ internal sealed class NdiVideoPipeline : IDisposable
             {
                 ExitWarmup();
             }
-            if (ringBuffer.TryDequeue(out var frame) && frame is not null)
+            if (ringBuffer.TryDequeue(out var smoothnessFrame) && smoothnessFrame is not null)
             {
                 if (latencyError < 0)
                     latencyError += 1;
-                SendBufferedFrame(frame);
+                SendBufferedFrame(smoothnessFrame);
                 return true;
             }
             else
