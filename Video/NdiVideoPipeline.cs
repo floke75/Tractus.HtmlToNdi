@@ -18,7 +18,6 @@ internal sealed class NdiVideoPipeline : IDisposable
     private readonly INdiVideoSender sender;
     private readonly FrameRate configuredFrameRate;
     private readonly NdiVideoPipelineOptions options;
-    private readonly FrameTimeAverager timeAverager = new();
     private readonly CancellationTokenSource cancellation = new();
     private readonly FrameRingBuffer<NdiVideoFrame>? ringBuffer;
     private readonly ILogger logger;
@@ -1862,23 +1861,9 @@ internal sealed class NdiVideoPipeline : IDisposable
 
     internal long SpuriousCaptureCount => Interlocked.Read(ref spuriousCaptureCount);
 
-    private (int numerator, int denominator) ResolveFrameRate(DateTime timestamp)
+    private (int numerator, int denominator) ResolveFrameRate(DateTime _)
     {
-        var measured = timeAverager.AddTimestamp(timestamp);
-        if (!measured.HasValue)
-        {
-            return (configuredFrameRate.Numerator, configuredFrameRate.Denominator);
-        }
-
-        try
-        {
-            var measuredRate = FrameRate.FromDouble(measured.Value);
-            return (measuredRate.Numerator, measuredRate.Denominator);
-        }
-        catch
-        {
-            return (configuredFrameRate.Numerator, configuredFrameRate.Denominator);
-        }
+        return (configuredFrameRate.Numerator, configuredFrameRate.Denominator);
     }
 
     private sealed class CadenceTracker
