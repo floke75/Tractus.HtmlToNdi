@@ -33,6 +33,8 @@ public class NdiVideoPipelineTests
         private readonly object gate = new();
         private readonly List<SentFrame> frames = new();
 
+        public bool RequiresFrameRetention => false;
+
         public IReadOnlyList<SentFrame> Frames
         {
             get
