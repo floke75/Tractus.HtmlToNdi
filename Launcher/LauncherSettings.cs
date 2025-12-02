@@ -110,6 +110,11 @@ public class LauncherSettings
         = false;
 
     /// <summary>
+    /// Gets or sets a value indicating whether the Smoothness frame pump should run at the windowless render cadence.
+    /// </summary>
+    public bool SmoothnessPumpAtWindowlessRate { get; set; } = true;
+
+    /// <summary>
     /// Gets or sets a value indicating whether compositor-driven capture should be enabled.
     /// </summary>
     public bool EnableCompositorCapture { get; set; }
@@ -144,6 +149,11 @@ public class LauncherSettings
     /// </summary>
     public bool PresetHighPerformance { get; set; }
         = false;
+
+    /// <summary>
+    /// Gets or sets the pacing mode for the video pipeline.
+    /// </summary>
+    public PacingMode PacingMode { get; set; } = PacingMode.Latency;
 
     /// <summary>
     /// Gets or sets a value indicating whether the NDI sender should use the asynchronous send method.

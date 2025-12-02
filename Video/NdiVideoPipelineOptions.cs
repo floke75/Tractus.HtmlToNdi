@@ -56,7 +56,17 @@ internal sealed record NdiVideoPipelineOptions
     public bool EnablePumpCadenceAdaptation { get; init; }
 
     /// <summary>
+    /// Gets or sets a value indicating whether Smoothness mode should drive the frame pump from the windowless render cadence.
+    /// </summary>
+    public bool SmoothnessPumpAtWindowlessRate { get; init; } = true;
+
+    /// <summary>
     /// Gets or sets a value indicating whether compositor-driven capture should be used instead of invalidation-driven paints.
     /// </summary>
     public bool EnableCompositorCapture { get; init; }
+
+    /// <summary>
+    /// Gets or sets the pacing mode for the video pipeline.
+    /// </summary>
+    public Tractus.HtmlToNdi.Launcher.PacingMode PacingMode { get; init; } = Tractus.HtmlToNdi.Launcher.PacingMode.Latency;
 }

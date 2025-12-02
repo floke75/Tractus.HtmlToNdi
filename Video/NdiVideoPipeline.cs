@@ -25,6 +25,7 @@ internal sealed class NdiVideoPipeline : IDisposable
     private static readonly TimeSpan TelemetryWarmupPeriod = TimeSpan.FromSeconds(30);
     private static readonly double StopwatchTicksToTimeSpanTicks = TimeSpan.TicksPerSecond / (double)Stopwatch.Frequency;
 
+    private const double SmoothnessRecoveryFactor = 0.1;
     private readonly int targetDepth;
     private readonly double lowWatermark;
     private readonly double highWatermark;
@@ -224,44 +225,58 @@ internal sealed class NdiVideoPipeline : IDisposable
         senderRequiresFrameRetention = sender.RequiresFrameRetention;
         telemetryWarmupDeadline = DateTime.UtcNow + TelemetryWarmupPeriod;
 
-        targetDepth = Math.Max(1, options.BufferDepth);
+        if (this.options.PacingMode ==
+            Tractus.HtmlToNdi.Launcher.PacingMode.Smoothness)
+        {
+            this.options = this.options with
+            {
+                AllowLatencyExpansion = true,
+                EnableCaptureBackpressure = false,
+                EnablePacedInvalidation = false,
+                DisablePacedInvalidation = true
+            };
+        }
+
+        var effectiveOptions = this.options;
+
+        targetDepth = Math.Max(1, effectiveOptions.BufferDepth);
 
         // Use 10% hysteresis for deep buffers, but keep tight bounds for shallow ones
         var hysteresis = Math.Max(1.5, targetDepth * 0.1);
         lowWatermark = Math.Max(0, targetDepth - hysteresis);
         highWatermark = targetDepth + Math.Max(1.0, hysteresis);
 
-        allowLatencyExpansion = options.AllowLatencyExpansion && options.EnableBuffering;
+        allowLatencyExpansion = effectiveOptions.AllowLatencyExpansion && effectiveOptions.EnableBuffering;
         frameInterval = frameRate.FrameDuration;
         maxPacingAdjustmentTicks = Math.Max(1, frameInterval.Ticks / 2);
         invalidationTicketTimeout = CalculateInvalidationTicketTimeout(frameInterval);
         captureDemandCheckInterval = CalculateCaptureDemandCheckInterval(frameInterval, invalidationTicketTimeout);
-        alignWithCaptureTimestamps = options.AlignWithCaptureTimestamps;
-        cadenceTelemetryEnabled = options.EnableCadenceTelemetry;
+        alignWithCaptureTimestamps = effectiveOptions.AlignWithCaptureTimestamps;
+        cadenceTelemetryEnabled = effectiveOptions.EnableCadenceTelemetry;
         cadenceTrackingEnabled = alignWithCaptureTimestamps || cadenceTelemetryEnabled;
         cadencePercentMinimumIntervals = Math.Max(10L, (long)Math.Ceiling(frameRate.Value * 2d));
         var settleDurationTicks = Math.Max(
             (double)TimeSpan.FromSeconds(2).Ticks,
             frameInterval.Ticks * (double)cadencePercentMinimumIntervals);
         cadencePercentMinimumDurationTicks = settleDurationTicks;
-        var pacingRequested = options.DisablePacedInvalidation ? false : options.EnablePacedInvalidation;
+        var pacingRequested = effectiveOptions.DisablePacedInvalidation ? false : effectiveOptions.EnablePacedInvalidation;
         pacedInvalidationEnabled = pacingRequested;
-        captureBackpressureEnabled = options.EnableBuffering
-            && options.EnableCaptureBackpressure
+        captureBackpressureEnabled = effectiveOptions.EnableBuffering
+            && effectiveOptions.EnableCaptureBackpressure
             && pacingRequested;
-        directPacedInvalidationEnabled = !options.EnableBuffering && pacingRequested;
-        if (options.DisablePacedInvalidation && options.EnablePacedInvalidation)
+        directPacedInvalidationEnabled = !effectiveOptions.EnableBuffering && pacingRequested;
+        if (effectiveOptions.DisablePacedInvalidation && effectiveOptions.EnablePacedInvalidation)
         {
             logger.Information("Paced invalidation disable request overrides enable flag.");
         }
 
-        if (options.EnableBuffering && options.EnableCaptureBackpressure && !pacingRequested)
+        if (effectiveOptions.EnableBuffering && effectiveOptions.EnableCaptureBackpressure && !pacingRequested)
         {
             logger.Warning(
                 "Capture backpressure requires paced invalidation; disabling backpressure until paced invalidation is enabled.");
         }
-        pumpCadenceAdaptationEnabled = options.EnablePumpCadenceAdaptation;
-        compositorCaptureEnabled = options.EnableCompositorCapture;
+        pumpCadenceAdaptationEnabled = effectiveOptions.EnablePumpCadenceAdaptation;
+        compositorCaptureEnabled = effectiveOptions.EnableCompositorCapture;
         if (compositorCaptureEnabled)
         {
             if (pacingRequested)
@@ -561,6 +576,19 @@ internal sealed class NdiVideoPipeline : IDisposable
 
         if (!BufferingEnabled || ringBuffer is null)
         {
+            return baseline;
+        }
+
+        if (options.PacingMode ==
+            Tractus.HtmlToNdi.Launcher.PacingMode.Smoothness)
+        {
+            // In Smoothness mode, latencyError is repurposed to track "time debt" in frames.
+            var debt = Volatile.Read(ref latencyError);
+            if (debt < 0)
+            {
+                var adjustmentTicks = (long)Math.Clamp(debt * SmoothnessRecoveryFactor * frameInterval.Ticks, -maxPacingAdjustmentTicks, 0);
+                return baseline + TimeSpan.FromTicks(adjustmentTicks);
+            }
             return baseline;
         }
 
@@ -1421,6 +1449,33 @@ internal sealed class NdiVideoPipeline : IDisposable
         if (ringBuffer is null)
         {
             return false;
+        }
+
+        if (options.PacingMode ==
+            Tractus.HtmlToNdi.Launcher.PacingMode.Smoothness)
+        {
+            var warmupThreshold = Math.Max(1, targetDepth / 2);
+            if (isWarmingUp && ringBuffer.Count < warmupThreshold)
+            {
+                latencyError = 0;
+                return false;
+            }
+            else if (isWarmingUp)
+            {
+                ExitWarmup();
+            }
+            if (ringBuffer.TryDequeue(out var frame) && frame is not null)
+            {
+                if (latencyError < 0)
+                    latencyError += 1;
+                SendBufferedFrame(frame);
+                return true;
+            }
+            else
+            {
+                latencyError -= 1;
+                return false;
+            }
         }
 
         var backlog = ringBuffer.Count;
