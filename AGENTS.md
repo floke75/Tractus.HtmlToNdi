@@ -34,7 +34,9 @@ historical evaluation in `Docs/paced-buffer-pr-evaluation.md`.
   sends those frames directly to `INdiVideoSender` (one frame per pacing slot). With buffering enabled, frames are copied into a
   pooled `FrameRingBuffer<NdiVideoFrame>` once the buffer is primed. `EnsureCpuAccessible` currently drops GPU-only textures,
   so compositor capture falls back silently unless the helper supplies CPU memory. Pacing tracks capture/output cadence, issues
-  invalidation “tickets” to throttle Chromium, and can pause capture entirely when backlog crosses the high-water mark.
+  invalidation “tickets” to throttle Chromium, and can pause capture entirely when backlog crosses the high-water mark. NDI
+  video frames now always advertise the configured frame-rate fraction instead of deriving it from recent capture timestamps so
+  receivers see a stable 30/1 (or 29.97/1.001, etc.) even when Chromium paints slightly fast.
 * **Audio path:** `CustomAudioHandler` allocates one second of float storage, copies each planar channel into its own contiguous
   block inside that buffer, and forwards it to `NDIlib.send_send_audio_v2`. Metadata still reports “interleaved” while the
   payload remains pseudo-planar, so receivers must tolerate the mismatch.
