@@ -11,6 +11,8 @@ This document is the ground-truth orientation guide. Treat it as a living specâ€
 For the current paced-buffer design direction and recommendations, review `Docs/paced-buffer-improvement-plan.md` alongside the
 historical evaluation in `Docs/paced-buffer-pr-evaluation.md`.
 
+For a concrete 30p stability recipe (CLI switches plus launcher checkboxes), see `Docs/cadence-stability.md`.
+
 ---
 
 ## 1. What the current build actually does (net8.0, early 2025 snapshot)
