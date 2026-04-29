@@ -45,6 +45,122 @@ public class Program
     private static readonly Stopwatch StartupStopwatch = Stopwatch.StartNew();
     private static nint NdiNativeLibraryHandle;
 
+    [DllImport("winmm.dll", EntryPoint = "timeBeginPeriod", SetLastError = true)]
+    private static extern uint TimeBeginPeriod(uint uPeriod);
+
+    [DllImport("winmm.dll", EntryPoint = "timeEndPeriod", SetLastError = true)]
+    private static extern uint TimeEndPeriod(uint uPeriod);
+
+    private static int? appliedTimerResolution;
+
+    private static void ApplySystemTuning(LaunchParameters parameters)
+    {
+        if (parameters.MmTimerResolutionMs is int periodMs && periodMs > 0)
+        {
+            var rc = TimeBeginPeriod((uint)periodMs);
+            if (rc == 0)
+            {
+                appliedTimerResolution = periodMs;
+                Log.Information("Multimedia timer resolution set to {PeriodMs} ms (timeBeginPeriod ok)", periodMs);
+            }
+            else
+            {
+                Log.Warning("timeBeginPeriod({PeriodMs}) returned {Rc} (TIMERR_NOCANDO=97). Continuing.", periodMs, rc);
+            }
+        }
+
+        if (!string.IsNullOrWhiteSpace(parameters.GcLatencyMode))
+        {
+            var mode = parameters.GcLatencyMode.Trim().ToLowerInvariant() switch
+            {
+                "interactive" => System.Runtime.GCLatencyMode.Interactive,
+                "low-latency" => System.Runtime.GCLatencyMode.LowLatency,
+                "sustained-low-latency" => System.Runtime.GCLatencyMode.SustainedLowLatency,
+                "batch" => System.Runtime.GCLatencyMode.Batch,
+                _ => (System.Runtime.GCLatencyMode?)null,
+            };
+            if (mode is null)
+            {
+                Log.Warning("Unknown --gc-latency-mode value '{Value}'; ignoring", parameters.GcLatencyMode);
+            }
+            else
+            {
+                System.Runtime.GCSettings.LatencyMode = mode.Value;
+                Log.Information("GCSettings.LatencyMode = {Mode}", mode.Value);
+            }
+        }
+
+        if (!string.IsNullOrWhiteSpace(parameters.ProcessPriority))
+        {
+            var priority = parameters.ProcessPriority.Trim().ToLowerInvariant() switch
+            {
+                "high" => ProcessPriorityClass.High,
+                "above-normal" => ProcessPriorityClass.AboveNormal,
+                "normal" => ProcessPriorityClass.Normal,
+                "below-normal" => ProcessPriorityClass.BelowNormal,
+                "idle" => ProcessPriorityClass.Idle,
+                "realtime" => ProcessPriorityClass.RealTime,
+                _ => (ProcessPriorityClass?)null,
+            };
+            if (priority is null)
+            {
+                Log.Warning("Unknown --process-priority value '{Value}'; ignoring", parameters.ProcessPriority);
+            }
+            else
+            {
+                try
+                {
+                    Process.GetCurrentProcess().PriorityClass = priority.Value;
+                    Log.Information("Process priority class = {Priority}", priority.Value);
+                }
+                catch (Exception ex)
+                {
+                    Log.Warning(ex, "Failed to set process priority class to {Priority}", priority.Value);
+                }
+            }
+        }
+
+        if (parameters.CpuAffinityMask is long mask)
+        {
+            try
+            {
+                Process.GetCurrentProcess().ProcessorAffinity = (nint)mask;
+                Log.Information("Process CPU affinity = 0x{Mask:X}", mask);
+            }
+            catch (Exception ex)
+            {
+                Log.Warning(ex, "Failed to set process CPU affinity to 0x{Mask:X}", mask);
+            }
+        }
+    }
+
+    private static void RevertSystemTuning()
+    {
+        if (appliedTimerResolution is int periodMs)
+        {
+            TimeEndPeriod((uint)periodMs);
+            appliedTimerResolution = null;
+        }
+    }
+
+    private static void WarnAboutUnwiredFlags(LaunchParameters parameters)
+    {
+        // These flags are accepted by the CLI parser but their pipeline plumbing
+        // is deferred to a follow-up session. They are intentionally no-ops today
+        // so the sweep runner does not crash on configs that include them, but
+        // they will not produce different results until wired through.
+        if (parameters.PacerThreadPriority is not null)
+            Log.Warning("--pacer-thread-priority={Value} is accepted but not yet wired to the pacer thread; ignored", parameters.PacerThreadPriority);
+        if (parameters.CadenceAdaptationGain is not null)
+            Log.Warning("--cadence-adapt-gain={Value} is accepted but not yet wired to FramePump; ignored", parameters.CadenceAdaptationGain);
+        if (parameters.BufferOverflowPolicy is not null)
+            Log.Warning("--buffer-overflow-policy={Value} is accepted but not yet wired to FrameRingBuffer; ignored", parameters.BufferOverflowPolicy);
+        if (parameters.LatencyExpansionStrategy is not null)
+            Log.Warning("--latency-expansion-strategy={Value} is accepted but not yet wired; --allow-latency-expansion still controls behavior", parameters.LatencyExpansionStrategy);
+        if (parameters.PacedWarmupFrames is not null)
+            Log.Warning("--paced-warmup-frames={Value} is accepted but not yet wired; ignored", parameters.PacedWarmupFrames);
+    }
+
     /// <summary>
     /// The main entry point for the application.
     /// </summary>
@@ -121,6 +237,9 @@ public class Program
             Log.Information("Command-line parameters parsed: {@Parameters}", parameters);
         }
 
+        ApplySystemTuning(parameters);
+        WarnAboutUnwiredFlags(parameters);
+
         try
         {
             RunApplication(parameters, sanitizedArgs, launchCachePath);
@@ -135,6 +254,7 @@ public class Program
         }
         finally
         {
+            RevertSystemTuning();
             Log.Information("Program.Main exiting after {Elapsed}ms", StartupStopwatch.ElapsedMilliseconds);
         }
     }
@@ -279,7 +399,33 @@ public class Program
                         settings.CefCommandLineArgs.Add("disable-renderer-backgrounding", "1");
                     }
 
-                    settings.EnableAudio();
+                    if (!parameters.DisableAudio)
+                    {
+                        settings.EnableAudio();
+                    }
+
+                    if (!string.IsNullOrWhiteSpace(parameters.CefExtraArgs))
+                    {
+                        foreach (var entry in parameters.CefExtraArgs.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+                        {
+                            var eq = entry.IndexOf('=');
+                            if (eq < 0)
+                            {
+                                settings.CefCommandLineArgs.Add(entry, "1");
+                                Log.Information("Cef extra arg: --{Flag}", entry);
+                            }
+                            else
+                            {
+                                var key = entry[..eq].Trim();
+                                var value = entry[(eq + 1)..].Trim();
+                                if (!string.IsNullOrEmpty(key))
+                                {
+                                    settings.CefCommandLineArgs.Add(key, value);
+                                    Log.Information("Cef extra arg: --{Flag}={Value}", key, value);
+                                }
+                            }
+                        }
+                    }
                     var cefInitialized = Cef.Initialize(settings);
                     Log.Information("CEF initialization {Result}", cefInitialized ? "succeeded" : "reported failure");
                     browserWrapper = new CefWrapper(
