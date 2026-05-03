@@ -130,6 +130,12 @@ try
 
     var endTicks = Stopwatch.GetTimestamp() + (long)((double)durationSeconds * Stopwatch.Frequency);
     var captureStart = Stopwatch.GetTimestamp();
+    // Wall-clock UTC stamped right when the receive loop is about to spin.
+    // The runner uses this as the sender-log parse window so sender stats
+    // are filtered to the same interval the receiver actually measured -
+    // not the larger interval that includes NDI source discovery and
+    // recv_create_v3 startup latency before this point.
+    var captureStartUtc = DateTimeOffset.UtcNow;
     long? firstVideoTick = null;
 
     while (Stopwatch.GetTimestamp() < endTicks)
@@ -168,6 +174,7 @@ try
     }
 
     var captureEnd = Stopwatch.GetTimestamp();
+    var captureEndUtc = DateTimeOffset.UtcNow;
     NDIlib.recv_destroy(recv);
 
     if (recvCfg.p_ndi_recv_name != IntPtr.Zero) Marshal.FreeHGlobal(recvCfg.p_ndi_recv_name);
@@ -206,6 +213,8 @@ try
     {
         sourceMatched = sourceFilter,
         durationSeconds = actualDurationMs / 1000.0,
+        captureStartUtc = captureStartUtc.ToString("o", CultureInfo.InvariantCulture),
+        captureEndUtc = captureEndUtc.ToString("o", CultureInfo.InvariantCulture),
         videoFrames,
         statusChanges,
         errors,

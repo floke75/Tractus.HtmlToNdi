@@ -220,7 +220,11 @@ function Run-OneConfig {
     # Brief settle so the buffer can prime.
     Start-Sleep -Milliseconds 1500
 
-    $captureStart = Get-Date
+    # Wall-clock fallback for the sender parse window in case the receiver
+    # exits before stamping its own captureStartUtc/captureEndUtc fields. The
+    # authoritative window comes from receiver.json - this just bounds the
+    # search if the receiver crashes early.
+    $captureStartFallback = Get-Date
     $duration = if ($cfg.PSObject.Properties.Match('duration_seconds').Count -gt 0) { [int]$cfg.duration_seconds } else { 60 }
 
     Write-Host "[$($cfg.run_id)] capturing $duration s on '$($cfg.ndi_name)'" -ForegroundColor DarkCyan
@@ -276,11 +280,9 @@ function Run-OneConfig {
         -RedirectStandardOutput $recvStdout -RedirectStandardError $recvStderr `
         -Wait -NoNewWindow -PassThru
 
-    # Stamp captureEnd IMMEDIATELY after the receiver returns, BEFORE draining
-    # the sysmon job (which can block up to 10 s on Wait-Job). Otherwise the
-    # sender-log parse window extends past the actual receive window and we
-    # compare sender stats from a different interval than receiver stats.
-    $captureEnd = Get-Date
+    # Wall-clock fallback for end-of-window if the receiver JSON is missing
+    # captureEndUtc (older build) or the file is unreadable.
+    $captureEndFallback = Get-Date
 
     # Drain the sysmon job (it should be near-finished after the receiver returns).
     Wait-Job -Job $sysmonJob -Timeout 10 | Out-Null
@@ -302,9 +304,23 @@ function Run-OneConfig {
         return
     }
 
-    # Parse sender log over the capture window.
-    $startIso = $captureStart.ToUniversalTime().ToString('o')
-    $endIso = $captureEnd.ToUniversalTime().ToString('o')
+    # Parse sender log over the receiver's actual measurement window. The
+    # receiver writes captureStartUtc / captureEndUtc to its JSON the moment
+    # it enters / exits its recv loop, AFTER NDI source discovery and
+    # recv_create_v3 have settled. Using those - instead of runner-side
+    # wall-clock stamps from before/after the receiver subprocess - keeps
+    # sender stats and receiver stats over the same interval, which is the
+    # whole point of the sender-vs-receiver comparison. We fall back to the
+    # runner wall-clock only if the receiver JSON is missing these fields
+    # (older build) or unreadable.
+    $startIso = $null; $endIso = $null
+    try {
+        $rjEarly = Get-Content $receiverJson -Raw -Encoding UTF8 | ConvertFrom-Json
+        if ($rjEarly.captureStartUtc) { $startIso = [string]$rjEarly.captureStartUtc }
+        if ($rjEarly.captureEndUtc)   { $endIso   = [string]$rjEarly.captureEndUtc }
+    } catch {}
+    if (-not $startIso) { $startIso = $captureStartFallback.ToUniversalTime().ToString('o') }
+    if (-not $endIso)   { $endIso   = $captureEndFallback.ToUniversalTime().ToString('o') }
     $parserStdout = Join-Path $runDir 'parser.stdout'
     $parserStderr = Join-Path $runDir 'parser.stderr'
     $parserProc = Start-Process -FilePath 'dotnet' -ArgumentList @(
