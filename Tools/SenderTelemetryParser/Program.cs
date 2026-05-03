@@ -74,17 +74,31 @@ foreach (var raw in File.ReadAllLines(logPath))
 
     var lineDate = new DateTime(baseDate.Year, baseDate.Month, baseDate.Day, h, m, s, DateTimeKind.Local);
 
-    // Edge case: the very first parsed line falls on the post-midnight side of
-    // a rollover that happened BEFORE we saw any line (so the inter-line
-    // monotonicity check above can't catch it). Anchor is e.g. 23:55 today;
-    // the first stats line is 00:01 today (because baseDate = today), so
-    // anchorLocal - lineDate ~= +23h. The line is actually tomorrow's, so
-    // bump baseDate forward (the previous version of this branch went the
-    // wrong direction).
-    if (start.HasValue && statsLines.Count == 0 && (anchorLocal - lineDate) > TimeSpan.FromHours(12))
+    // Edge case: the first parsed line falls on the wrong side of a midnight
+    // rollover that happened BEFORE we saw any line, so the inter-line
+    // monotonicity check above can't catch it. Both directions are possible:
+    //   * Anchor 23:55 today, first line 00:01 (= tomorrow). baseDate starts
+    //     as today; anchorLocal - lineDate ~= +23h. Shift baseDate forward.
+    //   * Anchor 00:00:30 today, sender started 23:59 yesterday so the first
+    //     line is 23:59:xx. baseDate starts as today; lineDate - anchorLocal
+    //     ~= +23h. Shift baseDate backward. Without this, the rollover check
+    //     above will then fire on the first 00:00:xx line and push the whole
+    //     run +1 day, filtering all in-window stats out and producing
+    //     statsLineCount=0 for any sweep that crosses midnight.
+    // We pick whichever direction lands the line within +/-12h of the anchor;
+    // for the short capture windows this tool sees this is unambiguous.
+    if (start.HasValue && statsLines.Count == 0)
     {
-        baseDate = baseDate.AddDays(1);
-        lineDate = new DateTime(baseDate.Year, baseDate.Month, baseDate.Day, h, m, s, DateTimeKind.Local);
+        if ((anchorLocal - lineDate) > TimeSpan.FromHours(12))
+        {
+            baseDate = baseDate.AddDays(1);
+            lineDate = new DateTime(baseDate.Year, baseDate.Month, baseDate.Day, h, m, s, DateTimeKind.Local);
+        }
+        else if ((lineDate - anchorLocal) > TimeSpan.FromHours(12))
+        {
+            baseDate = baseDate.AddDays(-1);
+            lineDate = new DateTime(baseDate.Year, baseDate.Month, baseDate.Day, h, m, s, DateTimeKind.Local);
+        }
     }
 
     var statsMatch = statsRegex.Match(raw);
