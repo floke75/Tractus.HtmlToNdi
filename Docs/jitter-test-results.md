@@ -20,19 +20,19 @@ For methodology, pass/fail criteria, and how the schema is computed, see [`jitte
 
 | run_id | page | fps | recv jitterRMS ms | recv jitterPk ms | recv late | hypothesis |
 |---|---|---|---|---|---|---|
-| T0_rep1_29.97_motion | motion | 30000/1001 | 2.49 | 25.17 | 11 | Reproducibility repeat #1 - establishes variance floor |
+| T0_rep1_29.97_motion | motion | 30000/1001 | 2.48 | 22.44 | 7 | Reproducibility repeat #1 - establishes variance floor |
 
 ### Lowest receiver jitter peak (PASS only)
 
 | run_id | page | fps | recv jitterPk ms | recv jitterRMS ms | recv late | hypothesis |
 |---|---|---|---|---|---|---|
-| T0_rep1_29.97_motion | motion | 30000/1001 | 25.17 | 2.49 | 11 | Reproducibility repeat #1 - establishes variance floor |
+| T0_rep1_29.97_motion | motion | 30000/1001 | 22.44 | 2.48 | 7 | Reproducibility repeat #1 - establishes variance floor |
 
 ### Lowest late-frame count, peak as tiebreaker (PASS only)
 
 | run_id | page | fps | recv late | recv jitterPk ms | recv jitterRMS ms | hypothesis |
 |---|---|---|---|---|---|---|
-| T0_rep1_29.97_motion | motion | 30000/1001 | 11 | 25.17 | 2.49 | Reproducibility repeat #1 - establishes variance floor |
+| T0_rep1_29.97_motion | motion | 30000/1001 | 7 | 22.44 | 2.48 | Reproducibility repeat #1 - establishes variance floor |
 
 <!-- LEADERBOARD:END -->
 
@@ -78,6 +78,7 @@ Where `s.*` is sender-side telemetry (parsed from `pipeline stats` log lines), `
 ## T5
 
 (Layer-3 wired system tweaks atop golden - multimedia timer, GC latency mode, process priority, CPU affinity.)
+
 
 
 

@@ -51,7 +51,14 @@ foreach ($line in $lines) {
     # cells[19]=s.repeated cells[20]=s.under cells[21]=s.dropOver
     # cells[22]=r.effFps cells[23]=r.jitRms cells[24]=r.jitPk cells[25]=r.late
     # cells[26]=r.veryLate cells[27]=pass cells[28]=notes cells[29]='' (trailing)
-    if ($cells.Count -lt 29) { continue }
+    # Schema after sysmon addition (33+ cells incl leading/trailing empties):
+    # cells[1]=run_id, [2]=ts, [3]=code_rev, [4]=tier, [5]=hyp, [6]=page, [7]=fps,
+    # [8]=bd, [9]=mode, [10]=pi, [11]=bp, [12]=adapt, [13]=gpu, [14]=cef, [15]=sys,
+    # [16]=s.outJitRms, [17]=s.outJitPk, [18]=s.capFps, [19]=s.repeated, [20]=s.under, [21]=s.dropOver,
+    # [22]=r.effFps, [23]=r.jitRms, [24]=r.jitPk, [25]=r.late, [26]=r.veryLate,
+    # [27]=sys.cpuPct, [28]=sys.pagesSec, [29]=sys.diskQ, [30]=proc.pgFltsSec,
+    # [31]=pass, [32]=notes
+    if ($cells.Count -lt 33) { continue }
 
     $rows.Add([pscustomobject]@{
         run_id    = $cells[1]
@@ -68,8 +75,12 @@ foreach ($line in $lines) {
         r_jitPk   = (TryD $cells[24])
         r_late    = (TryI $cells[25])
         r_veryLate= (TryI $cells[26])
-        pass      = $cells[27]
-        notes     = $cells[28]
+        sys_cpu   = (TryD $cells[27])
+        sys_pages = (TryD $cells[28])
+        sys_diskQ = (TryD $cells[29])
+        proc_pgFlt= (TryD $cells[30])
+        pass      = $cells[31]
+        notes     = $cells[32]
     })
 }
 

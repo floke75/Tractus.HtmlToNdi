@@ -85,8 +85,19 @@ public class Program
             }
             else
             {
-                System.Runtime.GCSettings.LatencyMode = mode.Value;
-                Log.Information("GCSettings.LatencyMode = {Mode}", mode.Value);
+                try
+                {
+                    // LowLatency is unsupported under Server GC (which the project enables);
+                    // SustainedLowLatency is the supported equivalent. Catch the exception
+                    // rather than aborting startup so a sweep config can still record an ERROR
+                    // row instead of crashing the whole process.
+                    System.Runtime.GCSettings.LatencyMode = mode.Value;
+                    Log.Information("GCSettings.LatencyMode = {Mode}", mode.Value);
+                }
+                catch (InvalidOperationException ex)
+                {
+                    Log.Warning(ex, "Cannot set GCSettings.LatencyMode to {Mode} (likely incompatible with Server GC); leaving at {Current}", mode.Value, System.Runtime.GCSettings.LatencyMode);
+                }
             }
         }
 
@@ -406,12 +417,16 @@ public class Program
 
                     if (!string.IsNullOrWhiteSpace(parameters.CefExtraArgs))
                     {
+                        // Use indexer assignment instead of Add() so user-supplied flags can
+                        // override anything we set above (e.g. passing
+                        // --cef-extra-args="disable-gpu-vsync=0" to undo the preset). Add()
+                        // throws ArgumentException on duplicate keys and would crash CEF init.
                         foreach (var entry in parameters.CefExtraArgs.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
                         {
                             var eq = entry.IndexOf('=');
                             if (eq < 0)
                             {
-                                settings.CefCommandLineArgs.Add(entry, "1");
+                                settings.CefCommandLineArgs[entry] = "1";
                                 Log.Information("Cef extra arg: --{Flag}", entry);
                             }
                             else
@@ -420,7 +435,7 @@ public class Program
                                 var value = entry[(eq + 1)..].Trim();
                                 if (!string.IsNullOrEmpty(key))
                                 {
-                                    settings.CefCommandLineArgs.Add(key, value);
+                                    settings.CefCommandLineArgs[key] = value;
                                     Log.Information("Cef extra arg: --{Flag}={Value}", key, value);
                                 }
                             }
