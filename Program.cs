@@ -131,11 +131,15 @@ public class Program
             }
         }
 
-        if (parameters.CpuAffinityMask is long mask)
+        if (parameters.CpuAffinityMask is ulong mask)
         {
             try
             {
-                Process.GetCurrentProcess().ProcessorAffinity = (nint)mask;
+                // ProcessorAffinity is nint (signed); on 64-bit hosts the
+                // high-bit-set masks (e.g. 0x8000000000000000) only round-trip
+                // through an unchecked cast - regular cast would throw an
+                // OverflowException for legitimate single-top-CPU selections.
+                Process.GetCurrentProcess().ProcessorAffinity = unchecked((nint)mask);
                 Log.Information("Process CPU affinity = 0x{Mask:X}", mask);
             }
             catch (Exception ex)

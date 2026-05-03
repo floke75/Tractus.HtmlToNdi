@@ -406,7 +406,27 @@ function Append-RunRow {
         [string]$notes
     )
 
-    function Fmt2($v) { if ($null -eq $v) { return '' }; return [double]::Parse($v, [System.Globalization.CultureInfo]::InvariantCulture).ToString('0.00', [System.Globalization.CultureInfo]::InvariantCulture) }
+    # Format numerics with invariant culture WITHOUT round-tripping through a
+    # locale-formatted string. ConvertFrom-Json yields .NET numeric primitives
+    # (double/long/decimal); converting them via [string] or interpolation uses
+    # the current culture, so on comma-decimal locales (sv-SE, de-DE, ...) a
+    # value like 22.67 stringifies as "22,67" and Parse(..., InvariantCulture)
+    # then rejects the comma or - worse - treats it as a thousands separator,
+    # silently corrupting recorded jitter/system metrics. Convert directly
+    # from the numeric type instead.
+    function Fmt2($v) {
+        if ($null -eq $v) { return '' }
+        $inv = [System.Globalization.CultureInfo]::InvariantCulture
+        if ($v -is [double] -or $v -is [single] -or $v -is [decimal] -or $v -is [long] -or $v -is [int]) {
+            return ([double]$v).ToString('0.00', $inv)
+        }
+        # Fallback for already-stringified inputs: parse with invariant culture.
+        $tmp = 0.0
+        if ([double]::TryParse([string]$v, [System.Globalization.NumberStyles]::Float, $inv, [ref]$tmp)) {
+            return $tmp.ToString('0.00', $inv)
+        }
+        return ''
+    }
     function Asis($v) { if ($null -eq $v) { return '' }; return $v.ToString() }
 
     $s = $null; $r = $null

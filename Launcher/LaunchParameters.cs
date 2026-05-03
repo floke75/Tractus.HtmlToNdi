@@ -46,7 +46,7 @@ public sealed class LaunchParameters
         string? cefExtraArgs,
         int? mmTimerResolutionMs,
         string? processPriority,
-        long? cpuAffinityMask,
+        ulong? cpuAffinityMask,
         string? gcLatencyMode,
         string? pacerThreadPriority,
         double? cadenceAdaptationGain,
@@ -260,7 +260,7 @@ public sealed class LaunchParameters
     /// <summary>
     /// Gets the CPU affinity bitmask for the process (e.g. 0xFF for cores 0-7). Null = inherit OS default.
     /// </summary>
-    public long? CpuAffinityMask { get; }
+    public ulong? CpuAffinityMask { get; }
 
     /// <summary>
     /// Gets the desired GC latency mode. Valid values: interactive, low-latency, sustained-low-latency, batch.
@@ -496,19 +496,24 @@ public sealed class LaunchParameters
 
         var processPriority = GetArgValue("--process-priority");
 
-        long? cpuAffinityMask = null;
+        ulong? cpuAffinityMask = null;
         var cpuAffinityArg = GetArgValue("--cpu-affinity");
         if (cpuAffinityArg is not null && !string.Equals(cpuAffinityArg, "auto", StringComparison.OrdinalIgnoreCase))
         {
+            // Parse as ulong, not long: a host with all 64 logical CPUs has a
+            // valid affinity mask of 0xFFFFFFFFFFFFFFFF, and selecting just the
+            // top processor is 0x8000000000000000 - both have the high bit set
+            // and would parse as negative under signed long, getting rejected
+            // by a `mask <= 0` guard. Any nonzero unsigned mask is legitimate.
             var styles = cpuAffinityArg.StartsWith("0x", StringComparison.OrdinalIgnoreCase)
                 ? NumberStyles.HexNumber
                 : NumberStyles.Integer;
             var raw = cpuAffinityArg.StartsWith("0x", StringComparison.OrdinalIgnoreCase)
                 ? cpuAffinityArg[2..]
                 : cpuAffinityArg;
-            if (!long.TryParse(raw, styles, CultureInfo.InvariantCulture, out var mask) || mask <= 0)
+            if (!ulong.TryParse(raw, styles, CultureInfo.InvariantCulture, out var mask) || mask == 0)
             {
-                Log.Error("Could not parse the --cpu-affinity parameter. Exiting.");
+                Log.Error("Could not parse the --cpu-affinity parameter (expected nonzero CPU bitmask, e.g. 0xFF or 0x8000000000000000). Exiting.");
                 return false;
             }
             cpuAffinityMask = mask;
