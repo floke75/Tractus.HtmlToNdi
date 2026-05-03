@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Jitter Test Motion Fixture</title>
+<style>
+  html, body {
+    margin: 0;
+    padding: 0;
+    background: #111;
+    color: #eee;
+    font-family: monospace;
+    overflow: hidden;
+  }
+  #stage {
+    position: fixed;
+    inset: 0;
+  }
+  #blob {
+    position: absolute;
+    width: 80px;
+    height: 80px;
+    background: linear-gradient(135deg, #f60, #f0c);
+    border-radius: 50%;
+    top: 50%;
+    transform: translate(-50%, -50%);
+    will-change: transform;
+  }
+  #hud {
+    position: fixed;
+    top: 16px;
+    left: 16px;
+    font-size: 22px;
+    line-height: 1.3;
+    text-shadow: 0 0 4px #000;
+    background: rgba(0,0,0,0.55);
+    padding: 8px 12px;
+    border-radius: 6px;
+  }
+  #hud b {
+    color: #6f6;
+  }
+  .strip {
+    position: fixed;
+    bottom: 24px;
+    left: 0;
+    right: 0;
+    display: grid;
+    grid-template-columns: repeat(60, 1fr);
+    gap: 0;
+    height: 36px;
+  }
+  .strip div {
+    background: #222;
+    border-right: 1px solid #050505;
+  }
+  .strip div.lit {
+    background: #6f6;
+  }
+  #domchaos {
+    position: fixed;
+    right: 24px;
+    top: 24px;
+    width: 360px;
+    height: 220px;
+    background: rgba(255,255,255,0.04);
+    border: 1px solid rgba(255,255,255,0.1);
+    padding: 8px;
+    overflow: hidden;
+    font-size: 14px;
+  }
+  #domchaos.hidden { display: none; }
+</style>
+</head>
+<body>
+
+<div id="stage">
+  <div id="blob"></div>
+</div>
+
+<div id="hud">
+  <div>frame <b id="frame">0</b></div>
+  <div>elapsed <b id="elapsed">0.000</b> s</div>
+  <div>fps <b id="fps">--</b></div>
+  <div>chaos <b id="chaosState">off</b> (toggle ?chaos=1)</div>
+</div>
+
+<div class="strip" id="strip"></div>
+
+<div id="domchaos" class="hidden">
+  <div id="domchaos-content"></div>
+</div>
+
+<script>
+  // Build the strip.
+  const strip = document.getElementById('strip');
+  const cellCount = 60;
+  for (let i = 0; i < cellCount; i++) {
+    const d = document.createElement('div');
+    strip.appendChild(d);
+  }
+  const cells = strip.querySelectorAll('div');
+
+  // Query string params.
+  const params = new URLSearchParams(location.search);
+  // Speed in pixels per second, used for the moving blob.
+  const speedPxSec = parseFloat(params.get('speed') ?? '600');
+  // Cycle period of the strip lighting in seconds.
+  const stripPeriodSec = parseFloat(params.get('strip') ?? '6');
+  // Chaos: every N seconds, mutate the DOM heavily for one frame.
+  const chaosOn = params.get('chaos') === '1';
+  // Chaos period in seconds.
+  const chaosPeriodSec = parseFloat(params.get('chaosPeriod') ?? '5');
+  // Chaos burst duration in milliseconds.
+  const chaosBurstMs = parseFloat(params.get('chaosBurst') ?? '50');
+
+  document.getElementById('chaosState').textContent = chaosOn ? 'on' : 'off';
+  if (chaosOn) document.getElementById('domchaos').classList.remove('hidden');
+
+  const blob = document.getElementById('blob');
+  const frameLabel = document.getElementById('frame');
+  const elapsedLabel = document.getElementById('elapsed');
+  const fpsLabel = document.getElementById('fps');
+  const chaosBox = document.getElementById('domchaos');
+  const chaosContent = document.getElementById('domchaos-content');
+
+  let startTs = null;
+  let frameCount = 0;
+  let lastFpsSampleTs = 0;
+  let lastFpsSampleFrame = 0;
+  let chaosBurstUntilTs = 0;
+
+  function tick(ts) {
+    if (startTs === null) {
+      startTs = ts;
+      lastFpsSampleTs = ts;
+    }
+    const tSec = (ts - startTs) / 1000;
+
+    // Move blob horizontally; bounce on edges.
+    const w = window.innerWidth;
+    const period = (2 * w) / speedPxSec;
+    const phase = (tSec % period) / period; // 0..1
+    const x = phase < 0.5
+      ? phase * 2 * w
+      : (1 - (phase - 0.5) * 2) * w;
+    blob.style.transform = `translate(${x}px, -50%)`;
+
+    // Strip: light one cell that wraps around at stripPeriodSec.
+    const stripPhase = (tSec % stripPeriodSec) / stripPeriodSec;
+    const litIndex = Math.floor(stripPhase * cellCount);
+    for (let i = 0; i < cellCount; i++) {
+      cells[i].classList.toggle('lit', i === litIndex);
+    }
+
+    // HUD.
+    frameCount++;
+    frameLabel.textContent = frameCount.toString();
+    elapsedLabel.textContent = tSec.toFixed(3);
+    if (ts - lastFpsSampleTs >= 1000) {
+      const elapsed = (ts - lastFpsSampleTs) / 1000;
+      const frames = frameCount - lastFpsSampleFrame;
+      fpsLabel.textContent = (frames / elapsed).toFixed(2);
+      lastFpsSampleTs = ts;
+      lastFpsSampleFrame = frameCount;
+    }
+
+    // Chaos: every chaosPeriodSec, do a heavy DOM mutation for chaosBurstMs.
+    if (chaosOn) {
+      const chaosCycle = (tSec % chaosPeriodSec) / chaosPeriodSec;
+      // Trigger when entering a new period.
+      if (chaosCycle < 0.01 && ts > chaosBurstUntilTs) {
+        chaosBurstUntilTs = ts + chaosBurstMs;
+      }
+      if (ts < chaosBurstUntilTs) {
+        // Heavy reflow: fill the chaos box with random nodes.
+        chaosContent.innerHTML = '';
+        for (let i = 0; i < 200; i++) {
+          const span = document.createElement('span');
+          span.style.color = `hsl(${(ts + i * 7) % 360}, 80%, 60%)`;
+          span.textContent = Math.random().toString(36).slice(2, 6) + ' ';
+          chaosContent.appendChild(span);
+        }
+      }
+    }
+
+    requestAnimationFrame(tick);
+  }
+  requestAnimationFrame(tick);
+</script>
+</body>
+</html>

@@ -41,7 +41,18 @@ public sealed class LaunchParameters
         bool disableBackgroundThrottling,
         bool presetHighPerformance,
         PacingMode pacingMode,
-        bool ndiSendAsync)
+        bool ndiSendAsync,
+        bool disableAudio,
+        string? cefExtraArgs,
+        int? mmTimerResolutionMs,
+        string? processPriority,
+        ulong? cpuAffinityMask,
+        string? gcLatencyMode,
+        string? pacerThreadPriority,
+        double? cadenceAdaptationGain,
+        string? bufferOverflowPolicy,
+        string? latencyExpansionStrategy,
+        int? pacedWarmupFrames)
     {
         NdiName = ndiName;
         Port = port;
@@ -71,6 +82,17 @@ public sealed class LaunchParameters
         PresetHighPerformance = presetHighPerformance;
         PacingMode = pacingMode;
         NdiSendAsync = ndiSendAsync;
+        DisableAudio = disableAudio;
+        CefExtraArgs = cefExtraArgs;
+        MmTimerResolutionMs = mmTimerResolutionMs;
+        ProcessPriority = processPriority;
+        CpuAffinityMask = cpuAffinityMask;
+        GcLatencyMode = gcLatencyMode;
+        PacerThreadPriority = pacerThreadPriority;
+        CadenceAdaptationGain = cadenceAdaptationGain;
+        BufferOverflowPolicy = bufferOverflowPolicy;
+        LatencyExpansionStrategy = latencyExpansionStrategy;
+        PacedWarmupFrames = pacedWarmupFrames;
     }
 
     /// <summary>
@@ -212,6 +234,64 @@ public sealed class LaunchParameters
     /// Gets a value indicating whether the NDI sender should use the asynchronous send method.
     /// </summary>
     public bool NdiSendAsync { get; }
+
+    /// <summary>
+    /// Gets a value indicating whether Chromium audio rendering should be disabled.
+    /// </summary>
+    public bool DisableAudio { get; }
+
+    /// <summary>
+    /// Gets a semicolon-separated string of extra Chromium command-line switches (e.g. "num-raster-threads=4;use-angle=d3d11").
+    /// Each entry may be either "key" (flag) or "key=value". Applied directly to CefSettings.CefCommandLineArgs.
+    /// </summary>
+    public string? CefExtraArgs { get; }
+
+    /// <summary>
+    /// Gets the requested Windows multimedia timer resolution in milliseconds (e.g. 1).
+    /// When non-null and >0, timeBeginPeriod is called at startup and timeEndPeriod at exit.
+    /// </summary>
+    public int? MmTimerResolutionMs { get; }
+
+    /// <summary>
+    /// Gets the desired process priority class. Valid values: high, above-normal, normal, below-normal, idle, realtime.
+    /// </summary>
+    public string? ProcessPriority { get; }
+
+    /// <summary>
+    /// Gets the CPU affinity bitmask for the process (e.g. 0xFF for cores 0-7). Null = inherit OS default.
+    /// </summary>
+    public ulong? CpuAffinityMask { get; }
+
+    /// <summary>
+    /// Gets the desired GC latency mode. Valid values: interactive, low-latency, sustained-low-latency, batch.
+    /// </summary>
+    public string? GcLatencyMode { get; }
+
+    /// <summary>
+    /// Gets the desired pacer thread priority. Valid values: time-critical, highest, above-normal, normal.
+    /// </summary>
+    public string? PacerThreadPriority { get; }
+
+    /// <summary>
+    /// Gets the override for the cadence adaptation proportional gain in the frame pump (default ≈ 0.25).
+    /// </summary>
+    public double? CadenceAdaptationGain { get; }
+
+    /// <summary>
+    /// Gets the buffer overflow policy. Valid values: drop-oldest (default), drop-newest, adaptive.
+    /// </summary>
+    public string? BufferOverflowPolicy { get; }
+
+    /// <summary>
+    /// Gets the latency expansion strategy. Valid values: none, eager-fill, slow-drain.
+    /// Supersedes the legacy boolean AllowLatencyExpansion when set.
+    /// </summary>
+    public string? LatencyExpansionStrategy { get; }
+
+    /// <summary>
+    /// Gets the override for the paced sender warmup frame count.
+    /// </summary>
+    public int? PacedWarmupFrames { get; }
 
     /// <summary>
     /// Attempts to create a <see cref="LaunchParameters"/> instance from command-line arguments.
@@ -394,6 +474,80 @@ public sealed class LaunchParameters
         var disableBackgroundThrottling = HasFlag("--disable-background-throttling") || HasFlag("--disable-renderer-backgrounding");
         var presetHighPerformance = HasFlag("--preset-high-performance");
         var ndiSendAsync = HasFlag("--ndi-send-async");
+        var disableAudio = HasFlag("--disable-audio");
+
+        var cefExtraArgs = GetArgValue("--cef-extra-args");
+
+        int? mmTimerResolutionMs = null;
+        var mmTimerArg = GetArgValue("--mm-timer-resolution");
+        if (mmTimerArg is not null)
+        {
+            // Reject 0 explicitly: timeBeginPeriod(0) is documented as undefined
+            // behavior, and ApplySystemTuning treats <=0 as "off" anyway, so
+            // accepting 0 would silently no-op when the operator probably meant
+            // either to omit the flag or to set 1.
+            if (!int.TryParse(mmTimerArg, NumberStyles.Integer, CultureInfo.InvariantCulture, out var mmTimer) || mmTimer <= 0)
+            {
+                Log.Error("Could not parse the --mm-timer-resolution parameter (must be a positive integer; omit the flag for default). Exiting.");
+                return false;
+            }
+            mmTimerResolutionMs = mmTimer;
+        }
+
+        var processPriority = GetArgValue("--process-priority");
+
+        ulong? cpuAffinityMask = null;
+        var cpuAffinityArg = GetArgValue("--cpu-affinity");
+        if (cpuAffinityArg is not null && !string.Equals(cpuAffinityArg, "auto", StringComparison.OrdinalIgnoreCase))
+        {
+            // Parse as ulong, not long: a host with all 64 logical CPUs has a
+            // valid affinity mask of 0xFFFFFFFFFFFFFFFF, and selecting just the
+            // top processor is 0x8000000000000000 - both have the high bit set
+            // and would parse as negative under signed long, getting rejected
+            // by a `mask <= 0` guard. Any nonzero unsigned mask is legitimate.
+            var styles = cpuAffinityArg.StartsWith("0x", StringComparison.OrdinalIgnoreCase)
+                ? NumberStyles.HexNumber
+                : NumberStyles.Integer;
+            var raw = cpuAffinityArg.StartsWith("0x", StringComparison.OrdinalIgnoreCase)
+                ? cpuAffinityArg[2..]
+                : cpuAffinityArg;
+            if (!ulong.TryParse(raw, styles, CultureInfo.InvariantCulture, out var mask) || mask == 0)
+            {
+                Log.Error("Could not parse the --cpu-affinity parameter (expected nonzero CPU bitmask, e.g. 0xFF or 0x8000000000000000). Exiting.");
+                return false;
+            }
+            cpuAffinityMask = mask;
+        }
+
+        var gcLatencyMode = GetArgValue("--gc-latency-mode");
+        var pacerThreadPriority = GetArgValue("--pacer-thread-priority");
+
+        double? cadenceAdaptationGain = null;
+        var cadenceGainArg = GetArgValue("--cadence-adapt-gain");
+        if (cadenceGainArg is not null)
+        {
+            if (!double.TryParse(cadenceGainArg, NumberStyles.Float, CultureInfo.InvariantCulture, out var gain) || gain < 0 || gain > 5)
+            {
+                Log.Error("Could not parse the --cadence-adapt-gain parameter (expected non-negative float <= 5). Exiting.");
+                return false;
+            }
+            cadenceAdaptationGain = gain;
+        }
+
+        var bufferOverflowPolicy = GetArgValue("--buffer-overflow-policy");
+        var latencyExpansionStrategy = GetArgValue("--latency-expansion-strategy");
+
+        int? pacedWarmupFrames = null;
+        var warmupArg = GetArgValue("--paced-warmup-frames");
+        if (warmupArg is not null)
+        {
+            if (!int.TryParse(warmupArg, NumberStyles.Integer, CultureInfo.InvariantCulture, out var warmup) || warmup < 0)
+            {
+                Log.Error("Could not parse the --paced-warmup-frames parameter. Exiting.");
+                return false;
+            }
+            pacedWarmupFrames = warmup;
+        }
         var pacingMode = PacingMode.Latency;
         var pacingModeArg = GetArgValue("--pacing-mode");
         if (pacingModeArg is not null && !Enum.TryParse(pacingModeArg, true, out pacingMode))
@@ -451,7 +605,18 @@ public sealed class LaunchParameters
             disableBackgroundThrottling,
             presetHighPerformance,
             pacingMode,
-            ndiSendAsync);
+            ndiSendAsync,
+            disableAudio,
+            cefExtraArgs,
+            mmTimerResolutionMs,
+            processPriority,
+            cpuAffinityMask,
+            gcLatencyMode,
+            pacerThreadPriority,
+            cadenceAdaptationGain,
+            bufferOverflowPolicy,
+            latencyExpansionStrategy,
+            pacedWarmupFrames);
 
         return true;
     }
@@ -551,6 +716,17 @@ public sealed class LaunchParameters
             settings.DisableBackgroundThrottling,
             settings.PresetHighPerformance,
             settings.PacingMode,
-            settings.NdiSendAsync);
+            settings.NdiSendAsync,
+            disableAudio: false,
+            cefExtraArgs: null,
+            mmTimerResolutionMs: null,
+            processPriority: null,
+            cpuAffinityMask: null,
+            gcLatencyMode: null,
+            pacerThreadPriority: null,
+            cadenceAdaptationGain: null,
+            bufferOverflowPolicy: null,
+            latencyExpansionStrategy: null,
+            pacedWarmupFrames: null);
     }
 }

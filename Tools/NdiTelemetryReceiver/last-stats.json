@@ -1,0 +1,21 @@
+{
+  "sourceMatched": "HTML5 29.97 GCBuf3",
+  "durationSeconds": 20.032943300000003,
+  "videoFrames": 601,
+  "statusChanges": 0,
+  "errors": 0,
+  "xres": 1920,
+  "yres": 1080,
+  "frameRateN": 30000,
+  "frameRateD": 1001,
+  "targetIntervalMs": 33.36666666666667,
+  "effectiveFps": 30.000584087910834,
+  "meanIntervalMs": 33.338248666666686,
+  "minGapMs": 14.4124,
+  "maxGapMs": 63.596000000000004,
+  "jitterRmsMs": 3.089235541897416,
+  "jitterPeakMs": 30.229333333333336,
+  "lateCount": 4,
+  "veryLateCount": 0,
+  "intervalCount": 600
+}
