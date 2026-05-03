@@ -74,13 +74,16 @@ foreach (var raw in File.ReadAllLines(logPath))
 
     var lineDate = new DateTime(baseDate.Year, baseDate.Month, baseDate.Day, h, m, s, DateTimeKind.Local);
 
-    // If the very first parsed line is already AFTER the start-iso anchor by
-    // more than 12 hours, the start-iso is probably from the next calendar day
-    // (e.g. a run that started right before midnight, with the receiver still
-    // running into the morning). Roll the base back one day.
+    // Edge case: the very first parsed line falls on the post-midnight side of
+    // a rollover that happened BEFORE we saw any line (so the inter-line
+    // monotonicity check above can't catch it). Anchor is e.g. 23:55 today;
+    // the first stats line is 00:01 today (because baseDate = today), so
+    // anchorLocal - lineDate ~= +23h. The line is actually tomorrow's, so
+    // bump baseDate forward (the previous version of this branch went the
+    // wrong direction).
     if (start.HasValue && statsLines.Count == 0 && (anchorLocal - lineDate) > TimeSpan.FromHours(12))
     {
-        baseDate = baseDate.AddDays(-1);
+        baseDate = baseDate.AddDays(1);
         lineDate = new DateTime(baseDate.Year, baseDate.Month, baseDate.Day, h, m, s, DateTimeKind.Local);
     }
 

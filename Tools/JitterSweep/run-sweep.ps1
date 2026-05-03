@@ -258,11 +258,17 @@ function Run-OneConfig {
         $rows | Export-Csv -Path $outPath -NoTypeInformation -Encoding UTF8
     } -ArgumentList $sysmonCsv, $duration
 
+    # Path-valued args get quoted because Start-Process -ArgumentList joins
+    # the array into a single command-line string with spaces; an unquoted
+    # path that contains spaces would be split apart by CommandLineToArgvW
+    # in the child process. ndi-source is alphanumeric/underscore-only via
+    # Make-NdiName, so it doesn't strictly need quoting, but quoting is
+    # harmless and consistent.
     $receiverArgs = @(
-        "--ndi-source=$($cfg.ndi_name)"
+        "--ndi-source=`"$($cfg.ndi_name)`""
         "--duration-seconds=$duration"
         "--find-timeout-ms=8000"
-        "--output=$receiverJson"
+        "--output=`"$receiverJson`""
     )
     $recvStderr = Join-Path $runDir 'receiver.stderr'
     $recvStdout = Join-Path $runDir 'receiver.stdout'
@@ -270,12 +276,17 @@ function Run-OneConfig {
         -RedirectStandardOutput $recvStdout -RedirectStandardError $recvStderr `
         -Wait -NoNewWindow -PassThru
 
+    # Stamp captureEnd IMMEDIATELY after the receiver returns, BEFORE draining
+    # the sysmon job (which can block up to 10 s on Wait-Job). Otherwise the
+    # sender-log parse window extends past the actual receive window and we
+    # compare sender stats from a different interval than receiver stats.
+    $captureEnd = Get-Date
+
     # Drain the sysmon job (it should be near-finished after the receiver returns).
     Wait-Job -Job $sysmonJob -Timeout 10 | Out-Null
     Receive-Job -Job $sysmonJob -ErrorAction SilentlyContinue | Out-Null
     Remove-Job -Job $sysmonJob -Force -ErrorAction SilentlyContinue
 
-    $captureEnd = Get-Date
     $receiverOk = (Test-Path $receiverJson) -and ((Get-Item $receiverJson).Length -gt 4)
 
     # Tear down sender.
@@ -297,11 +308,11 @@ function Run-OneConfig {
     $parserStdout = Join-Path $runDir 'parser.stdout'
     $parserStderr = Join-Path $runDir 'parser.stderr'
     $null = Start-Process -FilePath 'dotnet' -ArgumentList @(
-        $parserDll
-        "--log=$senderLog"
+        "`"$parserDll`""
+        "--log=`"$senderLog`""
         "--start-iso=$startIso"
         "--end-iso=$endIso"
-        "--output=$senderJson"
+        "--output=`"$senderJson`""
     ) -RedirectStandardOutput $parserStdout -RedirectStandardError $parserStderr `
         -Wait -NoNewWindow -PassThru
 
