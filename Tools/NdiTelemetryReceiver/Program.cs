@@ -68,11 +68,19 @@ try
         if (count > 0 && ptr != IntPtr.Zero)
         {
             int stride = Marshal.SizeOf<NDIlib.source_t>();
+            // NDI source names are advertised as "<MachineName> (<NdiName>)".
+            // Match exactly on the parenthesized NDI-name portion to avoid
+            // attaching to a different sender whose name merely contains the
+            // requested token (e.g. similarly prefixed sweep IDs on a shared
+            // network). Fall back to exact whole-string match for unusual
+            // sources that don't follow the convention.
+            var parenSuffix = $"({sourceFilter})";
             for (int i = 0; i < count; i++)
             {
                 var s = Marshal.PtrToStructure<NDIlib.source_t>(IntPtr.Add(ptr, i * stride));
                 var name = Marshal.PtrToStringAnsi(s.p_ndi_name) ?? "";
-                if (name.Contains(sourceFilter, StringComparison.OrdinalIgnoreCase))
+                if (name.EndsWith(parenSuffix, StringComparison.OrdinalIgnoreCase) ||
+                    name.Equals(sourceFilter, StringComparison.OrdinalIgnoreCase))
                 {
                     matched = s;
                     Console.Error.WriteLine($"matched source: {name}");
@@ -99,7 +107,16 @@ try
     };
     var recv = NDIlib.recv_create_v3(ref recvCfg);
     NDIlib.find_destroy(finder);
-    if (recv == IntPtr.Zero) { Console.Error.WriteLine("recv_create_v3 returned null"); return 1; }
+    if (recv == IntPtr.Zero)
+    {
+        // The HGlobal we allocated above for p_ndi_recv_name is owned by us
+        // until either the receiver is destroyed (success path frees it
+        // alongside recv_destroy) or we abort early; free it here so a
+        // long sweep with repeated connection failures doesn't leak.
+        if (recvCfg.p_ndi_recv_name != IntPtr.Zero) Marshal.FreeHGlobal(recvCfg.p_ndi_recv_name);
+        Console.Error.WriteLine("recv_create_v3 returned null");
+        return 1;
+    }
 
     Console.Error.WriteLine($"connected; capturing for {durationSeconds}s");
 

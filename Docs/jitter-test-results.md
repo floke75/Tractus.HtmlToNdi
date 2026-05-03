@@ -57,7 +57,7 @@ Where `s.*` is sender-side telemetry (parsed from `pipeline stats` log lines), `
 ## T0
 
 (Reproducibility runs - same golden config, 5 repeats per page.)
-| T0_rep1_29.97_motion | 2026-05-03T18:15:36.1325382Z | 13ff35f | T0 | Reproducibility repeat #1 - establishes variance floor | motion | 30000/1001 | 6 | Latency | on | off | on | preset |  |  | 2.35 | 23.40 | 30.02 | 0 | 0 | 0 | 29.99 | 2.32 | 23.83 | 10 | 0 | 11.01 | 371.49 | 0.03 | 125657.40 | PASS |  |
+| T0_rep1_29.97_motion | 2026-05-03T19:34:30.4733776Z | e2c94bd | T0 | Reproducibility repeat #1 - establishes variance floor | motion | 30000/1001 | 6 | Latency | on | off | on | preset |  |  | 2.66 | 23.88 | 30.02 | 0 | 0 | 0 | 29.99 | 2.42 | 23.37 | 11 | 0 | 8.98 | 42.56 | 0.05 | 126051.70 | PASS |  |
 
 ## T1
 

@@ -248,11 +248,13 @@ public class Program
             Log.Information("Command-line parameters parsed: {@Parameters}", parameters);
         }
 
-        ApplySystemTuning(parameters);
-        WarnAboutUnwiredFlags(parameters);
-
+        // ApplySystemTuning sits inside the try/finally so that timeBeginPeriod
+        // (a process-wide setting) is always reverted even if WarnAboutUnwiredFlags
+        // or RunApplication throws before completing setup.
         try
         {
+            ApplySystemTuning(parameters);
+            WarnAboutUnwiredFlags(parameters);
             RunApplication(parameters, sanitizedArgs, launchCachePath);
         }
         catch (DllNotFoundException ex) when (ex.Message.Contains("NDI", StringComparison.OrdinalIgnoreCase))
