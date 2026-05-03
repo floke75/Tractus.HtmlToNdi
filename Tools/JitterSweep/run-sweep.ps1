@@ -170,7 +170,20 @@ function Run-OneConfig {
     $senderLog = Join-Path $runDir 'sender.log'
     $receiverJson = Join-Path $runDir 'receiver.json'
     $senderJson = Join-Path $runDir 'sender.json'
+    $sysmonCsv = Join-Path $runDir 'sysmon.csv'
     $rowJson = Join-Path $runDir 'row.json'
+
+    # Clear stale artifacts from any previous attempt at this run_id so the
+    # success gates can't be fooled by leftover files. New-Item -Force creates
+    # the dir without wiping its contents, and a retry of an ERROR row would
+    # otherwise mark itself PASS using last attempt's metrics.
+    foreach ($stale in @($senderLog, "$senderLog.err", $receiverJson, $senderJson, $sysmonCsv,
+                         (Join-Path $runDir 'receiver.stderr'),
+                         (Join-Path $runDir 'receiver.stdout'),
+                         (Join-Path $runDir 'parser.stdout'),
+                         (Join-Path $runDir 'parser.stderr'))) {
+        if (Test-Path $stale) { Remove-Item $stale -Force -ErrorAction SilentlyContinue }
+    }
 
     Stop-AnyRunningSender
 
@@ -199,7 +212,8 @@ function Run-OneConfig {
     if (-not $appStarted) {
         Write-Host "[$($cfg.run_id)] ERROR: sender did not reach 'Application started'" -ForegroundColor Red
         try { if (-not $senderProc.HasExited) { $senderProc | Stop-Process -Force -ErrorAction SilentlyContinue } } catch {}
-        Append-RunRow -cfg $cfg -codeRev $codeRev -senderJsonPath $null -receiverJsonPath $null -pass 'ERROR' -notes 'sender failed to reach Application started'
+        # No sysmon was started yet; pass null so Read-SysmonPeaks short-circuits.
+        Append-RunRow -cfg $cfg -codeRev $codeRev -senderJsonPath $null -receiverJsonPath $null -sysmonCsvPath $null -pass 'ERROR' -notes 'sender failed to reach Application started'
         return
     }
 
@@ -214,8 +228,8 @@ function Run-OneConfig {
     # Start a parallel system perf-counter sampler. We use Get-Counter inside
     # a background job so we can correlate jitter spikes with CPU/IO/paging.
     # English counter names are translated by the underlying API on non-English
-    # Windows, so this works across locales.
-    $sysmonCsv = Join-Path $runDir 'sysmon.csv'
+    # Windows, so this works across locales. ($sysmonCsv was defined at the
+    # top of this function and any stale CSV was deleted there.)
     $sysmonJob = Start-Job -ScriptBlock {
         param($outPath, $samples)
         $counters = @(
@@ -270,7 +284,10 @@ function Run-OneConfig {
 
     if (-not $receiverOk) {
         Write-Host "[$($cfg.run_id)] ERROR: receiver did not produce output" -ForegroundColor Red
-        Append-RunRow -cfg $cfg -codeRev $codeRev -senderJsonPath $null -receiverJsonPath $null -pass 'ERROR' -notes 'receiver missing output'
+        # Sysmon ran in parallel and may have written a usable CSV even though
+        # the receiver itself failed. Pass it through so the row records the
+        # system metrics that were captured rather than silently dropping them.
+        Append-RunRow -cfg $cfg -codeRev $codeRev -senderJsonPath $null -receiverJsonPath $null -sysmonCsvPath $sysmonCsv -pass 'ERROR' -notes 'receiver missing output'
         return
     }
 
@@ -308,6 +325,10 @@ function Read-SysmonPeaks {
     $result = [pscustomobject]@{
         cpuPct = $null; pagesSec = $null; diskQ = $null; procPgFlts = $null
     }
+    # Guard before Test-Path: under $ErrorActionPreference='Stop', calling
+    # Test-Path with $null/empty raises a parameter-binding error that would
+    # abort the whole sweep instead of just leaving sysmon columns blank.
+    if ([string]::IsNullOrWhiteSpace($csvPath)) { return $result }
     if (-not (Test-Path $csvPath)) { return $result }
     try {
         $rows = Import-Csv -Path $csvPath -Encoding UTF8

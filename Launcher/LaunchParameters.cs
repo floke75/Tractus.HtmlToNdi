@@ -482,9 +482,13 @@ public sealed class LaunchParameters
         var mmTimerArg = GetArgValue("--mm-timer-resolution");
         if (mmTimerArg is not null)
         {
-            if (!int.TryParse(mmTimerArg, NumberStyles.Integer, CultureInfo.InvariantCulture, out var mmTimer) || mmTimer < 0)
+            // Reject 0 explicitly: timeBeginPeriod(0) is documented as undefined
+            // behavior, and ApplySystemTuning treats <=0 as "off" anyway, so
+            // accepting 0 would silently no-op when the operator probably meant
+            // either to omit the flag or to set 1.
+            if (!int.TryParse(mmTimerArg, NumberStyles.Integer, CultureInfo.InvariantCulture, out var mmTimer) || mmTimer <= 0)
             {
-                Log.Error("Could not parse the --mm-timer-resolution parameter. Exiting.");
+                Log.Error("Could not parse the --mm-timer-resolution parameter (must be a positive integer; omit the flag for default). Exiting.");
                 return false;
             }
             mmTimerResolutionMs = mmTimer;
