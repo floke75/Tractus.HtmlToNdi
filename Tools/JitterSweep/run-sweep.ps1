@@ -307,7 +307,7 @@ function Run-OneConfig {
     $endIso = $captureEnd.ToUniversalTime().ToString('o')
     $parserStdout = Join-Path $runDir 'parser.stdout'
     $parserStderr = Join-Path $runDir 'parser.stderr'
-    $null = Start-Process -FilePath 'dotnet' -ArgumentList @(
+    $parserProc = Start-Process -FilePath 'dotnet' -ArgumentList @(
         "`"$parserDll`""
         "--log=`"$senderLog`""
         "--start-iso=$startIso"
@@ -316,15 +316,40 @@ function Run-OneConfig {
     ) -RedirectStandardOutput $parserStdout -RedirectStandardError $parserStderr `
         -Wait -NoNewWindow -PassThru
 
+    # Validate that the sender-side parse actually succeeded. Without this, a
+    # parser crash or empty-window result silently leaves senderJson missing/
+    # blank and Append-RunRow produces a row with empty s.* columns that the
+    # leaderboard still ranks as PASS based on receiver-only metrics. That
+    # breaks the protocol's sender-vs-receiver comparison and can mis-rank
+    # configs. Treat parser failure as ERROR for the run.
+    $parserExit = if ($parserProc) { $parserProc.ExitCode } else { -1 }
+    $senderJsonOk = $false
+    $senderEmpty = $false
+    if ($parserExit -eq 0 -and (Test-Path $senderJson) -and ((Get-Item $senderJson).Length -gt 4)) {
+        try {
+            $sjProbe = Get-Content $senderJson -Raw -Encoding UTF8 | ConvertFrom-Json
+            if ($sjProbe.statsLineCount -gt 0) { $senderJsonOk = $true } else { $senderEmpty = $true }
+        } catch {}
+    }
+
     $pass = 'PASS'
     $notes = ''
-    try {
-        $rj = Get-Content $receiverJson -Raw | ConvertFrom-Json
-        if ($rj.errors -gt 0) { $pass = 'FAIL'; $notes = "recv.errors=$($rj.errors)" }
-        elseif ($rj.veryLateCount -gt 0) { $pass = 'FAIL'; $notes = "recv.veryLateCount=$($rj.veryLateCount)" }
-        elseif ($rj.videoFrames -lt ($duration * 0.5 * [double]$cfg.fps_value)) { $pass = 'FAIL'; $notes = "recv.videoFrames=$($rj.videoFrames) (expected ~$($duration * [double]$cfg.fps_value))" }
-    } catch {
-        $pass = 'ERROR'; $notes = "receiver json parse failed: $_"
+    if (-not $senderJsonOk) {
+        $pass = 'ERROR'
+        if ($senderEmpty) {
+            $notes = 'sender parser found no pipeline stats lines in window'
+        } else {
+            $notes = "sender parser failed (exit=$parserExit)"
+        }
+    } else {
+        try {
+            $rj = Get-Content $receiverJson -Raw | ConvertFrom-Json
+            if ($rj.errors -gt 0) { $pass = 'FAIL'; $notes = "recv.errors=$($rj.errors)" }
+            elseif ($rj.veryLateCount -gt 0) { $pass = 'FAIL'; $notes = "recv.veryLateCount=$($rj.veryLateCount)" }
+            elseif ($rj.videoFrames -lt ($duration * 0.5 * [double]$cfg.fps_value)) { $pass = 'FAIL'; $notes = "recv.videoFrames=$($rj.videoFrames) (expected ~$($duration * [double]$cfg.fps_value))" }
+        } catch {
+            $pass = 'ERROR'; $notes = "receiver json parse failed: $_"
+        }
     }
 
     Append-RunRow -cfg $cfg -codeRev $codeRev -senderJsonPath $senderJson -receiverJsonPath $receiverJson -sysmonCsvPath $sysmonCsv -pass $pass -notes $notes
