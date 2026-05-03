@@ -38,17 +38,24 @@ DateTimeOffset? end = ParseIso(endIso);
 
 // Sender log lines look like:
 //   [16:55:01 INF] NDI video pipeline stats: captured=1280, sent=876, repeated=0, ...
-// We don't get a date in the log timestamp by default, so this parser
-// matches by line index relative to a "Tractus.HtmlToNdi starting up." marker
-// when no ISO bounds are given. When ISO bounds are given, we re-derive the
-// per-line UTC timestamp by taking the launch wall-clock time (the "starting up"
-// line stamped by Serilog) plus the delta against subsequent lines' HH:mm:ss.
+// The Serilog default outputs only HH:mm:ss in local time; no date. We need to
+// reattach a calendar date to each line so it can be filtered by --start-iso /
+// --end-iso. Strategy: anchor on the start-iso's local-date and walk forward;
+// if a later line's wall-clock HH:mm:ss is earlier than the previous one's, a
+// midnight rollover happened, so increment the date. This handles capture
+// windows that span midnight without ever consulting DateTime.Now (which would
+// be wrong for any historical log file).
+//
+// If no start-iso is given, fall back to today's date as a best-effort base.
 
 var lineTimeRegex = new Regex(@"^\[(?<h>\d{2}):(?<m>\d{2}):(?<s>\d{2})", RegexOptions.Compiled);
 var statsRegex = new Regex(@"NDI video pipeline stats:\s*(?<body>.+?)(?:\s*\(caller=.+?\))?\s*$", RegexOptions.Compiled);
 
+var anchorLocal = (start ?? DateTimeOffset.Now).LocalDateTime;
+var baseDate = anchorLocal.Date;
+
 var statsLines = new List<(DateTime localTime, string body)>();
-DateTime? launchLocal = null;
+TimeSpan? lastTimeOfDay = null;
 foreach (var raw in File.ReadAllLines(logPath))
 {
     var lineMatch = lineTimeRegex.Match(raw);
@@ -56,12 +63,26 @@ foreach (var raw in File.ReadAllLines(logPath))
     var h = int.Parse(lineMatch.Groups["h"].Value, CultureInfo.InvariantCulture);
     var m = int.Parse(lineMatch.Groups["m"].Value, CultureInfo.InvariantCulture);
     var s = int.Parse(lineMatch.Groups["s"].Value, CultureInfo.InvariantCulture);
+    var tod = new TimeSpan(h, m, s);
 
-    // Use today as the date base; if the run crosses midnight, callers should
-    // pass --start-iso anyway. Local times in the log are local TZ.
-    var nowLocal = DateTime.Now;
-    var lineDate = new DateTime(nowLocal.Year, nowLocal.Month, nowLocal.Day, h, m, s, DateTimeKind.Local);
-    if (raw.Contains("Tractus.HtmlToNdi starting up.")) launchLocal ??= lineDate;
+    if (lastTimeOfDay.HasValue && tod < lastTimeOfDay.Value)
+    {
+        // Wall-clock went backwards => midnight rollover.
+        baseDate = baseDate.AddDays(1);
+    }
+    lastTimeOfDay = tod;
+
+    var lineDate = new DateTime(baseDate.Year, baseDate.Month, baseDate.Day, h, m, s, DateTimeKind.Local);
+
+    // If the very first parsed line is already AFTER the start-iso anchor by
+    // more than 12 hours, the start-iso is probably from the next calendar day
+    // (e.g. a run that started right before midnight, with the receiver still
+    // running into the morning). Roll the base back one day.
+    if (start.HasValue && statsLines.Count == 0 && (anchorLocal - lineDate) > TimeSpan.FromHours(12))
+    {
+        baseDate = baseDate.AddDays(-1);
+        lineDate = new DateTime(baseDate.Year, baseDate.Month, baseDate.Day, h, m, s, DateTimeKind.Local);
+    }
 
     var statsMatch = statsRegex.Match(raw);
     if (statsMatch.Success)

@@ -132,6 +132,15 @@ try
                 if (frameRateN == 0) { frameRateN = v.frame_rate_N; frameRateD = v.frame_rate_D; xres = v.xres; yres = v.yres; }
                 NDIlib.recv_free_video(recv, ref v);
                 break;
+            case NDIlib.frame_type_e.frame_type_audio:
+                // We don't measure audio cadence, but the NDI receive API requires
+                // every returned frame to be released or buffers accumulate and the
+                // receiver can stall, corrupting jitter measurements.
+                NDIlib.recv_free_audio(recv, ref a);
+                break;
+            case NDIlib.frame_type_e.frame_type_metadata:
+                NDIlib.recv_free_metadata(recv, ref m);
+                break;
             case NDIlib.frame_type_e.frame_type_status_change:
                 statusChanges++;
                 break;
